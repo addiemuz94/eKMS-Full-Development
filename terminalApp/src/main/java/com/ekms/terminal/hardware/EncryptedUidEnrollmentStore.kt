@@ -16,36 +16,48 @@ import javax.crypto.SecretKey
 import javax.crypto.spec.GCMParameterSpec
 
 /**
- * Stores raw fob identifiers only in Android Keystore AES-GCM encrypted form.
- * UI and audit code receive an opaque enrollment reference, never the UID.
+ * Stores raw card/fob UIDs only in Android Keystore AES-GCM encrypted form,
+ * keyed by an arbitrary record ID. Callers receive an opaque enrollment
+ * reference, never the UID itself.
+ *
+ * One instance covers exactly one *kind* of record — personnel cards and key
+ * cards are enrolled into two separate instances (separate preferences file
+ * and separate Keystore alias, via [storeName]), even though both are read
+ * at the same physical public reader (protocol doc section 9) and share the
+ * same UID space. Keeping them in separate stores means a lookup against one
+ * can never accidentally match a record from the other; resolving a scanned
+ * UID against both stores is [com.ekms.shared.domain.CardUidResolver]'s job,
+ * not this class's — this class only answers "is this UID enrolled here,
+ * and to which record?".
  */
-class EncryptedFobEnrollmentStore(context: Context) {
+class EncryptedUidEnrollmentStore(context: Context, storeName: String) {
     private val preferences = context.getSharedPreferences(
-        PREFERENCES_NAME,
+        preferencesName(storeName),
         Context.MODE_PRIVATE,
     )
+    private val keyAlias = keystoreAlias(storeName)
 
-    fun enrollmentFor(keyId: String): FobEnrollmentSummary? = readRecord(keyId)?.toSummary()
+    fun enrollmentFor(recordId: String): UidEnrollmentSummary? = readRecord(recordId)?.toSummary()
 
-    fun enroll(keyId: String, rawUid: String, nowEpochMillis: Long): FobEnrollmentResult = try {
+    fun enroll(recordId: String, rawUid: String, nowEpochMillis: Long): UidEnrollmentResult = try {
         val normalizedUid = normalizeUid(rawUid)
         if (!UID_PATTERN.matches(normalizedUid)) {
-            FobEnrollmentResult.InvalidCard
+            UidEnrollmentResult.InvalidCard
         } else {
-            val ownerKeyId = findOwnerOf(normalizedUid)
+            val ownerRecordId = findOwnerOf(normalizedUid)
             when {
-                ownerKeyId != null && ownerKeyId != keyId -> FobEnrollmentResult.AlreadyAssigned
-                ownerKeyId == keyId -> FobEnrollmentResult.AlreadyEnrolledToSelectedKey
+                ownerRecordId != null && ownerRecordId != recordId -> UidEnrollmentResult.AlreadyAssigned
+                ownerRecordId == recordId -> UidEnrollmentResult.AlreadyEnrolledToSelectedRecord
                 else -> {
-                    val existing = readRecord(keyId)
+                    val existing = readRecord(recordId)
                     val record = StoredEnrollment(
-                        keyId = keyId,
-                        enrollmentReference = "fobref_${UUID.randomUUID()}",
+                        recordId = recordId,
+                        enrollmentReference = "cardref_${UUID.randomUUID()}",
                         encryptedUid = encrypt(normalizedUid),
                         enrolledAtEpochMillis = nowEpochMillis,
                     )
                     writeRecord(record)
-                    FobEnrollmentResult.Saved(
+                    UidEnrollmentResult.Saved(
                         summary = record.toSummary(),
                         replacedExisting = existing != null,
                     )
@@ -53,29 +65,31 @@ class EncryptedFobEnrollmentStore(context: Context) {
             }
         }
     } catch (_: Exception) {
-        FobEnrollmentResult.StorageError
+        UidEnrollmentResult.StorageError
     }
 
-    /** Finds a registered key for a returned physical fob without exposing its UID. */
-    fun keyIdFor(rawUid: String): String? = runCatching {
+    /** Looks up the enrolled record for a scanned UID, without exposing the UID itself. */
+    fun recordIdFor(rawUid: String): String? = runCatching {
         val normalizedUid = normalizeUid(rawUid)
         if (!UID_PATTERN.matches(normalizedUid)) return@runCatching null
         findOwnerOf(normalizedUid)
     }.getOrNull()
 
-    fun revoke(keyId: String): FobEnrollmentSummary? {
-        val existing = readRecord(keyId) ?: return null
-        val knownKeyIds = enrolledKeyIds().toMutableSet().apply { remove(keyId) }
+    /** True if [rawUid] is already enrolled to some record in this store. */
+    fun isEnrolled(rawUid: String): Boolean = recordIdFor(rawUid) != null
+
+    fun revoke(recordId: String): UidEnrollmentSummary? {
+        val existing = readRecord(recordId) ?: return null
+        val knownRecordIds = enrolledRecordIds().toMutableSet().apply { remove(recordId) }
         preferences.edit()
-            .remove(recordPreferenceKey(keyId))
-            .putStringSet(KEY_ENROLLED_KEY_IDS_V2, knownKeyIds)
-            .putStringSet(KEY_ENROLLED_KEY_IDS_V1, knownKeyIds)
+            .remove(recordPreferenceKey(recordId))
+            .putStringSet(KEY_ENROLLED_RECORD_IDS, knownRecordIds)
             .apply()
         return existing.toSummary()
     }
 
-    private fun findOwnerOf(normalizedUid: String): String? = enrolledKeyIds().firstOrNull { keyId ->
-        val record = readRecord(keyId) ?: return@firstOrNull false
+    private fun findOwnerOf(normalizedUid: String): String? = enrolledRecordIds().firstOrNull { recordId ->
+        val record = readRecord(recordId) ?: return@firstOrNull false
         val decryptedUid = decrypt(record.encryptedUid) ?: return@firstOrNull false
         MessageDigest.isEqual(
             decryptedUid.toByteArray(StandardCharsets.UTF_8),
@@ -84,23 +98,20 @@ class EncryptedFobEnrollmentStore(context: Context) {
     }
 
     private fun writeRecord(record: StoredEnrollment) {
-        val knownKeyIds = enrolledKeyIds().toMutableSet().apply { add(record.keyId) }
+        val knownRecordIds = enrolledRecordIds().toMutableSet().apply { add(record.recordId) }
         preferences.edit()
-            .putString(recordPreferenceKey(record.keyId), record.toJson().toString())
-            .putStringSet(KEY_ENROLLED_KEY_IDS_V2, knownKeyIds)
+            .putString(recordPreferenceKey(record.recordId), record.toJson().toString())
+            .putStringSet(KEY_ENROLLED_RECORD_IDS, knownRecordIds)
             .apply()
     }
 
-    private fun readRecord(keyId: String): StoredEnrollment? {
-        val serialized = preferences.getString(recordPreferenceKey(keyId), null) ?: return null
+    private fun readRecord(recordId: String): StoredEnrollment? {
+        val serialized = preferences.getString(recordPreferenceKey(recordId), null) ?: return null
         return runCatching { StoredEnrollment.fromJson(JSONObject(serialized)) }.getOrNull()
     }
 
-    /** Reads both the old Step 5 set and this workflow rework's set. */
-    private fun enrolledKeyIds(): Set<String> = buildSet {
-        addAll(preferences.getStringSet(KEY_ENROLLED_KEY_IDS_V1, emptySet())?.toSet().orEmpty())
-        addAll(preferences.getStringSet(KEY_ENROLLED_KEY_IDS_V2, emptySet())?.toSet().orEmpty())
-    }
+    private fun enrolledRecordIds(): Set<String> =
+        preferences.getStringSet(KEY_ENROLLED_RECORD_IDS, emptySet())?.toSet().orEmpty()
 
     private fun encrypt(value: String): String {
         val cipher = Cipher.getInstance(TRANSFORMATION)
@@ -127,12 +138,12 @@ class EncryptedFobEnrollmentStore(context: Context) {
 
     private fun getOrCreateSecretKey(): SecretKey {
         val keyStore = KeyStore.getInstance(ANDROID_KEYSTORE).apply { load(null, null) }
-        (keyStore.getKey(KEY_ALIAS, null) as? SecretKey)?.let { return it }
+        (keyStore.getKey(keyAlias, null) as? SecretKey)?.let { return it }
 
         return KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_AES, ANDROID_KEYSTORE).apply {
             init(
                 KeyGenParameterSpec.Builder(
-                    KEY_ALIAS,
+                    keyAlias,
                     KeyProperties.PURPOSE_ENCRYPT or KeyProperties.PURPOSE_DECRYPT,
                 )
                     .setBlockModes(KeyProperties.BLOCK_MODE_GCM)
@@ -144,31 +155,27 @@ class EncryptedFobEnrollmentStore(context: Context) {
     }
 
     private data class StoredEnrollment(
-        val keyId: String,
+        val recordId: String,
         val enrollmentReference: String,
         val encryptedUid: String,
         val enrolledAtEpochMillis: Long,
     ) {
-        fun toSummary() = FobEnrollmentSummary(
-            keyId = keyId,
+        fun toSummary() = UidEnrollmentSummary(
+            recordId = recordId,
             enrollmentReference = enrollmentReference,
             enrolledAtEpochMillis = enrolledAtEpochMillis,
         )
 
         fun toJson() = JSONObject()
-            .put("keyId", keyId)
+            .put("recordId", recordId)
             .put("enrollmentReference", enrollmentReference)
-            // Retain the former field name so a prior Step 5 installation can
-            // continue reading the local protected reference during migration.
-            .put("reference", enrollmentReference)
             .put("encryptedUid", encryptedUid)
             .put("enrolledAtEpochMillis", enrolledAtEpochMillis)
 
         companion object {
             fun fromJson(json: JSONObject) = StoredEnrollment(
-                keyId = json.getString("keyId"),
-                enrollmentReference = json.optString("enrollmentReference")
-                    .ifBlank { json.getString("reference") },
+                recordId = json.getString("recordId"),
+                enrollmentReference = json.getString("enrollmentReference"),
                 encryptedUid = json.getString("encryptedUid"),
                 enrolledAtEpochMillis = json.getLong("enrolledAtEpochMillis"),
             )
@@ -176,16 +183,14 @@ class EncryptedFobEnrollmentStore(context: Context) {
     }
 
     private companion object {
-        const val PREFERENCES_NAME = "ekms_protected_fob_enrollment"
-        const val KEY_ENROLLED_KEY_IDS_V1 = "enrolled_key_ids_v1"
-        const val KEY_ENROLLED_KEY_IDS_V2 = "enrolled_key_ids_v2"
-        // Keep the original alias so existing protected Step 5 UID records can
-        // still be decrypted and used for return-key matching.
-        const val KEY_ALIAS = "ekms_fob_enrollment_aes_v1"
+        const val KEY_ENROLLED_RECORD_IDS = "enrolled_record_ids"
         const val ANDROID_KEYSTORE = "AndroidKeyStore"
         const val TRANSFORMATION = "AES/GCM/NoPadding"
         const val GCM_TAG_LENGTH_BITS = 128
         val UID_PATTERN = Regex("[0-9A-F]{8,32}")
+
+        fun preferencesName(storeName: String) = "ekms_encrypted_uid_enrollment_$storeName"
+        fun keystoreAlias(storeName: String) = "ekms_uid_enrollment_aes_v1_$storeName"
 
         fun normalizeUid(rawUid: String): String = rawUid
             .filter { character ->
@@ -194,24 +199,24 @@ class EncryptedFobEnrollmentStore(context: Context) {
             .uppercase(Locale.US)
             .takeLast(32)
 
-        fun recordPreferenceKey(keyId: String) = "record_$keyId"
+        fun recordPreferenceKey(recordId: String) = "record_$recordId"
     }
 }
 
-data class FobEnrollmentSummary(
-    val keyId: String,
+data class UidEnrollmentSummary(
+    val recordId: String,
     val enrollmentReference: String,
     val enrolledAtEpochMillis: Long,
 )
 
-sealed interface FobEnrollmentResult {
+sealed interface UidEnrollmentResult {
     data class Saved(
-        val summary: FobEnrollmentSummary,
+        val summary: UidEnrollmentSummary,
         val replacedExisting: Boolean,
-    ) : FobEnrollmentResult
+    ) : UidEnrollmentResult
 
-    data object AlreadyAssigned : FobEnrollmentResult
-    data object AlreadyEnrolledToSelectedKey : FobEnrollmentResult
-    data object InvalidCard : FobEnrollmentResult
-    data object StorageError : FobEnrollmentResult
+    data object AlreadyAssigned : UidEnrollmentResult
+    data object AlreadyEnrolledToSelectedRecord : UidEnrollmentResult
+    data object InvalidCard : UidEnrollmentResult
+    data object StorageError : UidEnrollmentResult
 }

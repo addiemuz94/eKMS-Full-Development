@@ -115,6 +115,41 @@ class TerminalAdminStore(context: Context) {
         )
     }
 
+    /**
+     * Signs in a user whose identity was already resolved by a means other
+     * than password entry (a matched, enrolled personnel card UID — see
+     * [com.ekms.shared.domain.CardUidResolver]). Password login remains the
+     * only entry method that never depends on any enrollment existing, so
+     * this is purely an additional path, never a replacement for it.
+     */
+    @Synchronized
+    fun authenticateByUserId(userId: String): StoreResult<TerminalSession> {
+        if (userId == "super_admin") {
+            return StoreResult.Success(
+                TerminalSession(
+                    userId = "super_admin",
+                    displayName = SUPER_ADMIN_USERNAME,
+                    username = SUPER_ADMIN_USERNAME,
+                    role = TerminalUserRole.SUPER_ADMIN,
+                    requiresPasswordChange = preferences.getBoolean(KEY_FORCE_PASSWORD_CHANGE, true),
+                ),
+            )
+        }
+
+        val user = readUsers().firstOrNull { it.id == userId }
+            ?: return StoreResult.Error("This card's enrolled account no longer exists.")
+
+        return StoreResult.Success(
+            TerminalSession(
+                userId = user.id,
+                displayName = user.displayName,
+                username = user.username,
+                role = user.role,
+                requiresPasswordChange = false,
+            ),
+        )
+    }
+
     @Synchronized
     fun changeSuperAdminPassword(
         currentPassword: String,

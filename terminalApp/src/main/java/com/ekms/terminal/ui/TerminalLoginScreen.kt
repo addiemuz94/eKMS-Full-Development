@@ -38,23 +38,22 @@ import com.ekms.terminal.data.TerminalAdminStore
  * key directly instead of logging in), account/password, a Face Recognition
  * button, and a Fingerprint Recognition button.
  *
- * Key card swipe is now real: `TerminalAdminApp` starts the section 9
- * public card-swipe reader (`PublicCardReaderController`, `/dev/ttyS2`)
- * whenever this screen is idling at login, and a detected card calls
- * [onKeyCardSwiped] into section 3's return flow — see
- * [TerminalKeyReturnScreen]. [onKeyCardSwiped] is also wired to a tap on
- * this panel, so the flow is testable with no reader attached. Pass null to
- * keep the panel inert (used when this screen is reused as the return
- * flow's own certification-login step, where a nested swipe would be
- * meaningless).
+ * Both personnel and key card swipes are real: `TerminalAdminApp` starts the
+ * section 9 public card-swipe reader (`PublicCardReaderController`,
+ * `/dev/ttyS2`) whenever this screen is idling at login, and every detected
+ * UID is looked up against both the personnel-card and key-card encrypted
+ * enrollment stores (`CardUidResolver`) — never assumed from which panel is
+ * showing, since both card kinds share the same physical medium and UID
+ * space. A matched personnel card signs straight in; a matched key card
+ * enters section 3's return flow, see [TerminalKeyReturnScreen].
  *
- * Personnel card swipe is still a passive, inert reader zone, and — unlike
- * key card — this is not just a deferred hardware hookup: the section 9
- * reader reports a raw card UID with no notion of *which* card category it
- * belongs to, and there is still no registry mapping a personnel card's UID
- * to a signed-in user (the same gap phase 3 flagged for key cards, still
- * unresolved for personnel cards specifically). Wiring this panel requires
- * that data-model decision first, not just calling the same reader again.
+ * [onKeyCardSwiped] is a manual-tap testing convenience wired only to the
+ * key-card panel (it carries no UID, so it can't simulate a personnel-card
+ * match). Pass null to keep the panel inert (used when this screen is
+ * reused as the return flow's own certification-login step, where a nested
+ * swipe would be meaningless). The personnel-card panel has no such tap
+ * hook — there is no single UID a tap could stand in for.
+ *
  * Face Recognition and Fingerprint Recognition are disabled buttons until
  * their hardware bridge lands. This screen adds no confirmation step,
  * dialog, or notice beyond a real account/password login error.

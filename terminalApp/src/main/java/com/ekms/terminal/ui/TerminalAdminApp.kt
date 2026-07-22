@@ -37,6 +37,8 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.platform.LocalContext
+import com.ekms.shared.domain.CardUidMatch
+import com.ekms.shared.domain.CardUidResolver
 import com.ekms.shared.domain.KeySlot
 import com.ekms.shared.domain.KeySlotDemoData
 import com.ekms.shared.domain.ManagedKey
@@ -51,9 +53,11 @@ import com.ekms.terminal.data.TerminalUser
 import com.ekms.terminal.data.TerminalUserRole
 import com.ekms.terminal.hardware.CabinetHardwareController
 import com.ekms.terminal.hardware.CabinetHardwareState
+import com.ekms.terminal.hardware.EncryptedUidEnrollmentStore
 import com.ekms.terminal.hardware.PublicCardReaderController
 import com.ekms.terminal.hardware.TerminalNfcReaderController
 import com.ekms.terminal.hardware.TerminalNfcReaderState
+import com.ekms.terminal.hardware.UidEnrollmentResult
 import java.security.MessageDigest
 
 /**
@@ -77,6 +81,18 @@ fun TerminalAdminApp() {
     var hardwareState by remember { mutableStateOf(CabinetHardwareState()) }
     val hardwareController = remember {
         CabinetHardwareController { nextState -> hardwareState = nextState }
+    }
+    // Personnel cards and key cards share the same physical medium and UID
+    // space (protocol doc section 9) — there is no hardware distinction
+    // between them. Keeping their enrollments in two separate encrypted
+    // stores means a lookup against one can never accidentally match a
+    // record from the other; see CardUidResolver for how a scanned UID is
+    // actually resolved against both.
+    val personnelCardStore = remember(applicationContext) {
+        EncryptedUidEnrollmentStore(applicationContext, "personnel")
+    }
+    val keyCardStore = remember(applicationContext) {
+        EncryptedUidEnrollmentStore(applicationContext, "key")
     }
     var capturedFob by remember { mutableStateOf<CapturedFob?>(null) }
     var notice by remember { mutableStateOf<String?>(null) }
@@ -116,19 +132,22 @@ fun TerminalAdminApp() {
         )
     }
 
-    fun resolveDoorOpenState(): ReturnFlow.DoorOpen {
-        val key = resolveReturningKey(takenKeyIds, retrievalKeys)
+    fun resolveDoorOpenState(matchedKey: ManagedKey?): ReturnFlow.DoorOpen {
+        // A real card-UID match (matchedKey) is authoritative and always
+        // preferred; the "only key currently taken" heuristic only fires for
+        // the login screen's UID-less manual key-card tap.
+        val key = matchedKey ?: resolveReturningKey(takenKeyIds, retrievalKeys)
         val slot = key?.let { returningKey -> retrievalSlots.firstOrNull { it.managedKeyId == returningKey.id } }
         return ReturnFlow.DoorOpen(key, slot)
     }
 
-    fun startKeyCardReturn() {
+    fun startKeyCardReturn(matchedKey: ManagedKey? = null) {
         // "Key Return Certification" is Section 4's Admin Menu toggle, persisted
         // in TerminalAdminStore; Section 3's return flow only reacts to it.
         returnFlow = if (snapshot.cabinetSettings.keyReturnCertificationEnabled) {
-            ReturnFlow.AwaitingCertification()
+            ReturnFlow.AwaitingCertification(matchedKey = matchedKey)
         } else {
-            resolveDoorOpenState()
+            resolveDoorOpenState(matchedKey)
         }
     }
 
@@ -141,14 +160,42 @@ fun TerminalAdminApp() {
 
     // Section 9's public card-swipe reader — a wholly separate device/protocol
     // from the node-level 0x15/0x17 card reads (section 9.1/9.8/10.4: "must
-    // not be mixed"). It only feeds the key-card-swipe return trigger below;
-    // it does not know a card's raw UID belongs to a *personnel* card versus
-    // a *key* card, since no such registry exists yet (same stubbing note as
-    // phase 1/3) — see TerminalLoginScreen's doc comment.
+    // not be mixed"). A scanned UID is meaningless on its own — personnel
+    // cards and key cards share the same physical medium and UID space, so
+    // which action a scan means can only be decided by looking it up against
+    // both encrypted stores, never assumed from which screen is showing.
     val cardReaderController = remember {
         PublicCardReaderController(
             onStateChanged = {},
-            onCardDetected = { _ -> startKeyCardReturn() },
+            onCardDetected = { rawUid ->
+                val matchedUserId = personnelCardStore.recordIdFor(rawUid)
+                val matchedKeyId = keyCardStore.recordIdFor(rawUid)
+                when (val match = CardUidResolver.resolve(matchedUserId, matchedKeyId)) {
+                    is CardUidMatch.User -> when (val result = store.authenticateByUserId(match.userId)) {
+                        is StoreResult.Success -> {
+                            session = result.value
+                            notice = null
+                            route = when {
+                                result.value.requiresPasswordChange -> SuperAdminRoute.CHANGE_PASSWORD
+                                result.value.isSuperAdmin -> SuperAdminRoute.DASHBOARD
+                                else -> SuperAdminRoute.KEY_RETRIEVAL
+                            }
+                        }
+
+                        is StoreResult.Error -> notice = result.message
+                    }
+
+                    is CardUidMatch.Key -> {
+                        val matchedKey = retrievalKeys.firstOrNull { it.id == match.keyId }
+                        startKeyCardReturn(matchedKey)
+                    }
+
+                    is CardUidMatch.Ambiguous ->
+                        notice = "This card is enrolled to both a person and a key. Re-enroll it before use."
+
+                    CardUidMatch.NoMatch -> notice = "Unrecognized card. It is not enrolled to a person or a key."
+                }
+            },
         )
     }
     val isIdleAtLogin = route == SuperAdminRoute.LOGIN && returnFlow == null
@@ -248,8 +295,11 @@ fun TerminalAdminApp() {
                     padding = padding,
                     onAccountLogin = { username, password ->
                         when (val result = store.authenticate(username, password)) {
-                            is StoreResult.Success -> returnFlow = resolveDoorOpenState()
-                            is StoreResult.Error -> returnFlow = ReturnFlow.AwaitingCertification(loginError = result.message)
+                            is StoreResult.Success -> returnFlow = resolveDoorOpenState(activeReturnFlow.matchedKey)
+                            is StoreResult.Error -> returnFlow = ReturnFlow.AwaitingCertification(
+                                matchedKey = activeReturnFlow.matchedKey,
+                                loginError = result.message,
+                            )
                         }
                     },
                     loginError = activeReturnFlow.loginError,
@@ -284,7 +334,7 @@ fun TerminalAdminApp() {
                         }
                     },
                     loginError = notice,
-                    onKeyCardSwiped = ::startKeyCardReturn,
+                    onKeyCardSwiped = { startKeyCardReturn() },
                 )
 
                 SuperAdminRoute.CHANGE_PASSWORD -> ChangePasswordScreen(
@@ -325,6 +375,7 @@ fun TerminalAdminApp() {
                             notice = notice,
                             onEnrollUser = { openAdmin(SuperAdminRoute.ENROLL_USER) },
                             onEnrollKey = { openAdmin(SuperAdminRoute.ENROLL_KEY) },
+                            onOpenCardEnrollment = { openAdmin(SuperAdminRoute.CARD_ENROLLMENT) },
                             onOpenAccessGrants = { openAdmin(SuperAdminRoute.ACCESS_GRANTS) },
                             onOpenKeyRetrieval = { openAdmin(SuperAdminRoute.KEY_RETRIEVAL) },
                             onOpenAdminMenu = { openAdmin(SuperAdminRoute.ADMIN_MENU) },
@@ -380,6 +431,28 @@ fun TerminalAdminApp() {
                     },
                     onMonitorReturnedFob = hardwareController::waitForReturnedKeyFob,
                     onStopMonitoring = hardwareController::stopMonitoring,
+                )
+
+                SuperAdminRoute.CARD_ENROLLMENT -> CardEnrollmentScreen(
+                    padding = padding,
+                    users = snapshot.users,
+                    keys = retrievalKeys,
+                    notice = notice,
+                    onBack = { route = SuperAdminRoute.DASHBOARD },
+                    onEnrollPersonnelCard = { userId, rawUid ->
+                        if (keyCardStore.isEnrolled(rawUid)) {
+                            UidEnrollmentResult.AlreadyAssigned
+                        } else {
+                            personnelCardStore.enroll(userId, rawUid, System.currentTimeMillis())
+                        }
+                    },
+                    onEnrollKeyCard = { keyId, rawUid ->
+                        if (personnelCardStore.isEnrolled(rawUid)) {
+                            UidEnrollmentResult.AlreadyAssigned
+                        } else {
+                            keyCardStore.enroll(keyId, rawUid, System.currentTimeMillis())
+                        }
+                    },
                 )
 
                 SuperAdminRoute.ACCESS_GRANTS -> AccessGrantsScreen(
@@ -564,6 +637,7 @@ private fun SuperAdminDashboardScreen(
     notice: String?,
     onEnrollUser: () -> Unit,
     onEnrollKey: () -> Unit,
+    onOpenCardEnrollment: () -> Unit,
     onOpenAccessGrants: () -> Unit,
     onOpenKeyRetrieval: () -> Unit,
     onOpenAdminMenu: () -> Unit,
@@ -589,6 +663,9 @@ private fun SuperAdminDashboardScreen(
         }
         Button(onClick = onEnrollKey, modifier = Modifier.fillMaxWidth()) {
             Text("Enroll new key")
+        }
+        Button(onClick = onOpenCardEnrollment, modifier = Modifier.fillMaxWidth()) {
+            Text("Card enrolment")
         }
         Button(onClick = onOpenAccessGrants, modifier = Modifier.fillMaxWidth()) {
             Text("Manage access grants")
@@ -1477,6 +1554,7 @@ private enum class SuperAdminRoute {
     DASHBOARD,
     ENROLL_USER,
     ENROLL_KEY,
+    CARD_ENROLLMENT,
     ACCESS_GRANTS,
     KEY_RETRIEVAL,
     ADMIN_MENU,
@@ -1496,8 +1574,14 @@ private data class PendingPhysicalAction(
     val onConfirm: () -> Unit,
 )
 
-/** Section 3 (key return) state, driven by a key-card swipe rather than `route`. */
+/**
+ * Section 3 (key return) state, driven by a key-card swipe rather than
+ * `route`. [AwaitingCertification.matchedKey] carries a real card-UID match
+ * through the certification-login step, so it is used directly once
+ * certification succeeds instead of being lost and re-resolved by the
+ * "only key currently taken" heuristic.
+ */
 private sealed interface ReturnFlow {
-    data class AwaitingCertification(val loginError: String? = null) : ReturnFlow
+    data class AwaitingCertification(val matchedKey: ManagedKey? = null, val loginError: String? = null) : ReturnFlow
     data class DoorOpen(val key: ManagedKey?, val slot: KeySlot?) : ReturnFlow
 }

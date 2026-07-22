@@ -140,12 +140,14 @@ private const val NO_NODE_AUTO_COMPLETE_MILLIS = 2_500L
 private const val FAILURE_AUTO_RETURN_MILLIS = 3_000L
 
 /**
- * Stand-in for matching a swiped key card to its exact ManagedKey. There is
- * no card-to-key registry for the shared model yet (only the terminal-local
- * TerminalKey/fob-fingerprint store has one, and that is a different key
- * identity — see EncryptedFobEnrollmentStore). Until that registry exists,
- * the returning key is resolved as "the only key currently marked taken":
- * a real match when exactly one key is out, not a fabricated success.
+ * Fallback for identifying the returning key when no real card-UID match is
+ * available — i.e. only the login screen's manual key-card tap (a hardware-
+ * free testing convenience, see [TerminalLoginScreen]'s `onKeyCardSwiped`),
+ * which carries no UID at all. A genuine public-reader swipe is resolved by
+ * UID via [EncryptedUidEnrollmentStore]/`CardUidResolver` in
+ * `TerminalAdminApp` and passed in directly, bypassing this heuristic
+ * entirely. This resolves "the only key currently marked taken": a real
+ * match when exactly one key is out, not a fabricated success.
  */
 internal fun resolveReturningKey(takenKeyIds: Set<String>, keys: List<ManagedKey>): ManagedKey? =
     keys.filter { it.id in takenKeyIds }.singleOrNull()

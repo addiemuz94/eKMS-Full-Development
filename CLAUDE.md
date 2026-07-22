@@ -106,6 +106,41 @@ choice to keep.
 Architecture note (unchanged): business logic stays in `shared`, hardware-
 specific code stays Android-only in terminalApp.
 
+## NFC UID Resolution Rule (permanent)
+
+Personnel NFC cards and key NFC cards share the same physical medium and
+UID space — there is no hardware-level way to distinguish a personnel
+card from a key card. This must always be resolved in software via UID
+lookup, never assumed based on which screen or flow triggered the scan.
+
+Rules that must never be violated by future changes:
+
+1. NFC enrollment (users and keys) is a simple manual capture: scan once
+   during registration, store the raw UID against that record. No feature
+   extraction, unlike fingerprint/face.
+
+2. Password login must always remain a valid path, independent of whether
+   NFC/fingerprint/face is enrolled for that user. This is required for
+   bootstrapping the first Super Admin (nothing else can be enrolled
+   before first login) and remains a permanent fallback afterward — never
+   remove password login as an option.
+
+3. Any code path that receives a scanned UID (from the public card reader
+   on ttyS2, or elsewhere) must resolve it by checking BOTH the registered
+   User-card UID set and the registered Key-card UID set:
+  - Match in Users -> login
+  - Match in Keys -> key return trigger
+  - No match in either -> unrecognized card error, no silent fallback
+
+   Do not write new NFC-triggered flows that assume a scanned UID's
+   meaning in advance (e.g. assuming "any scan on the login screen must be
+   a user card") — always resolve via lookup, since the physical scan
+   itself carries no type information.
+
+The UID lookup logic lives in `shared` (pure data lookup, no Android
+dependency) so terminalApp and any future web/mobile UID-based flows
+reuse the same resolution logic rather than reimplementing it.
+
 ## Web/Mobile App UX Consistency
 
 webApp and mobileApp are Super Admin-facing, not operator-facing — they do
@@ -180,28 +215,8 @@ terminalApp consume the same source of truth rather than reimplementing it.
   detected card feeds the key-card-swipe return trigger from phase 3 (same
   entry point the phase 3 manual tap already used, so the flow stays
   testable with no reader attached).
-  - Personnel-card swipe is still NOT wired, and this is a data-model gap,
-    not a leftover hardware hookup: the reader reports a raw UID with no
-    way to tell a personnel card from a key card, and there is still no
-    registry mapping a personnel card's UID to a signed-in user. Solving
-    this needs that registry decided first — see Known issues below.
-
-### Known issues / not yet resolved
-- Personnel management in webApp is currently a shallow free-text form
-  (no role picker, no email/site validation) since the old
-  UserManagementPolicy-based flow was deleted — needs rebuilding against
-  current architecture
-- No personnel-card-to-user registry exists anywhere (webApp or
-  terminalApp), so `TerminalLoginScreen`'s personnel-card-swipe panel
-  cannot be wired yet even though the section 9 reader hardware now runs
-  live — this and the Personnel rebuild above are likely one piece of work
-- Orphaned scaffold TerminalWorkflowModels.kt/TerminalWorkflowScreens.kt in
-  terminalApp — audited, found to NOT correctly match the manual (extra
-  confirmation steps, recording notice banners violating "never
-  user-facing", wrong terminology). Moved to reference-only, not merged:
-  see `terminalApp/reference/*.reference.kt.bak` (includes
-  `FobEnrollmentScreen.reference.kt.bak`, archived alongside it since it
-  depended on the same types) and `terminalApp/reference/README.md` for why.
+  - Personnel-card swipe was NOT wired at this point — see the card-UID
+    disambiguation fix below, which resolves it.
 
 - Phase 9: real hardware wired into retrieval/return.
   **Electromagnet direction reconfirmed** (a phase 9 request initially
@@ -225,20 +240,74 @@ terminalApp consume the same source of truth rather than reimplementing it.
   Concurrency guard re-verified explicitly with a new test
   (`KeyCabinetLinkTest`, "two retrieval attempts in quick succession") on
   top of the existing phase 7 coverage, not just assumed still correct.
-  **Still stubbed:** personnel-card login (same registry gap as phase 8);
-  `resolveReturningKey`'s "only key currently taken" heuristic (still no
-  real card-to-key identification). **Needs physical hardware to fully
-  verify:** everything above was only exercised through `FakeSerialTransport`
-  — no physical F7G18P run yet for the new retrieval/return command
-  sequences, the auto-connect path, or real bolt-detection timing.
+  Personnel-card login and real card-to-key return identification were
+  stubbed at this point; both are now resolved by the card-UID
+  disambiguation fix below.
+
+- **Card-UID disambiguation fix**: personnel NFC cards and key NFC cards
+  share the same physical medium and UID space — there is no hardware-level
+  way to tell them apart, so a scanned UID's meaning can only be decided in
+  software, by looking it up, never assumed from which screen triggered the
+  scan. Added `shared/.../domain/CardUidResolution.kt`
+  (`CardUidResolver`/`CardUidMatch`, pure decision over two already-resolved
+  nullable record IDs — no raw UID or Android dependency, so both
+  terminalApp and any future web/mobile UID flow apply the same rule,
+  including how a double-enrollment is surfaced as `Ambiguous` rather than
+  silently picking a side), unit tested (`CardUidResolutionTest`, 4 cases).
+  Generalized the old key-only `EncryptedFobEnrollmentStore` into
+  `EncryptedUidEnrollmentStore` (namespaced by a `storeName` constructor
+  param, so personnel-card and key-card enrollments live in two fully
+  separate Keystore-backed stores); `TerminalAdminApp` now owns one instance
+  of each. Added `CardEnrollmentScreen` (Dashboard → "Card enrolment") for
+  the one-scan manual capture requirement (no feature extraction, unlike
+  fingerprint/face) — enrolling into one store proactively rejects a UID
+  already enrolled in the other, as defense in depth alongside the
+  resolver's explicit `Ambiguous` handling. Fixed the actual runtime bug:
+  `TerminalAdminApp`'s public-reader `onCardDetected` used to assume every
+  scan was a key-card return trigger and discard the UID; it now looks the
+  UID up against both stores and branches on `CardUidResolver`'s result —
+  personnel match signs in via the new password-independent
+  `TerminalAdminStore.authenticateByUserId`, key match passes the resolved
+  `ManagedKey` straight into the return flow (now carried through
+  `ReturnFlow.AwaitingCertification.matchedKey` so certification doesn't
+  lose it), no match or an ambiguous match surfaces an explicit error, never
+  a silent fallback. `resolveReturningKey`'s "only key currently taken"
+  heuristic remains only as the fallback for the login screen's UID-less
+  manual key-card tap (a hardware-free testing convenience). Password login
+  is untouched and remains valid independent of any NFC enrollment,
+  including for the very first Super Admin sign-in.
+  **Verified this session:** `:terminalApp:compileDebugKotlin`,
+  `:terminalApp:assembleDebug`, and `:shared:allTests` all pass. Not yet
+  exercised: manual UI walkthrough in an emulator/device (this fix was
+  verified by compile/test only, not by running the app), and — same as
+  Phase 9 above — no physical F7G18P run of the section 9 reader against
+  real enrolled cards.
+
+### Known issues / not yet resolved
+- Personnel management in webApp is currently a shallow free-text form
+  (no role picker, no email/site validation) since the old
+  UserManagementPolicy-based flow was deleted — needs rebuilding against
+  current architecture
+- Orphaned scaffold TerminalWorkflowModels.kt/TerminalWorkflowScreens.kt in
+  terminalApp — audited, found to NOT correctly match the manual (extra
+  confirmation steps, recording notice banners violating "never
+  user-facing", wrong terminology). Moved to reference-only, not merged:
+  see `terminalApp/reference/*.reference.kt.bak` (includes
+  `FobEnrollmentScreen.reference.kt.bak`, archived alongside it since it
+  depended on the same types) and `terminalApp/reference/README.md` for why.
+- **Needs physical hardware to fully verify (phases 7-9 and the card-UID
+  fix):** everything so far was only exercised through `FakeSerialTransport`
+  and Gradle compile/test/assemble — no physical F7G18P run yet for the
+  retrieval/return command sequences, the auto-connect path, real
+  bolt-detection timing, or the section 9 reader's UID lookup against real
+  enrolled cards.
 
 ### Next steps (in order)
-- Phase 10 (suggested): verify phase 9's new command sequences against a
-  physical F7G18P; resolve the personnel/key card registry gap (Known
-  issues above) so personnel-card login and real card-to-key return
-  identification can replace their remaining stubs
-- After hardware phases: rebuild Personnel management properly, including
-  the personnel-card registry (see Known issues above)
+- Phase 10 (suggested): verify phase 9's command sequences and the card-UID
+  disambiguation fix against a physical F7G18P — this is the first
+  not-yet-done item and unblocks confidently trusting the rest of the
+  hardware-wired flows
+- After hardware phases: rebuild Personnel management properly
 
 ### Reference
 - Hardware protocol: `docs/Key Cabinet Communication Protocol.md` (note
