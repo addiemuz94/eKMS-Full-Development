@@ -15,6 +15,8 @@ class KeyCabinetProtocol(
 ) {
     companion object {
         const val DOOR_NODE_ADDRESS = 0
+        /** Per docs/Key Cabinet Communication Protocol.md §7.1: key nodes are 1-127. */
+        const val MAX_KEY_NODE_ADDRESS = 127
 
         private const val COMMAND_BLUE_LIGHT_ON = 0x11
         private const val COMMAND_BLUE_LIGHT_OFF = 0x12
@@ -28,7 +30,9 @@ class KeyCabinetProtocol(
         private const val COMMAND_CHECK_DOOR_STATUS = 0x22
         private const val COMMAND_EJECT_DOOR = 0x23
 
-        private const val RESPONSE_TIMEOUT_MILLIS = 1_500L
+        /** Per docs/Key Cabinet Communication Protocol.md §7.4. */
+        private const val RESPONSE_TIMEOUT_MILLIS = 500L
+        private const val MAX_SEND_ATTEMPTS = 3
     }
 
     init {
@@ -95,14 +99,20 @@ class KeyCabinetProtocol(
         check(serialPort.isOpen) { "Connect the cabinet before sending a command." }
 
         val requestFrame = buildRequestFrame(boxAddress, nodeAddress, command)
-        serialPort.clearInputBuffer()
-        serialPort.write(requestFrame)
+        var responseFrame: ByteArray? = null
+        repeat(MAX_SEND_ATTEMPTS) {
+            if (responseFrame != null) return@repeat
+            serialPort.clearInputBuffer()
+            serialPort.write(requestFrame)
+            responseFrame = serialPort.readResponseFrame(RESPONSE_TIMEOUT_MILLIS)
+        }
 
-        val responseFrame = serialPort.readResponseFrame(RESPONSE_TIMEOUT_MILLIS)
+        val confirmedResponseFrame = responseFrame
             ?: throw IllegalStateException(
-                "No complete cabinet reply arrived within " + RESPONSE_TIMEOUT_MILLIS + " ms.",
+                "No complete cabinet reply arrived within " + RESPONSE_TIMEOUT_MILLIS +
+                        " ms after " + MAX_SEND_ATTEMPTS + " attempts.",
             )
-        val response = parseResponse(responseFrame)
+        val response = parseResponse(confirmedResponseFrame)
 
         if (response.boxAddress != boxAddress || response.nodeAddress != nodeAddress) {
             throw IllegalStateException("Cabinet reply address does not match the requested box/node.")
@@ -116,14 +126,14 @@ class KeyCabinetProtocol(
 
         return CabinetTransaction(
             requestFrame = requestFrame,
-            responseFrame = responseFrame,
+            responseFrame = confirmedResponseFrame,
             response = response,
         )
     }
 
     private fun requireKeyNode(nodeAddress: Int): Int {
-        require(nodeAddress in 0..255) {
-            "Raw node address must be from 0 to 255."
+        require(nodeAddress in 0..MAX_KEY_NODE_ADDRESS) {
+            "Raw node address must be from 0 to $MAX_KEY_NODE_ADDRESS."
         }
         return nodeAddress
     }

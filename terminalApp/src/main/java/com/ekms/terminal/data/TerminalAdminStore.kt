@@ -37,9 +37,14 @@ class TerminalAdminStore(context: Context) {
         private const val KEY_USERS = "managed_users"
         private const val KEY_KEYS = "managed_keys"
         private const val KEY_ACCESS_GRANTS = "managed_access_grants"
+        private const val KEY_CABINET_SETTINGS = "cabinet_settings"
         private const val PASSWORD_ITERATIONS = 120_000
         private const val SALT_BYTES = 16
         private const val HASH_BYTES = 32
+        private const val MIN_KEY_NODE_COUNT = 1
+        /** Per docs/Key Cabinet Communication Protocol.md §7.1: key nodes are 1-127. */
+        private const val MAX_KEY_NODE_COUNT = 127
+        private const val DEFAULT_KEY_NODE_COUNT = 24
     }
 
     private val preferences: SharedPreferences =
@@ -64,6 +69,7 @@ class TerminalAdminStore(context: Context) {
         ) + readUsers(),
         keys = readKeys(),
         accessGrants = readAccessGrants(),
+        cabinetSettings = readCabinetSettings(),
     )
 
     @Synchronized
@@ -199,8 +205,8 @@ class TerminalAdminStore(context: Context) {
         if (boxAddress !in 1..255) {
             return StoreResult.Error("Box Address must be from 1 to 255.")
         }
-        if (nodeAddress !in 0..255) {
-            return StoreResult.Error("Raw Node Address must be from 0 to 255.")
+        if (nodeAddress !in 0..MAX_KEY_NODE_COUNT) {
+            return StoreResult.Error("Raw Node Address must be from 0 to $MAX_KEY_NODE_COUNT.")
         }
 
         val normalizedUid = rawFobUid
@@ -270,6 +276,29 @@ class TerminalAdminStore(context: Context) {
         }
         saveAccessGrants(existingGrants.filterNot { it.id == grantId })
         return StoreResult.Success(Unit)
+    }
+
+    /**
+     * Section 4 (Admin Menu) settings for this exact cabinet: name, ID,
+     * server address, activation code, configured key node count, and the
+     * three toggles Sections 3/4 read (Key Return Certification, return/
+     * retrieval video). Ethernet MAC address is display-only and is not
+     * part of this stored settings record; see [readEthernetMacAddress].
+     */
+    @Synchronized
+    fun updateCabinetSettings(settings: TerminalCabinetSettings): StoreResult<TerminalCabinetSettings> {
+        if (settings.configuredKeyNodeCount !in MIN_KEY_NODE_COUNT..MAX_KEY_NODE_COUNT) {
+            return StoreResult.Error("Key node setting must be from $MIN_KEY_NODE_COUNT to $MAX_KEY_NODE_COUNT.")
+        }
+
+        val normalized = settings.copy(
+            cabinetName = settings.cabinetName.trim(),
+            cabinetId = settings.cabinetId.trim(),
+            serverAddress = settings.serverAddress.trim(),
+            activationCode = settings.activationCode.trim(),
+        )
+        saveCabinetSettings(normalized)
+        return StoreResult.Success(normalized)
     }
 
     private fun ensureSeeded() {
@@ -367,6 +396,41 @@ class TerminalAdminStore(context: Context) {
         preferences.edit().putString(KEY_ACCESS_GRANTS, items.toString()).apply()
     }
 
+    private fun readCabinetSettings(): TerminalCabinetSettings {
+        val encoded = preferences.getString(KEY_CABINET_SETTINGS, null)
+            ?: return TerminalCabinetSettings(configuredKeyNodeCount = DEFAULT_KEY_NODE_COUNT)
+        return runCatching {
+            val item = JSONObject(encoded)
+            TerminalCabinetSettings(
+                cabinetName = item.optString("cabinetName", ""),
+                cabinetId = item.optString("cabinetId", ""),
+                serverAddress = item.optString("serverAddress", ""),
+                activationCode = item.optString("activationCode", ""),
+                configuredKeyNodeCount = if (item.has("configuredKeyNodeCount")) {
+                    item.getInt("configuredKeyNodeCount")
+                } else {
+                    DEFAULT_KEY_NODE_COUNT
+                },
+                keyReturnCertificationEnabled = item.optBoolean("keyReturnCertificationEnabled", false),
+                returnKeyVideoEnabled = item.optBoolean("returnKeyVideoEnabled", false),
+                keyRetrievalVideoEnabled = item.optBoolean("keyRetrievalVideoEnabled", false),
+            )
+        }.getOrElse { TerminalCabinetSettings(configuredKeyNodeCount = DEFAULT_KEY_NODE_COUNT) }
+    }
+
+    private fun saveCabinetSettings(settings: TerminalCabinetSettings) {
+        val item = JSONObject()
+            .put("cabinetName", settings.cabinetName)
+            .put("cabinetId", settings.cabinetId)
+            .put("serverAddress", settings.serverAddress)
+            .put("activationCode", settings.activationCode)
+            .put("configuredKeyNodeCount", settings.configuredKeyNodeCount)
+            .put("keyReturnCertificationEnabled", settings.keyReturnCertificationEnabled)
+            .put("returnKeyVideoEnabled", settings.returnKeyVideoEnabled)
+            .put("keyRetrievalVideoEnabled", settings.keyRetrievalVideoEnabled)
+        preferences.edit().putString(KEY_CABINET_SETTINGS, item.toString()).apply()
+    }
+
     private fun <T> decodeArray(
         preferenceKey: String,
         decode: (JSONObject) -> T,
@@ -427,6 +491,19 @@ data class TerminalAdminSnapshot(
     val users: List<TerminalUser>,
     val keys: List<TerminalKey>,
     val accessGrants: List<TerminalAccessGrant>,
+    val cabinetSettings: TerminalCabinetSettings,
+)
+
+/** Smart Key Cabinet User Manual V2.1, Section 4 (Admin Menu) settings for this cabinet. */
+data class TerminalCabinetSettings(
+    val cabinetName: String = "",
+    val cabinetId: String = "",
+    val serverAddress: String = "",
+    val activationCode: String = "",
+    val configuredKeyNodeCount: Int = 24,
+    val keyReturnCertificationEnabled: Boolean = false,
+    val returnKeyVideoEnabled: Boolean = false,
+    val keyRetrievalVideoEnabled: Boolean = false,
 )
 
 data class TerminalUser(

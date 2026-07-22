@@ -68,8 +68,6 @@ These rules are enforced by convention across the codebase (see comments in `Api
 
 `docs/API_HANDOVER_SUPER_ADMIN V{1..4}.md` are dated snapshots of the API handover — V4 is the latest; don't edit older versions, add a new one instead if asked to revise the handover. `docs/WEB_PORTAL_WORKFLOW_HANDOVER.md` is the current living Website spec and includes an acceptance checklist — consult it before changing web portal workflow behavior.
 
-Add the following section to CLAUDE.md under an appropriate heading (e.g. "UX Baseline" or "Design Conventions"):
-
 ## Terminal App UX Baseline (STRICT — exact clone)
 
 terminalApp must replicate the Smart Key Cabinet User Manual V2.1 exactly.
@@ -135,3 +133,53 @@ What's DIFFERENT for webApp/mobileApp:
 Keep all of this logic (layout/list state, access grant rules, Recycle Bin
 timing, conflict data shape) in the `shared` module so webApp and
 terminalApp consume the same source of truth rather than reimplementing it.
+
+## Project Status
+
+### Completed
+- Step 1-3: shared policy/sync/Recycle Bin foundation, Super Admin Users &
+  Credentials, Sites & Terminals UI with cabinet-config validation
+- Step 4: Keys, cabinet slots, and access grants (ManagedKey/KeySlot/
+  AccessGrant + KeySlotAccessPolicy node-address validation), wired into
+  webApp and terminalApp
+- terminalApp UI/UX rebuilt to strictly match Smart Key Cabinet User
+  Manual V2.1 (see "Terminal App UX Baseline (STRICT)" section):
+  - Phase 1: Login screen (all 4 methods)
+  - Phase 2: Key retrieval (Layout/List toggle)
+  - Phase 3: Return flow
+  - Phase 4: Admin Menu (all 10 items)
+  - Phase 5: Settings wired to behavior (toggles actually function)
+- Phase 6: hardware frame protocol layer implemented in `shared`
+  (split-nibble encode/decode, CRC8, frame assembly/parsing), unit tested
+  against worked examples in
+  docs/Key_Cabinet_Communication_Protocol.md. No actual serial I/O yet —
+  this phase is pure protocol logic only.
+
+### Known issues / not yet resolved
+- Personnel management in webApp is currently a shallow free-text form
+  (no role picker, no email/site validation) since the old
+  UserManagementPolicy-based flow was deleted — needs rebuilding against
+  current architecture
+- Orphaned scaffold TerminalWorkflowModels.kt/TerminalWorkflowScreens.kt in
+  terminalApp — audited, found to NOT correctly match the manual (extra
+  confirmation steps, recording notice banners violating "never
+  user-facing", wrong terminology). Moved to reference-only, not merged:
+  see `terminalApp/reference/*.reference.kt.bak` (includes
+  `FobEnrollmentScreen.reference.kt.bak`, archived alongside it since it
+  depended on the same types) and `terminalApp/reference/README.md` for why.
+
+### Next steps (in order)
+- Phase 7: node command set + real serial I/O in terminalApp
+  (/dev/ttyS1, 19200 baud), including one-electromagnet-at-a-time lock
+- Phase 8: card reader implementation (/dev/ttyS2, 9600 baud, ASCII,
+  independent from node-level card reads)
+- Phase 9: wire real hardware into existing login/retrieval/return UI,
+  replacing stubbed calls
+- After hardware phases: rebuild Personnel management properly (see
+  Known issues above)
+
+### Reference
+- Hardware protocol: docs/Key_Cabinet_Communication_Protocol.md
+  (authoritative — read before any phase 7+ work)
+- Terminal UX baseline: Smart Key Cabinet User Manual V2.1 (STRICT clone,
+  color theme + first-start screensaver are the only allowed differences)

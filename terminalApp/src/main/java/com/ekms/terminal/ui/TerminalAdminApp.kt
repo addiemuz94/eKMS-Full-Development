@@ -37,6 +37,9 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.platform.LocalContext
+import com.ekms.shared.domain.KeySlot
+import com.ekms.shared.domain.KeySlotDemoData
+import com.ekms.shared.domain.ManagedKey
 import com.ekms.terminal.data.StoreResult
 import com.ekms.terminal.data.TerminalAccessGrant
 import com.ekms.terminal.data.TerminalAdminSnapshot
@@ -47,6 +50,7 @@ import com.ekms.terminal.data.TerminalUser
 import com.ekms.terminal.data.TerminalUserRole
 import com.ekms.terminal.hardware.CabinetHardwareController
 import com.ekms.terminal.hardware.CabinetHardwareState
+import com.ekms.terminal.hardware.KeyCabinetProtocol.Companion.MAX_KEY_NODE_ADDRESS
 import com.ekms.terminal.hardware.TerminalNfcReaderController
 import com.ekms.terminal.hardware.TerminalNfcReaderState
 import java.security.MessageDigest
@@ -76,6 +80,42 @@ fun TerminalAdminApp() {
     var capturedFob by remember { mutableStateOf<CapturedFob?>(null) }
     var notice by remember { mutableStateOf<String?>(null) }
     var pendingPhysicalAction by remember { mutableStateOf<PendingPhysicalAction?>(null) }
+
+    // Section 2 (key retrieval) reads the shared ManagedKey/KeySlot model, the
+    // same one the Website uses, rather than the terminal-local TerminalKey
+    // bootstrap type. There is no backend sync yet, so this terminal's own
+    // cabinet is represented by one fixed demo terminal until sync lands.
+    // configuredSlotCount is mutable because Section 4's "Key node setting"
+    // (Admin Menu) edits this same value, not a separate cosmetic copy.
+    var retrievalTerminal by remember { mutableStateOf(KeySlotDemoData.terminals.first()) }
+    val retrievalKeys = remember { KeySlotDemoData.keys() }
+    val retrievalSlots = remember { KeySlotDemoData.slots().filter { it.terminalId == retrievalTerminal.id } }
+    var takenKeyIds by remember { mutableStateOf(emptySet<String>()) }
+    var returnFlow by remember { mutableStateOf<ReturnFlow?>(null) }
+    var passwordChangeReturnRoute by remember { mutableStateOf(SuperAdminRoute.DASHBOARD) }
+
+    fun resolveDoorOpenState(): ReturnFlow.DoorOpen {
+        val key = resolveReturningKey(takenKeyIds, retrievalKeys)
+        val slot = key?.let { returningKey -> retrievalSlots.firstOrNull { it.managedKeyId == returningKey.id } }
+        return ReturnFlow.DoorOpen(key, slot)
+    }
+
+    fun startKeyCardReturn() {
+        // "Key Return Certification" is Section 4's Admin Menu toggle, persisted
+        // in TerminalAdminStore; Section 3's return flow only reacts to it.
+        returnFlow = if (snapshot.cabinetSettings.keyReturnCertificationEnabled) {
+            ReturnFlow.AwaitingCertification()
+        } else {
+            resolveDoorOpenState()
+        }
+    }
+
+    fun completeReturn(key: ManagedKey?) {
+        if (key != null) {
+            takenKeyIds = takenKeyIds - key.id
+        }
+        returnFlow = null
+    }
 
     fun refreshSnapshot() {
         snapshot = store.snapshot()
@@ -152,10 +192,35 @@ fun TerminalAdminApp() {
                 )
             },
         ) { padding ->
-            when (route) {
-                SuperAdminRoute.LOGIN -> LoginScreen(
+            val activeReturnFlow = returnFlow
+            when {
+                // Section 3 (key return) is reached directly from the login/home
+                // screen by a key-card swipe, never through a menu — so it takes
+                // over here regardless of `route`, and returns to whatever route
+                // was already showing once it completes.
+                activeReturnFlow is ReturnFlow.AwaitingCertification -> TerminalLoginScreen(
                     padding = padding,
-                    onLogin = { username, password ->
+                    onAccountLogin = { username, password ->
+                        when (val result = store.authenticate(username, password)) {
+                            is StoreResult.Success -> returnFlow = resolveDoorOpenState()
+                            is StoreResult.Error -> returnFlow = ReturnFlow.AwaitingCertification(loginError = result.message)
+                        }
+                    },
+                    loginError = activeReturnFlow.loginError,
+                )
+
+                activeReturnFlow is ReturnFlow.DoorOpen -> TerminalKeyReturnScreen(
+                    padding = padding,
+                    key = activeReturnFlow.key,
+                    slot = activeReturnFlow.slot,
+                    videoRecordingEnabled = snapshot.cabinetSettings.returnKeyVideoEnabled,
+                    onCompleted = { completeReturn(activeReturnFlow.key) },
+                )
+
+                else -> when (route) {
+                SuperAdminRoute.LOGIN -> TerminalLoginScreen(
+                    padding = padding,
+                    onAccountLogin = { username, password ->
                         when (val result = store.authenticate(username, password)) {
                             is StoreResult.Success -> {
                                 session = result.value
@@ -163,14 +228,15 @@ fun TerminalAdminApp() {
                                 route = when {
                                     result.value.requiresPasswordChange -> SuperAdminRoute.CHANGE_PASSWORD
                                     result.value.isSuperAdmin -> SuperAdminRoute.DASHBOARD
-                                    else -> SuperAdminRoute.USER_HOME
+                                    else -> SuperAdminRoute.KEY_RETRIEVAL
                                 }
                             }
 
                             is StoreResult.Error -> notice = result.message
                         }
                     },
-                    notice = notice,
+                    loginError = notice,
+                    onKeyCardSwiped = ::startKeyCardReturn,
                 )
 
                 SuperAdminRoute.CHANGE_PASSWORD -> ChangePasswordScreen(
@@ -184,7 +250,7 @@ fun TerminalAdminApp() {
                                     refreshSnapshot()
                                     session = session?.copy(requiresPasswordChange = false)
                                     notice = "Super Admin password changed. You can now enroll users and keys."
-                                    route = SuperAdminRoute.DASHBOARD
+                                    route = passwordChangeReturnRoute
                                 }
 
                                 is StoreResult.Error -> notice = result.message
@@ -212,6 +278,8 @@ fun TerminalAdminApp() {
                             onEnrollUser = { openAdmin(SuperAdminRoute.ENROLL_USER) },
                             onEnrollKey = { openAdmin(SuperAdminRoute.ENROLL_KEY) },
                             onOpenAccessGrants = { openAdmin(SuperAdminRoute.ACCESS_GRANTS) },
+                            onOpenKeyRetrieval = { openAdmin(SuperAdminRoute.KEY_RETRIEVAL) },
+                            onOpenAdminMenu = { openAdmin(SuperAdminRoute.ADMIN_MENU) },
                             onOpenHardware = { openAdmin(SuperAdminRoute.HARDWARE) },
                             onSignOut = ::signOut,
                         )
@@ -295,6 +363,32 @@ fun TerminalAdminApp() {
                     },
                 )
 
+                SuperAdminRoute.ADMIN_MENU -> TerminalAdminMenuScreen(
+                    padding = padding,
+                    settings = snapshot.cabinetSettings,
+                    highestRegisteredNodeAddress = retrievalSlots
+                        .filter { it.managedKeyId != null }
+                        .maxOfOrNull { it.nodeAddress },
+                    notice = notice,
+                    onBack = { route = SuperAdminRoute.DASHBOARD },
+                    onSave = { updatedSettings ->
+                        when (val result = store.updateCabinetSettings(updatedSettings)) {
+                            is StoreResult.Success -> {
+                                refreshSnapshot()
+                                retrievalTerminal = retrievalTerminal.copy(configuredSlotCount = result.value.configuredKeyNodeCount)
+                                notice = "Admin Menu settings saved."
+                            }
+
+                            is StoreResult.Error -> notice = result.message
+                        }
+                    },
+                    onOpenPasswordChange = {
+                        passwordChangeReturnRoute = SuperAdminRoute.ADMIN_MENU
+                        notice = null
+                        route = SuperAdminRoute.CHANGE_PASSWORD
+                    },
+                )
+
                 SuperAdminRoute.HARDWARE -> HardwareControlScreen(
                     padding = padding,
                     hardwareState = hardwareState,
@@ -335,11 +429,27 @@ fun TerminalAdminApp() {
                     },
                 )
 
-                SuperAdminRoute.USER_HOME -> UserHomeScreen(
-                    padding = padding,
-                    session = session,
-                    onSignOut = ::signOut,
-                )
+                SuperAdminRoute.KEY_RETRIEVAL -> {
+                    val activeSession = session
+                    TerminalKeyRetrievalScreen(
+                        padding = padding,
+                        terminal = retrievalTerminal,
+                        keys = retrievalKeys,
+                        slots = retrievalSlots,
+                        takenKeyIds = takenKeyIds,
+                        videoRecordingEnabled = snapshot.cabinetSettings.keyRetrievalVideoEnabled,
+                        backLabel = if (activeSession?.isSuperAdmin == true) "Back to dashboard" else "Sign out",
+                        onBack = {
+                            if (activeSession?.isSuperAdmin == true) {
+                                route = SuperAdminRoute.DASHBOARD
+                            } else {
+                                signOut()
+                            }
+                        },
+                        onTakeKey = { key: ManagedKey -> takenKeyIds = takenKeyIds + key.id },
+                    )
+                }
+                }
             }
         }
 
@@ -363,56 +473,6 @@ fun TerminalAdminApp() {
                         Text("Cancel")
                     }
                 },
-            )
-        }
-    }
-}
-
-@Composable
-private fun LoginScreen(
-    padding: PaddingValues,
-    onLogin: (String, String) -> Unit,
-    notice: String?,
-) {
-    var username by remember { mutableStateOf(TerminalAdminStore.SUPER_ADMIN_USERNAME) }
-    var password by remember { mutableStateOf("") }
-
-    TerminalPage(padding) {
-        HeaderCard(
-            title = "Terminal access",
-            description = "The Terminal starts with one preset Super Admin account only. " +
-                    "After first sign-in, the Super Admin changes the initial password and enrolls all other users and keys.",
-        )
-        notice?.let { message -> SuperAdminNoticeCard(message) }
-        OutlinedTextField(
-            value = username,
-            onValueChange = { username = it },
-            modifier = Modifier.fillMaxWidth(),
-            label = { Text("Username") },
-            singleLine = true,
-        )
-        OutlinedTextField(
-            value = password,
-            onValueChange = { password = it },
-            modifier = Modifier.fillMaxWidth(),
-            label = { Text("Password") },
-            singleLine = true,
-            visualTransformation = PasswordVisualTransformation(),
-        )
-        Button(
-            onClick = { onLogin(username, password) },
-            modifier = Modifier.fillMaxWidth(),
-            enabled = username.isNotBlank() && password.isNotBlank(),
-        ) {
-            Text("Sign in")
-        }
-        Card(
-            modifier = Modifier.fillMaxWidth(),
-            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer),
-        ) {
-            Text(
-                text = "First sign-in requires a Super Admin password change before any user, key or hardware action is available.",
-                modifier = Modifier.padding(16.dp),
             )
         }
     }
@@ -456,6 +516,8 @@ private fun SuperAdminDashboardScreen(
     onEnrollUser: () -> Unit,
     onEnrollKey: () -> Unit,
     onOpenAccessGrants: () -> Unit,
+    onOpenKeyRetrieval: () -> Unit,
+    onOpenAdminMenu: () -> Unit,
     onOpenHardware: () -> Unit,
     onSignOut: () -> Unit,
 ) {
@@ -481,6 +543,12 @@ private fun SuperAdminDashboardScreen(
         }
         Button(onClick = onOpenAccessGrants, modifier = Modifier.fillMaxWidth()) {
             Text("Manage access grants")
+        }
+        Button(onClick = onOpenKeyRetrieval, modifier = Modifier.fillMaxWidth()) {
+            Text("Take keys")
+        }
+        OutlinedButton(onClick = onOpenAdminMenu, modifier = Modifier.fillMaxWidth()) {
+            Text("Admin Menu")
         }
         OutlinedButton(onClick = onOpenHardware, modifier = Modifier.fillMaxWidth()) {
             Text("Cabinet hardware control")
@@ -678,7 +746,7 @@ private fun EnrollKeyScreen(
     var scanGeneration by remember { mutableStateOf(0) }
     var mismatchCount by remember { mutableStateOf(0) }
     val nodeAddress = nodeAddressText.toIntOrNull()
-    val canUseSelectedNode = nodeAddress != null && nodeAddress in 0..255
+    val canUseSelectedNode = nodeAddress != null && nodeAddress in 0..MAX_KEY_NODE_ADDRESS
     val slotAlreadyRegistered = canUseSelectedNode && keys.any { key ->
         key.boxAddress == hardwareState.boxAddress && key.nodeAddress == nodeAddress
     }
@@ -720,7 +788,7 @@ private fun EnrollKeyScreen(
     fun prepareSelectedFob() {
         val selectedNode = nodeAddress
         if (!canUseSelectedNode || selectedNode == null) {
-            statusMessage = "Enter a raw node address from 0 to 255."
+            statusMessage = "Enter a raw node address from 0 to $MAX_KEY_NODE_ADDRESS."
             return
         }
         if (slotAlreadyRegistered) {
@@ -880,7 +948,7 @@ private fun EnrollKeyScreen(
                         nodeAddressText = value.filter { character -> character.isDigit() }
                     },
                     modifier = Modifier.fillMaxWidth(),
-                    label = { Text("Raw Node Address (0–255)") },
+                    label = { Text("Raw Node Address (0–$MAX_KEY_NODE_ADDRESS)") },
                     singleLine = true,
                     isError = nodeAddressText.isNotBlank() && (!canUseSelectedNode || slotAlreadyRegistered),
                     supportingText = {
@@ -1035,7 +1103,7 @@ private fun HardwareControlScreen(
     val nodeAddress = nodeAddressText.toIntOrNull()
     val validConnection = portPath.isNotBlank() && baudRate != null && baudRate > 0 &&
             boxAddress != null && boxAddress in 1..255
-    val validNode = nodeAddress != null && nodeAddress in 0..255
+    val validNode = nodeAddress != null && nodeAddress in 0..MAX_KEY_NODE_ADDRESS
 
     TerminalPage(padding) {
         BackButton(onBack)
@@ -1105,7 +1173,7 @@ private fun HardwareControlScreen(
                 value = nodeAddressText,
                 onValueChange = { nodeAddressText = it.filter { character -> character.isDigit() } },
                 modifier = Modifier.fillMaxWidth(),
-                label = { Text("Raw Node Address (0–255)") },
+                label = { Text("Raw Node Address (0–$MAX_KEY_NODE_ADDRESS)") },
                 supportingText = {
                     Text(
                         "Use the configured protocol address exactly. Door commands always send node 0 internally.",
@@ -1177,25 +1245,7 @@ private fun HardwareControlScreen(
 }
 
 @Composable
-private fun UserHomeScreen(
-    padding: PaddingValues,
-    session: TerminalSession?,
-    onSignOut: () -> Unit,
-) {
-    TerminalPage(padding) {
-        HeaderCard(
-            title = "Account enrolled",
-            description = (session?.displayName ?: "User") + " has a Terminal account. " +
-                    "Credential enrollment and permission-based live key pickup will be enabled only after their access rules are configured by the Super Admin.",
-        )
-        TextButton(onClick = onSignOut, modifier = Modifier.fillMaxWidth()) {
-            Text("Sign out")
-        }
-    }
-}
-
-@Composable
-private fun TerminalPage(
+internal fun TerminalPage(
     padding: PaddingValues,
     content: @Composable () -> Unit,
 ) {
@@ -1225,7 +1275,7 @@ private fun TerminalPage(
 }
 
 @Composable
-private fun HeaderCard(
+internal fun HeaderCard(
     title: String,
     description: String,
 ) {
@@ -1243,7 +1293,7 @@ private fun HeaderCard(
 }
 
 @Composable
-private fun SuperAdminNoticeCard(message: String) {
+internal fun SuperAdminNoticeCard(message: String) {
     Card(
         modifier = Modifier.fillMaxWidth(),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer),
@@ -1285,7 +1335,7 @@ private fun PasswordField(
 }
 
 @Composable
-private fun BackButton(
+internal fun BackButton(
     onBack: () -> Unit,
     enabled: Boolean = true,
 ) {
@@ -1379,8 +1429,9 @@ private enum class SuperAdminRoute {
     ENROLL_USER,
     ENROLL_KEY,
     ACCESS_GRANTS,
+    KEY_RETRIEVAL,
+    ADMIN_MENU,
     HARDWARE,
-    USER_HOME,
 }
 
 private data class CapturedFob(
@@ -1395,3 +1446,9 @@ private data class PendingPhysicalAction(
     val message: String,
     val onConfirm: () -> Unit,
 )
+
+/** Section 3 (key return) state, driven by a key-card swipe rather than `route`. */
+private sealed interface ReturnFlow {
+    data class AwaitingCertification(val loginError: String? = null) : ReturnFlow
+    data class DoorOpen(val key: ManagedKey?, val slot: KeySlot?) : ReturnFlow
+}

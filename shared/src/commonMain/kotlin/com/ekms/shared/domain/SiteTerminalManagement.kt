@@ -46,7 +46,8 @@ object SiteTerminalManagementPolicy {
     const val MIN_BOX_ADDRESS = 1
     const val MAX_BOX_ADDRESS = 255
     const val MIN_NODE_ADDRESS = 1
-    const val MAX_NODE_ADDRESS = 255
+    /** Per docs/Key Cabinet Communication Protocol.md §7.1: key nodes are 1-127. */
+    const val MAX_NODE_ADDRESS = 127
     const val DEFAULT_CABINET_SERIAL_PORT = "/dev/ttyS1"
     const val DEFAULT_CABINET_BAUD_RATE = 19_200
 

@@ -65,7 +65,7 @@ data class Terminal(
     val boxAddress: Int,
     val serialNumber: String? = null,
     val lifecycle: LifecycleMetadata,
-    /** Maximum configured key-node count for this cabinet. Valid node addresses are 1–255. */
+    /** Maximum configured key-node count for this cabinet. Valid node addresses are 1–127. */
     val configuredSlotCount: Int = 0,
     /** Android Terminal-only serial details; Web and Mobile may display but never open this port. */
     val cabinetSerialPort: String? = null,

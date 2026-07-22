@@ -8,6 +8,13 @@
 `shared/src/commonMain/kotlin/com/ekms/shared/domain/SiteTerminalManagement.kt`,
 `shared/src/commonMain/kotlin/com/ekms/shared/domain/KeySlotManagement.kt`
 
+**Authoritative vendor spec:** `docs/Key Cabinet Communication Protocol.md` (note the
+spaces in that filename — a different document from this one) is the full
+supplier protocol spec: exact byte-level frame examples for every command,
+the card-reader (`/dev/ttyS2`) protocol, and the notes in its §7 and §10.4
+that this document summarizes below. When the two disagree, that document
+wins — this one is a project-level index onto it, not a competing source.
+
 ## Purpose
 
 This document is the single reference for the **Box Address + Node Address**
@@ -21,7 +28,7 @@ module may invent its own offset or shorthand.
 | Term | Range | Meaning |
 |---|---:|---|
 | Box Address | 1–255 | Identifies one physical cabinet unit on the serial bus. One eKMS `Terminal` record owns exactly one Box Address (`Terminal.boxAddress`). |
-| Node Address | 0–255 | Identifies one physical position inside that cabinet. Node `0` is always the cabinet **door** and is never a key slot. Key nodes are `1..configuredSlotCount`, where `configuredSlotCount` is the terminal's registered key-node capacity (`Terminal.configuredSlotCount`). |
+| Node Address | 0–127 | Identifies one physical position inside that cabinet. Node `0` is always the cabinet **door** and is never a key slot. Key nodes are `1..configuredSlotCount`, where `configuredSlotCount` is the terminal's registered key-node capacity (`Terminal.configuredSlotCount`), capped at 127 per the vendor spec §7.1. |
 
 A physical key is therefore located by the pair **(Box Address, Node
 Address)** — in the domain model this is **(Terminal, `KeySlot.nodeAddress`)**,
@@ -51,8 +58,27 @@ Mobile never construct or receive a raw frame.
   node address or command in the decoded reply does not match the request, or
   if the CRC does not match.
 - Key-node commands (0x11–0x1A, 0x15–0x17) require a node address in
-  `0..255`; door commands (`checkDoorStatus`, `ejectDoor`) always address
-  node `0` internally (`KeyCabinetProtocol.DOOR_NODE_ADDRESS`).
+  `0..127` (`KeyCabinetProtocol.MAX_KEY_NODE_ADDRESS`); door commands
+  (`checkDoorStatus`, `ejectDoor`) always address node `0` internally
+  (`KeyCabinetProtocol.DOOR_NODE_ADDRESS`).
+- Timeout and retry (vendor spec §7.4): 500 ms per attempt, up to 3 attempts
+  total on no response, before raising an error —
+  `KeyCabinetProtocol.RESPONSE_TIMEOUT_MILLIS` / `MAX_SEND_ATTEMPTS`.
+- **Electromagnet direction, confirmed by field verification, not the
+  vendor spec's generic English labels:** `KeyCabinetProtocol.unlockKeyFob()`
+  sends **0x13 (Engage)** and physically *unlocks/releases* the key peg for
+  pickup; `lockKeyFob()` sends **0x14 (Release)** and physically *locks/
+  secures* the peg after return. The vendor document's plain-English
+  command names ("Engage = lock", "Release = unlock") describe the opposite
+  of this cabinet's verified physical behavior — use the field-verified
+  mapping above, not the vendor doc's literal wording, for this product.
+- **Electromagnet concurrency (vendor spec §10.4):** only one electromagnet
+  may be engaged at a time across the whole cabinet — engaging a second one
+  before the first is released risks hardware failure from insufficient
+  current. No code currently enforces this cabinet-wide invariant; the
+  existing `busy` flag in `CabinetHardwareController` only serializes command
+  *dispatch*, not the engaged/released *state* of each node. This must be
+  addressed before any flow that can open more than one node in a session.
 
 ## Software validation layers
 
