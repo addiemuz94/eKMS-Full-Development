@@ -40,6 +40,7 @@ import androidx.compose.ui.platform.LocalContext
 import com.ekms.shared.domain.KeySlot
 import com.ekms.shared.domain.KeySlotDemoData
 import com.ekms.shared.domain.ManagedKey
+import com.ekms.shared.protocol.KeyCabinetLink.Companion.MAX_KEY_NODE_ADDRESS
 import com.ekms.terminal.data.StoreResult
 import com.ekms.terminal.data.TerminalAccessGrant
 import com.ekms.terminal.data.TerminalAdminSnapshot
@@ -50,7 +51,7 @@ import com.ekms.terminal.data.TerminalUser
 import com.ekms.terminal.data.TerminalUserRole
 import com.ekms.terminal.hardware.CabinetHardwareController
 import com.ekms.terminal.hardware.CabinetHardwareState
-import com.ekms.terminal.hardware.KeyCabinetProtocol.Companion.MAX_KEY_NODE_ADDRESS
+import com.ekms.terminal.hardware.PublicCardReaderController
 import com.ekms.terminal.hardware.TerminalNfcReaderController
 import com.ekms.terminal.hardware.TerminalNfcReaderState
 import java.security.MessageDigest
@@ -91,8 +92,29 @@ fun TerminalAdminApp() {
     val retrievalKeys = remember { KeySlotDemoData.keys() }
     val retrievalSlots = remember { KeySlotDemoData.slots().filter { it.terminalId == retrievalTerminal.id } }
     var takenKeyIds by remember { mutableStateOf(emptySet<String>()) }
+    var pendingTakeKeyId by remember { mutableStateOf<String?>(null) }
     var returnFlow by remember { mutableStateOf<ReturnFlow?>(null) }
     var passwordChangeReturnRoute by remember { mutableStateOf(SuperAdminRoute.DASHBOARD) }
+
+    fun takeKey(key: ManagedKey) {
+        val nodeAddress = retrievalSlots.firstOrNull { it.managedKeyId == key.id }?.nodeAddress
+        if (nodeAddress == null) {
+            notice = "${key.displayName} is not assigned to a cabinet slot."
+            return
+        }
+        pendingTakeKeyId = key.id
+        hardwareController.releaseKeyForPickup(
+            nodeAddress = nodeAddress,
+            onReleased = {
+                pendingTakeKeyId = null
+                takenKeyIds = takenKeyIds + key.id
+            },
+            onFailure = { message ->
+                pendingTakeKeyId = null
+                notice = message
+            },
+        )
+    }
 
     fun resolveDoorOpenState(): ReturnFlow.DoorOpen {
         val key = resolveReturningKey(takenKeyIds, retrievalKeys)
@@ -116,6 +138,20 @@ fun TerminalAdminApp() {
         }
         returnFlow = null
     }
+
+    // Section 9's public card-swipe reader — a wholly separate device/protocol
+    // from the node-level 0x15/0x17 card reads (section 9.1/9.8/10.4: "must
+    // not be mixed"). It only feeds the key-card-swipe return trigger below;
+    // it does not know a card's raw UID belongs to a *personnel* card versus
+    // a *key* card, since no such registry exists yet (same stubbing note as
+    // phase 1/3) — see TerminalLoginScreen's doc comment.
+    val cardReaderController = remember {
+        PublicCardReaderController(
+            onStateChanged = {},
+            onCardDetected = { _ -> startKeyCardReturn() },
+        )
+    }
+    val isIdleAtLogin = route == SuperAdminRoute.LOGIN && returnFlow == null
 
     fun refreshSnapshot() {
         snapshot = store.snapshot()
@@ -162,6 +198,16 @@ fun TerminalAdminApp() {
 
     DisposableEffect(hardwareController) {
         onDispose { hardwareController.close() }
+    }
+
+    // Section 10.3-10.4: the reader monitor starts automatically once idle at
+    // the login screen and stops automatically otherwise — including when
+    // this composable (the whole app) leaves composition, i.e. app exit.
+    LaunchedEffect(isIdleAtLogin) {
+        if (isIdleAtLogin) cardReaderController.start() else cardReaderController.stop()
+    }
+    DisposableEffect(cardReaderController) {
+        onDispose { cardReaderController.close() }
     }
 
     MaterialTheme(
@@ -214,6 +260,8 @@ fun TerminalAdminApp() {
                     key = activeReturnFlow.key,
                     slot = activeReturnFlow.slot,
                     videoRecordingEnabled = snapshot.cabinetSettings.returnKeyVideoEnabled,
+                    onBeginReturn = hardwareController::beginKeyReturn,
+                    onAwaitInsertion = hardwareController::waitForKeyInserted,
                     onCompleted = { completeReturn(activeReturnFlow.key) },
                 )
 
@@ -313,7 +361,7 @@ fun TerminalAdminApp() {
                     hardwareState = hardwareState,
                     notice = notice,
                     onBack = {
-                        hardwareController.stopKeyEnrollmentMonitoring()
+                        hardwareController.stopMonitoring()
                         route = SuperAdminRoute.DASHBOARD
                     },
                     onOpenEnrollmentSession = hardwareController::openKeyEnrollmentSession,
@@ -331,7 +379,7 @@ fun TerminalAdminApp() {
                         result
                     },
                     onMonitorReturnedFob = hardwareController::waitForReturnedKeyFob,
-                    onStopMonitoring = hardwareController::stopKeyEnrollmentMonitoring,
+                    onStopMonitoring = hardwareController::stopMonitoring,
                 )
 
                 SuperAdminRoute.ACCESS_GRANTS -> AccessGrantsScreen(
@@ -437,6 +485,7 @@ fun TerminalAdminApp() {
                         keys = retrievalKeys,
                         slots = retrievalSlots,
                         takenKeyIds = takenKeyIds,
+                        pendingKeyId = pendingTakeKeyId,
                         videoRecordingEnabled = snapshot.cabinetSettings.keyRetrievalVideoEnabled,
                         backLabel = if (activeSession?.isSuperAdmin == true) "Back to dashboard" else "Sign out",
                         onBack = {
@@ -446,7 +495,7 @@ fun TerminalAdminApp() {
                                 signOut()
                             }
                         },
-                        onTakeKey = { key: ManagedKey -> takenKeyIds = takenKeyIds + key.id },
+                        onTakeKey = ::takeKey,
                     )
                 }
                 }

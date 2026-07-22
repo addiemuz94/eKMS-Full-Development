@@ -20,8 +20,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import com.ekms.shared.protocol.KeyCabinetLink.Companion.MAX_KEY_NODE_ADDRESS
 import com.ekms.terminal.data.TerminalCabinetSettings
-import com.ekms.terminal.hardware.KeyCabinetProtocol.Companion.MAX_KEY_NODE_ADDRESS
 import com.ekms.terminal.hardware.readEthernetMacAddress
 
 /**

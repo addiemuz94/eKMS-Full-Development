@@ -38,14 +38,23 @@ import com.ekms.terminal.data.TerminalAdminStore
  * key directly instead of logging in), account/password, a Face Recognition
  * button, and a Fingerprint Recognition button.
  *
- * Personnel card swipe is still a passive, inert reader zone: matching a
- * swiped personnel card to a signed-in user has no data model yet. Key card
- * swipe now calls [onKeyCardSwiped] directly into Section 3's return flow —
- * see [TerminalKeyReturnScreen] — when the caller is the idle/login screen;
- * pass null to keep it inert (used when this screen is reused as the
- * return flow's own certification-login step, where a nested swipe would
- * be meaningless). Real card-reader hardware is still not wired to either
- * panel; see PublicCardReaderController for that future integration.
+ * Key card swipe is now real: `TerminalAdminApp` starts the section 9
+ * public card-swipe reader (`PublicCardReaderController`, `/dev/ttyS2`)
+ * whenever this screen is idling at login, and a detected card calls
+ * [onKeyCardSwiped] into section 3's return flow — see
+ * [TerminalKeyReturnScreen]. [onKeyCardSwiped] is also wired to a tap on
+ * this panel, so the flow is testable with no reader attached. Pass null to
+ * keep the panel inert (used when this screen is reused as the return
+ * flow's own certification-login step, where a nested swipe would be
+ * meaningless).
+ *
+ * Personnel card swipe is still a passive, inert reader zone, and — unlike
+ * key card — this is not just a deferred hardware hookup: the section 9
+ * reader reports a raw card UID with no notion of *which* card category it
+ * belongs to, and there is still no registry mapping a personnel card's UID
+ * to a signed-in user (the same gap phase 3 flagged for key cards, still
+ * unresolved for personnel cards specifically). Wiring this panel requires
+ * that data-model decision first, not just calling the same reader again.
  * Face Recognition and Fingerprint Recognition are disabled buttons until
  * their hardware bridge lands. This screen adds no confirmation step,
  * dialog, or notice beyond a real account/password login error.

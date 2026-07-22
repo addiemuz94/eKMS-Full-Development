@@ -46,7 +46,7 @@ Open the project in Android Studio at the repo root (not a module subfolder) wit
 
 These rules are enforced by convention across the codebase (see comments in `ApiContracts.kt` and `AdminModels.kt`) — preserve them in any change:
 
-1. **Only the Android Terminal touches cabinet hardware.** Website and Mobile must never open a serial port, send a cabinet command/frame, or perform reader/NFC/biometric capture. `terminalApp/src/main/java/com/ekms/terminal/hardware/` is the only place serial I/O happens (`KeyCabinetProtocol.kt` implements the supplier's split-nibble/CRC8 protocol over `/dev/ttyS1` at 19200 baud).
+1. **Only the Android Terminal touches cabinet hardware.** Website and Mobile must never open a serial port, send a cabinet command/frame, or perform reader/NFC/biometric capture. The split-nibble/CRC8 frame protocol and full node command set (`KeyCabinetLink`, plus `SplitNibbleCodec`/`KeyCabinetCrc8`/`KeyCabinetFrame`) live in `shared/.../protocol/` as pure Kotlin with no serial dependency, so they're unit-testable without hardware — but only `terminalApp/src/main/java/com/ekms/terminal/hardware/` (`AndroidSerialTransport`, `CabinetHardwareController`) may actually open `/dev/ttyS1`/`/dev/ttyS2` and drive them.
 2. **No raw credential material ever leaves the Terminal.** NFC UIDs, fingerprint/face templates, and Digital Key secrets are never represented in shared DTOs or sent to Website/Mobile — only an opaque `fobEnrollmentReference`/enrollment state. See `ManagedKey.fobEnrollmentReference` and `FobEnrollmentResponse` in `shared`.
 3. **Every physical key-node address is canonical.** Node address `0` is always the door; key nodes are addresses within `1..configuredSlotCount`. Never apply a hidden UI +1/-1 conversion (explicitly called out on `KeySlot.nodeAddress` and `KeySlotUpsertRequest.nodeAddress`).
 4. **All mutations are revision-safe.** Update/PATCH-style requests carry `expectedRevision`; the backend (not yet built) is expected to reject stale writes rather than silently overwrite.
@@ -60,8 +60,9 @@ These rules are enforced by convention across the codebase (see comments in `Api
 - `shared/.../policy/` — business rules as pure functions/objects over domain types (e.g. `RecycleBinPolicy`).
 - `shared/.../sync/` — offline-change and conflict-resolution DTOs plus `ConflictReviewPolicy`.
 - `shared/.../api/ApiContracts.kt` — `ApiPaths` (every REST endpoint name) and every request/response DTO. Treat this file as the contract between all three apps and the future backend; when adding a feature, extend this file first.
+- `shared/.../protocol/` — the Key Cabinet Communication Protocol's frame layer (`SplitNibbleCodec`, `KeyCabinetCrc8`, `KeyCabinetFrame`/`KeyCabinetFrameCodec`) and command driver (`KeyCabinetLink`, `SerialTransport`), all pure Kotlin with unit tests against the vendor doc's worked examples (`shared/commonTest/.../protocol/`, including `FakeSerialTransport` for hardware-free testing). No serial I/O lives here — see boundary #1.
 - `webApp/src/wasmJsMain/kotlin/com/ekms/web/` — portal screens/models, one `*Screen.kt`/`*Models.kt` pair per workflow area (see the supplier-workflow-to-screen mapping table in `docs/WEB_PORTAL_WORKFLOW_HANDOVER.md`). Sample/in-memory data here stands in for the backend and must eventually be replaced by real API calls.
-- `terminalApp/src/main/java/com/ekms/terminal/hardware/` — cabinet serial protocol, gateway/controller layers, NFC/fob enrollment; `terminalApp/.../ui/` — Terminal-side admin and enrollment screens; `terminalApp/.../data/TerminalAdminStore.kt` — local terminal-side state/outbox.
+- `terminalApp/src/main/java/com/ekms/terminal/hardware/` — `AndroidSerialTransport` (implements `shared`'s `SerialTransport` against the vendor serial AAR), `CabinetHardwareController` (owns the connection, background executor, and guided enrolment/return flows on top of `KeyCabinetLink`), plus the separate `/dev/ttyS2` public-card-reader path (`PublicM1CardReader`/`PublicCardReaderController`) and NFC/fob enrollment; `terminalApp/.../ui/` — Terminal-side admin and enrollment screens; `terminalApp/.../data/TerminalAdminStore.kt` — local terminal-side state/outbox.
 - `mobileApp/src/main/java/com/ekms/mobile/` — currently a minimal Super Admin companion shell.
 
 ## Working in `docs/`
@@ -151,15 +152,49 @@ terminalApp consume the same source of truth rather than reimplementing it.
   - Phase 5: Settings wired to behavior (toggles actually function)
 - Phase 6: hardware frame protocol layer implemented in `shared`
   (split-nibble encode/decode, CRC8, frame assembly/parsing), unit tested
-  against worked examples in
-  docs/Key_Cabinet_Communication_Protocol.md. No actual serial I/O yet —
-  this phase is pure protocol logic only.
+  against worked examples in the vendor spec. Pure protocol logic only, no
+  serial I/O.
+- Phase 7: real serial connection to key nodes. `shared/.../protocol/`
+  gained `SerialTransport` (the minimal transport interface) and
+  `KeyCabinetLink` (the full node command set from the appendix table,
+  500 ms/3-attempt timeout+retry, and the section 10.4
+  one-electromagnet-at-a-time guard — `engageElectromagnet` throws
+  `ElectromagnetConcurrencyException` instead of transmitting if a
+  different node is already engaged), unit tested with `FakeSerialTransport`
+  (no physical device). terminalApp's `AndroidSerialTransport` implements
+  the real `/dev/ttyS1` @ 19200 8N1 side; `CabinetHardwareController` now
+  drives `KeyCabinetLink` instead of a terminalApp-local protocol
+  implementation. The old `KeyCabinetProtocol.kt`/`CabinetSerialPort.kt`
+  (duplicated frame/CRC logic in Android code) were deleted, fully
+  superseded by the shared layer.
+- Phase 8: public card-swipe reader (section 9), independent from the
+  node-level 0x15/0x17 card reads — confirmed genuinely separate serial
+  ports/protocols, not just adjacent code (`PublicM1CardReader` on
+  `/dev/ttyS2` @ 9600 8N1, ASCII poll `02 AF DD`/parse, vs. `KeyCabinetLink`
+  on `/dev/ttyS1` @ 19200, split-nibble/CRC8 framing — verified the vendor
+  AAR's `Device` defaults to 8 data bits/1 stop/no parity when only
+  path+speed are set, so both already get correct 8N1 with no explicit
+  override needed). Added the missing piece: `PublicCardReaderController`
+  now starts automatically when `TerminalAdminApp` is idling at the login
+  screen and stops automatically otherwise (including on app exit), and a
+  detected card feeds the key-card-swipe return trigger from phase 3 (same
+  entry point the phase 3 manual tap already used, so the flow stays
+  testable with no reader attached).
+  - Personnel-card swipe is still NOT wired, and this is a data-model gap,
+    not a leftover hardware hookup: the reader reports a raw UID with no
+    way to tell a personnel card from a key card, and there is still no
+    registry mapping a personnel card's UID to a signed-in user. Solving
+    this needs that registry decided first — see Known issues below.
 
 ### Known issues / not yet resolved
 - Personnel management in webApp is currently a shallow free-text form
   (no role picker, no email/site validation) since the old
   UserManagementPolicy-based flow was deleted — needs rebuilding against
   current architecture
+- No personnel-card-to-user registry exists anywhere (webApp or
+  terminalApp), so `TerminalLoginScreen`'s personnel-card-swipe panel
+  cannot be wired yet even though the section 9 reader hardware now runs
+  live — this and the Personnel rebuild above are likely one piece of work
 - Orphaned scaffold TerminalWorkflowModels.kt/TerminalWorkflowScreens.kt in
   terminalApp — audited, found to NOT correctly match the manual (extra
   confirmation steps, recording notice banners violating "never
@@ -168,18 +203,48 @@ terminalApp consume the same source of truth rather than reimplementing it.
   `FobEnrollmentScreen.reference.kt.bak`, archived alongside it since it
   depended on the same types) and `terminalApp/reference/README.md` for why.
 
+- Phase 9: real hardware wired into retrieval/return.
+  **Electromagnet direction reconfirmed** (a phase 9 request initially
+  described it backwards — 0x14 for retrieval, 0x13 for return — which
+  would have inverted the field-verified mapping; asked and kept the
+  existing 0x13=unlock/0x14=lock resolution). `CabinetHardwareController`
+  gained `releaseKeyForPickup` (0x13 engage, then 0x16 Test Micro Switch
+  must confirm the bolt is actually gone before reporting success — an
+  acknowledged command alone is not treated as proof) and a two-phase
+  `beginKeyReturn` (0x11 Blue Light On + 0x23 Eject Door) /
+  `waitForKeyInserted` (polls 0x16 until bolt-present, then 0x14 release +
+  0x12 Blue Light Off). Both auto-connect the cabinet with saved/default
+  settings if not already open, since an operator reaches these directly
+  from login with no admin "Connect" step first.
+  `TerminalKeyRetrievalScreen` shows a "Releasing…" pending state and
+  disables the rest of the grid/list while one release is in flight — the
+  phase 7 electromagnet guard is the backstop, not the primary defense
+  against a double-tap. `TerminalKeyReturnScreen` now completes only once
+  hardware confirms insertion (falls back to the old fixed-delay behavior
+  only when `resolveReturningKey` can't identify a node to address).
+  Concurrency guard re-verified explicitly with a new test
+  (`KeyCabinetLinkTest`, "two retrieval attempts in quick succession") on
+  top of the existing phase 7 coverage, not just assumed still correct.
+  **Still stubbed:** personnel-card login (same registry gap as phase 8);
+  `resolveReturningKey`'s "only key currently taken" heuristic (still no
+  real card-to-key identification). **Needs physical hardware to fully
+  verify:** everything above was only exercised through `FakeSerialTransport`
+  — no physical F7G18P run yet for the new retrieval/return command
+  sequences, the auto-connect path, or real bolt-detection timing.
+
 ### Next steps (in order)
-- Phase 7: node command set + real serial I/O in terminalApp
-  (/dev/ttyS1, 19200 baud), including one-electromagnet-at-a-time lock
-- Phase 8: card reader implementation (/dev/ttyS2, 9600 baud, ASCII,
-  independent from node-level card reads)
-- Phase 9: wire real hardware into existing login/retrieval/return UI,
-  replacing stubbed calls
-- After hardware phases: rebuild Personnel management properly (see
-  Known issues above)
+- Phase 10 (suggested): verify phase 9's new command sequences against a
+  physical F7G18P; resolve the personnel/key card registry gap (Known
+  issues above) so personnel-card login and real card-to-key return
+  identification can replace their remaining stubs
+- After hardware phases: rebuild Personnel management properly, including
+  the personnel-card registry (see Known issues above)
 
 ### Reference
-- Hardware protocol: docs/Key_Cabinet_Communication_Protocol.md
-  (authoritative — read before any phase 7+ work)
+- Hardware protocol: `docs/Key Cabinet Communication Protocol.md` (note
+  the spaces in that filename) is the authoritative vendor spec — read
+  before any phase 8+ work. `docs/Key_Cabinet_Communication_Protocol.md`
+  (underscored) is a project-level index onto it and defers to it on any
+  conflict.
 - Terminal UX baseline: Smart Key Cabinet User Manual V2.1 (STRICT clone,
   color theme + first-start screensaver are the only allowed differences)

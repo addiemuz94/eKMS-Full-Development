@@ -54,6 +54,15 @@ import com.ekms.terminal.hardware.VideoRecordingController
  * Keys and slots come from the shared ManagedKey/KeySlot model so this
  * screen and the Website eventually read the same backend-synced data;
  * no terminal-only key/slot type is introduced here.
+ *
+ * Selecting a key now sends a real Magnet Engage (0x13) command to its
+ * node and confirms removal via Test Micro Switch (0x16) — see
+ * `CabinetHardwareController.releaseKeyForPickup`, phase 9 — which takes
+ * long enough to be visibly async. [pendingKeyId] identifies the key
+ * currently mid-release, if any; every other key is disabled for tap while
+ * it's set, both to avoid a confusing double-dispatch and to make the
+ * phase-7 one-electromagnet-at-a-time guard a backstop rather than the
+ * primary way concurrent releases are prevented.
  */
 @Composable
 fun TerminalKeyRetrievalScreen(
@@ -62,6 +71,7 @@ fun TerminalKeyRetrievalScreen(
     keys: List<ManagedKey>,
     slots: List<KeySlot>,
     takenKeyIds: Set<String>,
+    pendingKeyId: String?,
     videoRecordingEnabled: Boolean,
     backLabel: String,
     onBack: () -> Unit,
@@ -116,6 +126,7 @@ fun TerminalKeyRetrievalScreen(
                     keyById = keyById,
                     slotsByNode = slotsByNode,
                     takenKeyIds = takenKeyIds,
+                    pendingKeyId = pendingKeyId,
                     onTakeKey = onTakeKey,
                 )
 
@@ -123,6 +134,7 @@ fun TerminalKeyRetrievalScreen(
                     slots = slots,
                     keyById = keyById,
                     takenKeyIds = takenKeyIds,
+                    pendingKeyId = pendingKeyId,
                     onTakeKey = onTakeKey,
                 )
             }
@@ -150,6 +162,7 @@ private fun KeyLayoutGrid(
     keyById: Map<String, ManagedKey>,
     slotsByNode: Map<Int, KeySlot>,
     takenKeyIds: Set<String>,
+    pendingKeyId: String?,
     onTakeKey: (ManagedKey) -> Unit,
 ) {
     LazyVerticalGrid(
@@ -166,6 +179,8 @@ private fun KeyLayoutGrid(
                 nodeAddress = nodeAddress,
                 key = key,
                 taken = key != null && key.id in takenKeyIds,
+                pending = key != null && key.id == pendingKeyId,
+                anyPending = pendingKeyId != null,
                 onTakeKey = onTakeKey,
             )
         }
@@ -177,15 +192,18 @@ private fun KeyNodeCell(
     nodeAddress: Int,
     key: ManagedKey?,
     taken: Boolean,
+    pending: Boolean,
+    anyPending: Boolean,
     onTakeKey: (ManagedKey) -> Unit,
 ) {
-    val selectable = key != null && !taken
+    val selectable = key != null && !taken && !anyPending
     Card(
         modifier = Modifier
             .fillMaxWidth()
             .then(if (selectable) Modifier.clickable { onTakeKey(key!!) } else Modifier),
         colors = CardDefaults.cardColors(
             containerColor = when {
+                pending -> MaterialTheme.colorScheme.secondaryContainer
                 selectable -> MaterialTheme.colorScheme.primaryContainer
                 taken -> MaterialTheme.colorScheme.surfaceVariant
                 else -> MaterialTheme.colorScheme.surface
@@ -203,7 +221,9 @@ private fun KeyNodeCell(
                 fontWeight = FontWeight.SemiBold,
                 maxLines = 2,
             )
-            if (taken) {
+            if (pending) {
+                Text("Releasing…", style = MaterialTheme.typography.labelSmall)
+            } else if (taken) {
                 Text("Taken", style = MaterialTheme.typography.labelSmall)
             }
         }
@@ -215,6 +235,7 @@ private fun KeyRetrievalList(
     slots: List<KeySlot>,
     keyById: Map<String, ManagedKey>,
     takenKeyIds: Set<String>,
+    pendingKeyId: String?,
     onTakeKey: (ManagedKey) -> Unit,
 ) {
     val rows = slots
@@ -229,12 +250,18 @@ private fun KeyRetrievalList(
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         rows.forEach { (nodeAddress, key) ->
             val taken = key.id in takenKeyIds
+            val pending = key.id == pendingKeyId
+            val selectable = !taken && pendingKeyId == null
             Card(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .then(if (!taken) Modifier.clickable { onTakeKey(key) } else Modifier),
+                    .then(if (selectable) Modifier.clickable { onTakeKey(key) } else Modifier),
                 colors = CardDefaults.cardColors(
-                    containerColor = if (taken) MaterialTheme.colorScheme.surfaceVariant else MaterialTheme.colorScheme.primaryContainer,
+                    containerColor = when {
+                        pending -> MaterialTheme.colorScheme.secondaryContainer
+                        taken -> MaterialTheme.colorScheme.surfaceVariant
+                        else -> MaterialTheme.colorScheme.primaryContainer
+                    },
                 ),
             ) {
                 Column(
@@ -242,7 +269,10 @@ private fun KeyRetrievalList(
                     verticalArrangement = Arrangement.spacedBy(4.dp),
                 ) {
                     Text("Node $nodeAddress · ${key.displayName}", fontWeight = FontWeight.SemiBold)
-                    Text(if (taken) "Taken" else "Available", style = MaterialTheme.typography.bodySmall)
+                    Text(
+                        text = if (pending) "Releasing…" else if (taken) "Taken" else "Available",
+                        style = MaterialTheme.typography.bodySmall,
+                    )
                 }
             }
         }
