@@ -70,35 +70,42 @@ These rules are enforced by convention across the codebase (see comments in `Api
 
 Add the following section to CLAUDE.md under an appropriate heading (e.g. "UX Baseline" or "Design Conventions"):
 
-## Terminal App UX Baseline
+## Terminal App UX Baseline (STRICT — exact clone)
 
-terminalApp's user-facing flow must match the supplier's Smart Key Cabinet
-User Manual (V2.1), since terminalApp runs on the same F7G18P hardware the
-manual describes. Do not invent new UX patterns for core flows — replicate:
+terminalApp must replicate the Smart Key Cabinet User Manual V2.1 exactly.
+This is not "inspired by" — every screen, flow order, interaction, button
+placement, and piece of terminology in the manual must be built as
+described. Do not add, remove, reorder, or reinterpret any step.
 
-- Standby screen: tap-to-wake into login, not always-on login screen
-- Login methods (all on one screen): personnel card swipe, key card swipe
-  (returns directly), account/password, Face Recognition button, Fingerprint
-  Recognition button
-- Key retrieval screen: must support both "Layout Display" (grid matching
-  physical cabinet layout) and "List Display" (simple list) — user-toggleable
-- Return flow: physically-driven, not menu-driven. Swipe key card near the
-  card-swipe area, box door pops open with blue light, user inserts key.
-  No extra confirmation screens.
-- Optional key-return re-authentication: if "Key Return Certification" is
-  enabled in terminal settings, return requires login again before completing
-- Video/photo recording during retrieval/return is a background toggle
-  (terminal setting), never a user-facing step
-- Admin menu is a separate mode, only reachable after admin login — never
-  mixed into the ordinary operator flow
+The ONLY two things allowed to differ from the manual:
+1. Color theme / visual branding
+2. The first-start standby/screensaver screen shown before login
 
-Architecture note: business logic (key/node validation, access grants,
-sync-conflict resolution, Recycle Bin rules) belongs in the `shared` module
-so it can be reused by webApp and mobileApp later. Hardware-specific code
-(serial protocol, fingerprint module, camera, NFC) stays Android-only in
-terminalApp.
+Everything else must match, including:
+- Standby → tap-to-wake → login screen
+- Login screen with all four methods together: personnel card swipe, key
+  card swipe (returns directly), account/password, Face Recognition
+  button, Fingerprint Recognition button
+- Key retrieval: both "Layout Display" and "List Display", user-toggleable
+- Return flow: swipe key card near the card-swipe area, box door pops open
+  with blue light, insert key, done — no extra confirmation screens
+- Optional key-return re-authentication, controlled by a terminal setting
+  ("Key Return Certification")
+- Background video/photo recording during retrieval and/or return,
+  controlled by terminal settings, never a user-facing step
+- Full Admin Menu, reachable only after admin login, containing: terminal
+  name, Key Cabinet ID, modify administrator password, set server address,
+  activation code setup, key node setting, Ethernet MAC address display,
+  key return certification toggle, return video toggle, key retrieval
+  video toggle
 
-Add the following section to CLAUDE.md, right after "Terminal App UX Baseline":
+Before building or modifying any terminalApp screen, check it against the
+manual section by section. If something in the current code deviates from
+the manual (beyond color/screensaver), it is a bug to fix, not a design
+choice to keep.
+
+Architecture note (unchanged): business logic stays in `shared`, hardware-
+specific code stays Android-only in terminalApp.
 
 ## Web/Mobile App UX Consistency
 
