@@ -46,8 +46,15 @@ Give the backend developer [BACKEND_DEVELOPER_HANDOVER.md](docs/BACKEND_DEVELOPE
 - Step 2: Super Admin Users & Credentials (applied in the working Android Studio project).
 - Step 3: responsive Sites & Terminals UI, shared cabinet-configuration validation,
   and backend handover. See `docs/STEP_3_SITES_TERMINALS_HANDOFF.md`.
+- Step 4: Keys, cabinet slots and access grants, shared by Website and Terminal.
+  Every key slot is validated against its terminal's configured Box Address +
+  Node Address range (see `docs/Key_Cabinet_Communication_Protocol.md`), and
+  access grants bind a user to an exact set of keys as their own record,
+  separate from the user. Both follow the Step 1 soft-delete/Recycle Bin and
+  sync-conflict patterns.
 
 ## Next build step
 
-Implement Keys, cabinet slots and access grants. That step will validate every
-key slot against the configured physical node-address range of its terminal.
+Wire the Website and Terminal previews to the backend API described in
+`docs/API_HANDOVER_SUPER_ADMIN V4.md`, replacing local preview data with
+authenticated, revision-aware calls.

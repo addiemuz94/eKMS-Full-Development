@@ -38,6 +38,7 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.platform.LocalContext
 import com.ekms.terminal.data.StoreResult
+import com.ekms.terminal.data.TerminalAccessGrant
 import com.ekms.terminal.data.TerminalAdminSnapshot
 import com.ekms.terminal.data.TerminalAdminStore
 import com.ekms.terminal.data.TerminalKey
@@ -210,6 +211,7 @@ fun TerminalAdminApp() {
                             notice = notice,
                             onEnrollUser = { openAdmin(SuperAdminRoute.ENROLL_USER) },
                             onEnrollKey = { openAdmin(SuperAdminRoute.ENROLL_KEY) },
+                            onOpenAccessGrants = { openAdmin(SuperAdminRoute.ACCESS_GRANTS) },
                             onOpenHardware = { openAdmin(SuperAdminRoute.HARDWARE) },
                             onSignOut = ::signOut,
                         )
@@ -262,6 +264,35 @@ fun TerminalAdminApp() {
                     },
                     onMonitorReturnedFob = hardwareController::waitForReturnedKeyFob,
                     onStopMonitoring = hardwareController::stopKeyEnrollmentMonitoring,
+                )
+
+                SuperAdminRoute.ACCESS_GRANTS -> AccessGrantsScreen(
+                    padding = padding,
+                    users = snapshot.users.filterNot { it.isPreset },
+                    keys = snapshot.keys,
+                    grants = snapshot.accessGrants,
+                    notice = notice,
+                    onBack = { route = SuperAdminRoute.DASHBOARD },
+                    onGrant = { userId, keyId ->
+                        when (val result = store.grantAccess(userId, keyId)) {
+                            is StoreResult.Success -> {
+                                refreshSnapshot()
+                                notice = "Access granted."
+                            }
+
+                            is StoreResult.Error -> notice = result.message
+                        }
+                    },
+                    onRevoke = { grantId ->
+                        when (val result = store.revokeAccess(grantId)) {
+                            is StoreResult.Success -> {
+                                refreshSnapshot()
+                                notice = "Access grant removed."
+                            }
+
+                            is StoreResult.Error -> notice = result.message
+                        }
+                    },
                 )
 
                 SuperAdminRoute.HARDWARE -> HardwareControlScreen(
@@ -424,6 +455,7 @@ private fun SuperAdminDashboardScreen(
     notice: String?,
     onEnrollUser: () -> Unit,
     onEnrollKey: () -> Unit,
+    onOpenAccessGrants: () -> Unit,
     onOpenHardware: () -> Unit,
     onSignOut: () -> Unit,
 ) {
@@ -435,6 +467,7 @@ private fun SuperAdminDashboardScreen(
         notice?.let { message -> SuperAdminNoticeCard(message) }
         DashboardMetric("Users", snapshot.users.size.toString(), "1 preset Super Admin · " + (snapshot.users.size - 1) + " enrolled")
         DashboardMetric("Keys", snapshot.keys.size.toString(), "All keys must be enrolled from a verified cabinet node")
+        DashboardMetric("Access grants", snapshot.accessGrants.size.toString(), "Exact user-to-key bindings")
         DashboardMetric(
             "Cabinet",
             if (hardwareState.connected) "Connected" else "Disconnected",
@@ -446,6 +479,9 @@ private fun SuperAdminDashboardScreen(
         Button(onClick = onEnrollKey, modifier = Modifier.fillMaxWidth()) {
             Text("Enroll new key")
         }
+        Button(onClick = onOpenAccessGrants, modifier = Modifier.fillMaxWidth()) {
+            Text("Manage access grants")
+        }
         OutlinedButton(onClick = onOpenHardware, modifier = Modifier.fillMaxWidth()) {
             Text("Cabinet hardware control")
         }
@@ -453,6 +489,89 @@ private fun SuperAdminDashboardScreen(
             Text("Sign out")
         }
     }
+}
+
+@Composable
+private fun AccessGrantsScreen(
+    padding: PaddingValues,
+    users: List<TerminalUser>,
+    keys: List<TerminalKey>,
+    grants: List<TerminalAccessGrant>,
+    notice: String?,
+    onBack: () -> Unit,
+    onGrant: (String, String) -> Unit,
+    onRevoke: (String) -> Unit,
+) {
+    var selectedUserId by remember(users) { mutableStateOf(users.firstOrNull()?.id.orEmpty()) }
+    val selectedUser = users.firstOrNull { it.id == selectedUserId }
+    val userGrants = grants.filter { it.userId == selectedUserId }
+    val grantedKeyIds = userGrants.map { it.keyId }.toSet()
+    val availableKeys = keys.filter { it.id !in grantedKeyIds }
+
+    TerminalPage(padding) {
+        BackButton(onBack)
+        HeaderCard(
+            title = "Access grants",
+            description = "Bind only the exact keys an enrolled user may take. A grant here is separate from the user's own record, matching the shared AccessGrant model used by the Website.",
+        )
+        notice?.let { message -> SuperAdminNoticeCard(message) }
+
+        if (users.isEmpty()) {
+            Text("Enroll a Technician or Vendor user before creating an access grant.")
+            return@TerminalPage
+        }
+
+        Text("Selected user", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+        OutlinedButton(
+            onClick = { selectedUserId = nextUserId(selectedUserId, users) },
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Text((selectedUser?.let { it.displayName + " · " + it.role.label } ?: "Select a user") + " · change")
+        }
+
+        Text("Unauthorized keys", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+        if (keys.isEmpty()) {
+            Text("No key has been enrolled yet.")
+        } else if (availableKeys.isEmpty()) {
+            Text("Every enrolled key is already granted to this user.")
+        }
+        availableKeys.forEach { key ->
+            Card(modifier = Modifier.fillMaxWidth()) {
+                Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(key.displayName + "\nBox " + key.boxAddress + " · Node " + key.nodeAddress)
+                    Button(
+                        onClick = { onGrant(selectedUserId, key.id) },
+                        modifier = Modifier.fillMaxWidth(),
+                        enabled = selectedUserId.isNotBlank(),
+                    ) {
+                        Text("Bind exact key")
+                    }
+                }
+            }
+        }
+
+        Text("Authorized keys", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+        if (userGrants.isEmpty()) {
+            Text("No exact key permission is currently assigned to this user.")
+        }
+        userGrants.forEach { grant ->
+            val key = keys.firstOrNull { it.id == grant.keyId }
+            Card(modifier = Modifier.fillMaxWidth()) {
+                Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(key?.displayName ?: "Unavailable key")
+                    TextButton(onClick = { onRevoke(grant.id) }, modifier = Modifier.fillMaxWidth()) {
+                        Text("Remove permission")
+                    }
+                }
+            }
+        }
+    }
+}
+
+private fun nextUserId(currentUserId: String, users: List<TerminalUser>): String {
+    if (users.isEmpty()) return ""
+    val index = users.indexOfFirst { it.id == currentUserId }
+    return users[(index + 1 + users.size) % users.size].id
 }
 
 @Composable
@@ -1259,6 +1378,7 @@ private enum class SuperAdminRoute {
     DASHBOARD,
     ENROLL_USER,
     ENROLL_KEY,
+    ACCESS_GRANTS,
     HARDWARE,
     USER_HOME,
 }

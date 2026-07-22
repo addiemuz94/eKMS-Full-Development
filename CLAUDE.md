@@ -67,3 +67,64 @@ These rules are enforced by convention across the codebase (see comments in `Api
 ## Working in `docs/`
 
 `docs/API_HANDOVER_SUPER_ADMIN V{1..4}.md` are dated snapshots of the API handover — V4 is the latest; don't edit older versions, add a new one instead if asked to revise the handover. `docs/WEB_PORTAL_WORKFLOW_HANDOVER.md` is the current living Website spec and includes an acceptance checklist — consult it before changing web portal workflow behavior.
+
+Add the following section to CLAUDE.md under an appropriate heading (e.g. "UX Baseline" or "Design Conventions"):
+
+## Terminal App UX Baseline
+
+terminalApp's user-facing flow must match the supplier's Smart Key Cabinet
+User Manual (V2.1), since terminalApp runs on the same F7G18P hardware the
+manual describes. Do not invent new UX patterns for core flows — replicate:
+
+- Standby screen: tap-to-wake into login, not always-on login screen
+- Login methods (all on one screen): personnel card swipe, key card swipe
+  (returns directly), account/password, Face Recognition button, Fingerprint
+  Recognition button
+- Key retrieval screen: must support both "Layout Display" (grid matching
+  physical cabinet layout) and "List Display" (simple list) — user-toggleable
+- Return flow: physically-driven, not menu-driven. Swipe key card near the
+  card-swipe area, box door pops open with blue light, user inserts key.
+  No extra confirmation screens.
+- Optional key-return re-authentication: if "Key Return Certification" is
+  enabled in terminal settings, return requires login again before completing
+- Video/photo recording during retrieval/return is a background toggle
+  (terminal setting), never a user-facing step
+- Admin menu is a separate mode, only reachable after admin login — never
+  mixed into the ordinary operator flow
+
+Architecture note: business logic (key/node validation, access grants,
+sync-conflict resolution, Recycle Bin rules) belongs in the `shared` module
+so it can be reused by webApp and mobileApp later. Hardware-specific code
+(serial protocol, fingerprint module, camera, NFC) stays Android-only in
+terminalApp.
+
+Add the following section to CLAUDE.md, right after "Terminal App UX Baseline":
+
+## Web/Mobile App UX Consistency
+
+webApp and mobileApp are Super Admin-facing, not operator-facing — they do
+not need to replicate the physical swipe/insert return flow or hardware
+login methods (fingerprint, face, NFC) from the supplier manual. Those stay
+terminal-only.
+
+What they SHOULD carry over from terminalApp for consistency:
+- Layout Display / List Display toggle for viewing keys — same underlying
+  concept (visual cabinet-grid view vs simple list view), same shared state
+  model, adapted to a larger screen
+- Access grant model and terminology: same "which user can access which
+  keys" concept as terminalApp, not a redesigned admin-only version
+- Recycle Bin behavior: 60-day soft-delete window, Super Admin-only
+  visibility and restore, matches terminalApp/backend rules exactly
+- Sync-conflict handling: when an offline terminalApp edit conflicts with a
+  webApp edit, the review UI must present both versions clearly — never
+  silently resolve
+
+What's DIFFERENT for webApp/mobileApp:
+- Full CRUD for users, keys, sites, and terminals (terminalApp mostly reads
+  and executes, it does not manage configuration)
+- Bulk actions (e.g. batch access grant changes) are admin-portal-only
+- No camera/video recording UI — that is a terminalApp/backend concern only
+
+Keep all of this logic (layout/list state, access grant rules, Recycle Bin
+timing, conflict data shape) in the `shared` module so webApp and
+terminalApp consume the same source of truth rather than reimplementing it.

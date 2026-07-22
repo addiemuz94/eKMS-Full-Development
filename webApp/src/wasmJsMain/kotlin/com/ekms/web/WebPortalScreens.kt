@@ -43,7 +43,13 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.ekms.shared.api.ApiPaths
+import com.ekms.shared.domain.AccessGrant
+import com.ekms.shared.domain.ManagedKey
+import com.ekms.shared.domain.RecordLifecycle
 import com.ekms.shared.policy.RecycleBinPolicy
+import kotlinx.datetime.Instant
+import kotlinx.datetime.TimeZone
+import kotlinx.datetime.toLocalDateTime
 
 /** Supplier-workflow Web portal. All records are local preview data until the API is connected. */
 @Composable
@@ -356,8 +362,8 @@ private fun PortalContent(store: WebPortalStore, modifier: Modifier = Modifier) 
 
 @Composable
 private fun DashboardScreen(store: WebPortalStore) {
-    val availableKeys = store.keys.count { it.availability == KeyAvailability.AVAILABLE }
-    val takenKeys = store.keys.count { it.availability == KeyAvailability.TAKEN }
+    val activeKeys = store.keys.count { it.lifecycle.state == RecordLifecycle.ACTIVE }
+    val assignedSlots = store.keySlots.count { it.lifecycle.state == RecordLifecycle.ACTIVE && it.managedKeyId != null }
     val onlineTerminals = store.terminals.count { it.status == PortalTerminalStatus.ONLINE }
 
     PageHeader(
@@ -366,8 +372,8 @@ private fun DashboardScreen(store: WebPortalStore) {
     )
     MetricGrid(
         listOf(
-            DashboardMetric("Available keys", availableKeys.toString(), "Ready for authorised pickup"),
-            DashboardMetric("Keys taken", takenKeys.toString(), "Awaiting verified return"),
+            DashboardMetric("Active keys", activeKeys.toString(), "Registered logical key records"),
+            DashboardMetric("Assigned cabinet slots", assignedSlots.toString(), "Keys mapped to a Box/Node address"),
             DashboardMetric("Online terminals", "${onlineTerminals}/${store.terminals.size}", "Terminal status from backend"),
             DashboardMetric("Pending approvals", store.appointments.count { it.status == AppointmentStatus.PENDING }.toString(), "Appointments needing review"),
         ),
@@ -517,27 +523,35 @@ private fun PersonnelScreen(store: WebPortalStore) {
 @Composable
 private fun KeysScreen(store: WebPortalStore) {
     var query by remember { mutableStateOf("") }
-    val records = store.keys.filter {
-        it.displayName.matchesQuery(query) || it.location.matchesQuery(query) || store.terminalName(it.terminalId).matchesQuery(query)
+    val activeKeys = store.keys.filter { it.lifecycle.state == RecordLifecycle.ACTIVE }
+    val records = activeKeys.filter {
+        it.displayName.matchesQuery(query) ||
+                store.keyLocationLabel(it.id).matchesQuery(query) ||
+                store.keyTerminalName(it.id).matchesQuery(query)
     }
 
     PageHeader(
         title = "Key Settings",
-        description = "Create logical key records, assign site/terminal/location/time limits, and view protected fob-enrolment status without exposing any raw UID.",
+        description = "Create logical key records, assign each one to an exact Box Address + Node Address, and view protected fob-enrolment status without exposing any raw UID.",
         primaryLabel = "Add key",
         onPrimary = { store.openDialog(WebDialogKind.ADD_KEY) },
     )
-    SearchField(value = query, onValueChange = { query = it }, label = "Search by unit, terminal, key name or location")
+    SearchField(value = query, onValueChange = { query = it }, label = "Search by unit, terminal, key name or node address")
     if (records.isEmpty()) EmptyState("No key record matches the current search.")
     records.forEach { key ->
+        val extra = store.keyExtras[key.id]
         RecordCard(
             title = key.displayName,
-            status = key.availability.label,
+            status = if (store.keySlotFor(key.id) != null) "Slotted" else "Not slotted",
             lines = listOf(
-                "Unit: ${store.siteName(key.siteId)} · Terminal: ${store.terminalName(key.terminalId)}",
-                "Location: ${key.location} · Time limit: ${key.timeLimit}",
-                "Key group: ${key.keyGroup}",
-                "Physical fob: ${key.fobEnrollmentStatus.label} (status/reference only)",
+                "Unit: ${store.siteName(key.siteId)} · Terminal: ${store.keyTerminalName(key.id)}",
+                "Address: ${store.keyLocationLabel(key.id)} · Time limit: ${extra?.timeLimit ?: "Not configured"}",
+                "Key group: ${extra?.keyGroup ?: "Unassigned"}",
+                if (key.fobEnrollmentReference.isNullOrBlank()) {
+                    "Physical fob: not enrolled (status/reference only)"
+                } else {
+                    "Physical fob: enrolled (status/reference only)"
+                },
             ),
         ) {
             OutlinedButton(onClick = { store.route = WebRoute.PERMISSIONS }) { Text("Manage permissions") }
@@ -556,9 +570,13 @@ private fun PermissionsScreen(store: WebPortalStore) {
         EmptyState("Create or restore personnel first.")
         return
     }
-    val grants = store.accessGrants.filter { it.personId == activePerson.id }
-    val grantedKeyIds = grants.map { it.keyId }.toSet()
-    val availableKeys = store.keys.filter { it.siteId == activePerson.siteId && it.id !in grantedKeyIds }
+    val grants = store.accessGrants.filter {
+        it.lifecycle.state == RecordLifecycle.ACTIVE && it.userId == activePerson.id
+    }
+    val grantedKeyIds = grants.flatMap { it.keyIds }.toSet()
+    val availableKeys = store.keys.filter {
+        it.lifecycle.state == RecordLifecycle.ACTIVE && it.siteId == activePerson.siteId && it.id !in grantedKeyIds
+    }
 
     PageHeader(
         title = "Permission Settings",
@@ -581,7 +599,7 @@ private fun PermissionsScreen(store: WebPortalStore) {
             availableKeys.forEach { key ->
                 HorizontalDivider()
                 Text(key.displayName, fontWeight = FontWeight.SemiBold)
-                Text("${store.terminalName(key.terminalId)} · ${key.location}")
+                Text("${store.keyTerminalName(key.id)} · ${store.keyLocationLabel(key.id)}")
                 OutlinedButton(onClick = { store.grantKey(activePerson.id, key.id) }) { Text("Bind exact key") }
             }
         }
@@ -594,10 +612,12 @@ private fun PermissionsScreen(store: WebPortalStore) {
             Text("Authorized keys", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
             if (grants.isEmpty()) Text("No exact key permission is currently assigned.")
             grants.forEach { grant ->
-                HorizontalDivider()
-                Text(store.keyName(grant.keyId), fontWeight = FontWeight.SemiBold)
-                Text("Valid until: ${grant.validUntil}")
-                TextButton(onClick = { store.revokeGrant(grant) }) { Text("Remove permission") }
+                grant.keyIds.forEach { keyId ->
+                    HorizontalDivider()
+                    Text(store.keyName(keyId), fontWeight = FontWeight.SemiBold)
+                    Text("Valid until: ${grant.validUntilEpochMillis.toDisplayDate() ?: "No expiry"}")
+                    TextButton(onClick = { store.archiveAccessGrant(grant) }) { Text("Move to Recycle Bin") }
+                }
             }
         }
     }
@@ -864,7 +884,9 @@ private fun AppointmentPermissionsScreen(store: WebPortalStore) {
         EmptyState("No appointment is available.")
         return
     }
-    val candidates = store.keys.filter { it.siteId == appointment.siteId && it.id !in appointment.keyIds }
+    val candidates = store.keys.filter {
+        it.lifecycle.state == RecordLifecycle.ACTIVE && it.siteId == appointment.siteId && it.id !in appointment.keyIds
+    }
 
     PageHeader(
         title = "Appointment Permission Settings",
@@ -893,7 +915,7 @@ private fun AppointmentPermissionsScreen(store: WebPortalStore) {
             candidates.forEach { key ->
                 HorizontalDivider()
                 Text(key.displayName, fontWeight = FontWeight.SemiBold)
-                Text("${store.terminalName(key.terminalId)} · ${key.location}")
+                Text("${store.keyTerminalName(key.id)} · ${store.keyLocationLabel(key.id)}")
                 OutlinedButton(onClick = { store.addAppointmentKey(appointment.id, key.id) }) { Text("Bind exact key") }
             }
         }
@@ -933,11 +955,15 @@ private fun EquipmentLogsScreen(store: WebPortalStore) {
 
 @Composable
 private fun RecycleBinScreen(store: WebPortalStore) {
+    val deletedKeys = store.keys.filter { it.lifecycle.state == RecordLifecycle.RECYCLE_BIN }
+    val deletedGrants = store.accessGrants.filter { it.lifecycle.state == RecordLifecycle.RECYCLE_BIN }
+    val isEmpty = store.recycleBin.isEmpty() && deletedKeys.isEmpty() && deletedGrants.isEmpty()
+
     PageHeader(
         title = "Recycle Bin",
-        description = "Super Admin only. Archived Units, Terminals, Personnel and Keys may be restored for ${RecycleBinPolicy.RETENTION_DAYS} days or permanently cleared earlier. Immutable audit history remains retained.",
+        description = "Super Admin only. Archived Units, Terminals, Personnel, Keys and Access Grants may be restored for ${RecycleBinPolicy.RETENTION_DAYS} days or permanently cleared earlier. Immutable audit history remains retained.",
     )
-    if (store.recycleBin.isEmpty()) EmptyState("No record is in the Recycle Bin.")
+    if (isEmpty) EmptyState("No record is in the Recycle Bin.")
     store.recycleBin.forEach { record ->
         RecordCard(
             title = record.label,
@@ -946,6 +972,26 @@ private fun RecycleBinScreen(store: WebPortalStore) {
         ) {
             OutlinedButton(onClick = { store.restore(record) }) { Text("Restore") }
             TextButton(onClick = { store.purge(record) }) { Text("Clear permanently") }
+        }
+    }
+    deletedKeys.forEach { key ->
+        RecordCard(
+            title = key.displayName,
+            status = "Key",
+            lines = listOf("Restorable for $RECYCLE_RETENTION_LABEL from deletion in the production backend."),
+        ) {
+            OutlinedButton(onClick = { store.restoreKey(key) }) { Text("Restore") }
+            TextButton(onClick = { store.purgeKey(key) }) { Text("Clear permanently") }
+        }
+    }
+    deletedGrants.forEach { grant ->
+        RecordCard(
+            title = "${store.personName(grant.userId)} · ${grant.keyIds.joinToString { store.keyName(it) }}",
+            status = "Access grant",
+            lines = listOf("Restorable for $RECYCLE_RETENTION_LABEL from deletion in the production backend."),
+        ) {
+            OutlinedButton(onClick = { store.restoreAccessGrant(grant) }) { Text("Restore") }
+            TextButton(onClick = { store.purgeAccessGrant(grant) }) { Text("Clear permanently") }
         }
     }
 }
@@ -1196,3 +1242,7 @@ private data class DashboardMetric(val label: String, val value: String, val det
 private data class SelectionOption(val id: String, val label: String)
 
 private fun String.matchesQuery(query: String): Boolean = query.isBlank() || contains(query.trim(), ignoreCase = true)
+
+private fun Long?.toDisplayDate(): String? = this?.let {
+    Instant.fromEpochMilliseconds(it).toLocalDateTime(TimeZone.UTC).date.toString()
+}

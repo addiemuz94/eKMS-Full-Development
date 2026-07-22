@@ -2,8 +2,20 @@ package com.ekms.web
 
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshots.SnapshotStateList
+import com.ekms.shared.domain.AccessGrant
+import com.ekms.shared.domain.KeyDraft
+import com.ekms.shared.domain.KeySlot
+import com.ekms.shared.domain.KeySlotAccessPolicy
+import com.ekms.shared.domain.KeySlotDraft
+import com.ekms.shared.domain.LifecycleMetadata
+import com.ekms.shared.domain.ManagedKey
+import com.ekms.shared.domain.ManagedTerminalOption
+import com.ekms.shared.domain.RecordLifecycle
+import kotlinx.datetime.Clock
 
 /**
  * Browser-only view state for the supplier-aligned Website workflow.
@@ -11,6 +23,11 @@ import androidx.compose.runtime.setValue
  * This is deliberately a local preview store. The backend integration points
  * are documented in shared/api/ApiContracts.kt and docs/WEB_PORTAL_WORKFLOW_HANDOVER.md.
  * No value in this file opens a terminal serial port or stores a raw fob UID.
+ *
+ * Keys, cabinet slots and access grants use the shared domain model
+ * (shared/domain/AdminModels.kt, shared/domain/KeySlotManagement.kt) directly,
+ * including its Box/Node address validation and soft-delete lifecycle, so the
+ * same records and rules the backend will enforce are already exercised here.
  */
 internal class WebPortalStore {
     var route by mutableStateOf(WebRoute.DASHBOARD)
@@ -47,6 +64,7 @@ internal class WebPortalStore {
             siteId = "site-kl",
             name = "HQ Main Cabinet",
             deviceUid = "F7G18P-KL-001",
+            boxAddress = 1,
             nodeLayout = NodeLayoutType.A_STANDARD_KEY_SLOT,
             nodeCount = 48,
             keyReturnAuthentication = true,
@@ -58,6 +76,7 @@ internal class WebPortalStore {
             siteId = "site-jb",
             name = "Service Cabinet",
             deviceUid = "F7G18P-JB-001",
+            boxAddress = 1,
             nodeLayout = NodeLayoutType.B_COMPACT_DOOR_WITH_SLOT,
             nodeCount = 24,
             keyReturnAuthentication = false,
@@ -100,45 +119,80 @@ internal class WebPortalStore {
     )
 
     val keys = mutableStateListOf(
-        PortalKey(
+        ManagedKey(
             id = "key-001",
             siteId = "site-kl",
-            terminalId = "terminal-kl-01",
             displayName = "Main Gate Key",
-            location = "Node 01",
-            timeLimit = "Always available",
-            keyGroup = "Security Keys",
-            fobEnrollmentStatus = FobEnrollmentStatus.ENROLLED,
-            availability = KeyAvailability.AVAILABLE,
+            lifecycle = activeLifecycle(DEMO_CREATED_AT),
         ),
-        PortalKey(
+        ManagedKey(
             id = "key-002",
             siteId = "site-kl",
-            terminalId = "terminal-kl-01",
             displayName = "Forklift Key A",
-            location = "Node 12",
-            timeLimit = "Mon–Fri, 08:00–18:00",
-            keyGroup = "Operations Keys",
-            fobEnrollmentStatus = FobEnrollmentStatus.ENROLLED,
-            availability = KeyAvailability.TAKEN,
+            lifecycle = activeLifecycle(DEMO_CREATED_AT),
         ),
-        PortalKey(
+        ManagedKey(
             id = "key-003",
             siteId = "site-jb",
-            terminalId = "terminal-jb-01",
             displayName = "Service Room Key",
-            location = "Node 04",
-            timeLimit = "Daily, 08:00–20:00",
-            keyGroup = "Maintenance Keys",
-            fobEnrollmentStatus = FobEnrollmentStatus.NOT_ENROLLED,
-            availability = KeyAvailability.AVAILABLE,
+            lifecycle = activeLifecycle(DEMO_CREATED_AT),
         ),
     )
 
+    val keySlots = mutableStateListOf(
+        KeySlot(
+            id = "slot-001",
+            terminalId = "terminal-kl-01",
+            nodeAddress = 1,
+            managedKeyId = "key-001",
+            lifecycle = activeLifecycle(DEMO_CREATED_AT),
+        ),
+        KeySlot(
+            id = "slot-002",
+            terminalId = "terminal-kl-01",
+            nodeAddress = 12,
+            managedKeyId = "key-002",
+            lifecycle = activeLifecycle(DEMO_CREATED_AT),
+        ),
+        KeySlot(
+            id = "slot-003",
+            terminalId = "terminal-jb-01",
+            nodeAddress = 4,
+            managedKeyId = "key-003",
+            lifecycle = activeLifecycle(DEMO_CREATED_AT),
+        ),
+    )
+
+    /** Supplier-workflow fields not yet modeled in the shared domain (see Key Groups / Schedules). */
+    val keyExtras = mutableStateMapOf(
+        "key-001" to WebKeyExtra(timeLimit = "Always available", keyGroup = "Security Keys"),
+        "key-002" to WebKeyExtra(timeLimit = "Mon–Fri, 08:00–18:00", keyGroup = "Operations Keys"),
+        "key-003" to WebKeyExtra(timeLimit = "Daily, 08:00–20:00", keyGroup = "Maintenance Keys"),
+    )
+
     val accessGrants = mutableStateListOf(
-        PortalAccessGrant("grant-001", "person-001", "key-001", "No expiry"),
-        PortalAccessGrant("grant-002", "person-001", "key-002", "31 Dec 2026"),
-        PortalAccessGrant("grant-003", "person-002", "key-003", "No expiry"),
+        AccessGrant(
+            id = "grant-001",
+            userId = "person-001",
+            siteId = "site-kl",
+            keyIds = setOf("key-001"),
+            lifecycle = activeLifecycle(DEMO_CREATED_AT),
+        ),
+        AccessGrant(
+            id = "grant-002",
+            userId = "person-001",
+            siteId = "site-kl",
+            keyIds = setOf("key-002"),
+            validUntilEpochMillis = KeySlotAccessPolicy.validUntilEpochMillis("2026-12-31"),
+            lifecycle = activeLifecycle(DEMO_CREATED_AT),
+        ),
+        AccessGrant(
+            id = "grant-003",
+            userId = "person-002",
+            siteId = "site-jb",
+            keyIds = setOf("key-003"),
+            lifecycle = activeLifecycle(DEMO_CREATED_AT),
+        ),
     )
 
     val eventDefinitions = mutableStateListOf(
@@ -214,6 +268,7 @@ internal class WebPortalStore {
     }
 
     fun create(kind: WebDialogKind, values: List<String>) {
+        var closeDialog = true
         when (kind) {
             WebDialogKind.ADD_UNIT -> {
                 val site = PortalSite(
@@ -233,6 +288,7 @@ internal class WebPortalStore {
                     siteId = siteIdFor(field(values, 1, sites.firstOrNull()?.name.orEmpty())),
                     name = field(values, 0, "New Cabinet"),
                     deviceUid = field(values, 2, "Device UID pending"),
+                    boxAddress = 1,
                     nodeLayout = NodeLayoutType.fromInput(field(values, 3, "A")),
                     nodeCount = field(values, 4, "24").toIntOrNull()?.coerceIn(1, 255) ?: 24,
                     keyReturnAuthentication = !field(values, 5, "Enabled").equals("disabled", ignoreCase = true),
@@ -241,7 +297,8 @@ internal class WebPortalStore {
                 )
                 terminals.add(terminal)
                 selectedTerminalId = terminal.id
-                notice = "${terminal.name} was configured locally. The Website records configuration only; the terminal performs physical cabinet I/O."
+                notice = "${terminal.name} was configured locally at Box Address ${terminal.boxAddress}. " +
+                        "The Website records configuration only; the terminal performs physical cabinet I/O."
             }
 
             WebDialogKind.ADD_PERSON -> {
@@ -262,19 +319,55 @@ internal class WebPortalStore {
 
             WebDialogKind.ADD_KEY -> {
                 val terminal = terminalFor(field(values, 1, terminals.firstOrNull()?.name.orEmpty()))
-                val key = PortalKey(
-                    id = nextId("key"),
-                    siteId = terminal?.siteId ?: sites.firstOrNull()?.id.orEmpty(),
-                    terminalId = terminal?.id ?: terminals.firstOrNull()?.id.orEmpty(),
-                    displayName = field(values, 2, "New key"),
-                    location = field(values, 3, "Node not assigned"),
-                    timeLimit = field(values, 4, "Not configured"),
-                    keyGroup = field(values, 5, "Unassigned"),
-                    fobEnrollmentStatus = FobEnrollmentStatus.NOT_ENROLLED,
-                    availability = KeyAvailability.UNAVAILABLE,
-                )
-                keys.add(key)
-                notice = "${key.displayName} was created as an un-enrolled logical key. Physical fob enrolment remains a Super Admin action on the Terminal."
+                if (terminal == null) {
+                    notice = "Select a valid terminal cabinet before saving a key."
+                    closeDialog = false
+                } else {
+                    val displayName = field(values, 2, "New key")
+                    val nodeAddressText = field(values, 3, "")
+                    val managedTerminals = terminals.map { it.toManagedTerminalOption() }
+                    val activeKeySnapshot = keys.filter { it.lifecycle.state == RecordLifecycle.ACTIVE }
+                    val activeSlotSnapshot = keySlots.filter { it.lifecycle.state == RecordLifecycle.ACTIVE }
+                    val issues = KeySlotAccessPolicy.validateKey(
+                        draft = KeyDraft(displayName, terminal.siteId),
+                        knownSiteIds = sites.mapTo(linkedSetOf()) { it.id },
+                    ) + KeySlotAccessPolicy.validateSlot(
+                        draft = KeySlotDraft(terminal.id, nodeAddressText, ""),
+                        terminals = managedTerminals,
+                        activeKeys = activeKeySnapshot,
+                        activeSlots = activeSlotSnapshot,
+                    )
+                    if (issues.isNotEmpty()) {
+                        notice = issues.joinToString(" ") { it.message }
+                        closeDialog = false
+                    } else {
+                        val timestamp = now()
+                        val keyId = nextId("key")
+                        keys.add(
+                            ManagedKey(
+                                id = keyId,
+                                siteId = terminal.siteId,
+                                displayName = displayName.trim(),
+                                lifecycle = activeLifecycle(timestamp),
+                            ),
+                        )
+                        keySlots.add(
+                            KeySlot(
+                                id = nextId("slot"),
+                                terminalId = terminal.id,
+                                nodeAddress = nodeAddressText.trim().toInt(),
+                                managedKeyId = keyId,
+                                lifecycle = activeLifecycle(timestamp),
+                            ),
+                        )
+                        keyExtras[keyId] = WebKeyExtra(
+                            timeLimit = field(values, 4, "Not configured"),
+                            keyGroup = field(values, 5, "Unassigned"),
+                        )
+                        notice = "${displayName.trim()} saved at Box ${terminal.boxAddress} · Node ${nodeAddressText.trim()}. " +
+                                "Physical fob enrolment remains a protected Terminal-only action."
+                    }
+                }
             }
 
             WebDialogKind.ADD_EVENT -> {
@@ -367,21 +460,48 @@ internal class WebPortalStore {
                 notice = "Appointment reason added to the local preview."
             }
         }
-        dialogKind = null
+        if (closeDialog) {
+            dialogKind = null
+        }
     }
 
     fun grantKey(personId: String, keyId: String) {
-        if (accessGrants.any { it.personId == personId && it.keyId == keyId }) {
+        val key = keys.firstOrNull { it.id == keyId } ?: return
+        val alreadyGranted = accessGrants.any {
+            it.lifecycle.state == RecordLifecycle.ACTIVE && it.userId == personId && keyId in it.keyIds
+        }
+        if (alreadyGranted) {
             notice = "That exact key is already authorized for the selected person."
             return
         }
-        accessGrants.add(PortalAccessGrant(nextId("grant"), personId, keyId, "No expiry"))
+        accessGrants.add(
+            AccessGrant(
+                id = nextId("grant"),
+                userId = personId,
+                siteId = key.siteId,
+                keyIds = setOf(keyId),
+                lifecycle = activeLifecycle(now()),
+            ),
+        )
         notice = "Key permission prepared locally. Production requires a revision-safe POST /v1/admin/access-grants."
     }
 
-    fun revokeGrant(grant: PortalAccessGrant) {
-        accessGrants.remove(grant)
-        notice = "The local grant was removed. The production backend must record an immutable audit event."
+    fun archiveAccessGrant(grant: AccessGrant) {
+        val timestamp = now()
+        accessGrants.replaceFirst({ it.id == grant.id }) { it.copy(lifecycle = archivedLifecycle(it.lifecycle, timestamp)) }
+        notice = "Access grant for ${personName(grant.userId)} moved to the Super Admin Recycle Bin."
+    }
+
+    fun restoreAccessGrant(grant: AccessGrant) {
+        val timestamp = now()
+        accessGrants.replaceFirst({ it.id == grant.id }) { it.copy(lifecycle = restoredLifecycle(it.lifecycle, timestamp)) }
+        notice = "Access grant for ${personName(grant.userId)} restored locally."
+    }
+
+    fun purgeAccessGrant(grant: AccessGrant) {
+        val timestamp = now()
+        accessGrants.replaceFirst({ it.id == grant.id }) { it.copy(lifecycle = purgedLifecycle(it.lifecycle, timestamp)) }
+        notice = "Access grant permanently cleared from the local Recycle Bin."
     }
 
     fun reviewAppointment(appointmentId: String, status: AppointmentStatus) {
@@ -415,7 +535,7 @@ internal class WebPortalStore {
     }
 
     fun archiveTerminal(terminal: PortalTerminal) {
-        if (keys.any { it.terminalId == terminal.id }) {
+        if (keySlots.any { it.terminalId == terminal.id && it.lifecycle.state == RecordLifecycle.ACTIVE }) {
             notice = "Archive or move the terminal's assigned keys first. Cabinet dependencies cannot be silently deleted."
             return
         }
@@ -430,10 +550,39 @@ internal class WebPortalStore {
         notice = "${person.displayName} moved to the Super Admin Recycle Bin."
     }
 
-    fun archiveKey(key: PortalKey) {
-        keys.remove(key)
-        recycleBin.add(PortalDeletedRecord.Key(key))
+    fun archiveKey(key: ManagedKey) {
+        val hasActiveGrant = accessGrants.any {
+            it.lifecycle.state == RecordLifecycle.ACTIVE && key.id in it.keyIds
+        }
+        if (hasActiveGrant) {
+            notice = "Remove ${key.displayName} from its active access grants before moving it to the Recycle Bin."
+            return
+        }
+        val timestamp = now()
+        keys.replaceFirst({ it.id == key.id }) { it.copy(lifecycle = archivedLifecycle(it.lifecycle, timestamp)) }
+        keySlots.filter { it.managedKeyId == key.id && it.lifecycle.state == RecordLifecycle.ACTIVE }.forEach { slot ->
+            keySlots.replaceFirst({ it.id == slot.id }) { it.copy(lifecycle = archivedLifecycle(it.lifecycle, timestamp)) }
+        }
         notice = "${key.displayName} moved to the Super Admin Recycle Bin."
+    }
+
+    fun restoreKey(key: ManagedKey) {
+        val timestamp = now()
+        keys.replaceFirst({ it.id == key.id }) { it.copy(lifecycle = restoredLifecycle(it.lifecycle, timestamp)) }
+        keySlots.filter { it.managedKeyId == key.id && it.lifecycle.state == RecordLifecycle.RECYCLE_BIN }.forEach { slot ->
+            keySlots.replaceFirst({ it.id == slot.id }) { it.copy(lifecycle = restoredLifecycle(it.lifecycle, timestamp)) }
+        }
+        notice = "${key.displayName} restored locally."
+    }
+
+    fun purgeKey(key: ManagedKey) {
+        val timestamp = now()
+        keys.replaceFirst({ it.id == key.id }) { it.copy(lifecycle = purgedLifecycle(it.lifecycle, timestamp)) }
+        keySlots.filter { it.managedKeyId == key.id }.forEach { slot ->
+            keySlots.replaceFirst({ it.id == slot.id }) { it.copy(lifecycle = purgedLifecycle(it.lifecycle, timestamp)) }
+        }
+        keyExtras.remove(key.id)
+        notice = "${key.displayName} permanently cleared from the local Recycle Bin."
     }
 
     fun restore(record: PortalDeletedRecord) {
@@ -441,7 +590,6 @@ internal class WebPortalStore {
             is PortalDeletedRecord.Site -> sites.add(record.site)
             is PortalDeletedRecord.Terminal -> terminals.add(record.terminal)
             is PortalDeletedRecord.Person -> people.add(record.person)
-            is PortalDeletedRecord.Key -> keys.add(record.key)
         }
         recycleBin.remove(record)
         notice = "${record.label} restored locally. Production restore requires Super Admin authorization and an audit event."
@@ -460,6 +608,18 @@ internal class WebPortalStore {
 
     fun keyName(keyId: String): String = keys.firstOrNull { it.id == keyId }?.displayName ?: "Unassigned key"
 
+    /** The key's current active cabinet-slot mapping, if any. A key may exist without one yet. */
+    fun keySlotFor(keyId: String): KeySlot? =
+        keySlots.firstOrNull { it.managedKeyId == keyId && it.lifecycle.state == RecordLifecycle.ACTIVE }
+
+    fun keyLocationLabel(keyId: String): String {
+        val slot = keySlotFor(keyId) ?: return "Not assigned to a cabinet slot"
+        val boxAddress = terminals.firstOrNull { it.id == slot.terminalId }?.boxAddress
+        return if (boxAddress == null) "Node ${slot.nodeAddress}" else "Box $boxAddress · Node ${slot.nodeAddress}"
+    }
+
+    fun keyTerminalName(keyId: String): String = keySlotFor(keyId)?.let { terminalName(it.terminalId) } ?: "Not assigned to a terminal"
+
     fun terminalFor(name: String): PortalTerminal? = terminals.firstOrNull { it.name.equals(name.trim(), ignoreCase = true) }
 
     private fun siteIdFor(name: String): String =
@@ -469,6 +629,40 @@ internal class WebPortalStore {
 
     private fun field(values: List<String>, index: Int, fallback: String): String =
         values.getOrNull(index)?.trim().takeUnless { it.isNullOrBlank() } ?: fallback
+
+    private fun now(): Long = Clock.System.now().toEpochMilliseconds()
+}
+
+private const val DEMO_CREATED_AT = 1_783_000_000_000L
+private const val SUPER_ADMIN_ACTOR_ID = "usr_super_admin_demo"
+
+private fun activeLifecycle(timestamp: Long) = LifecycleMetadata(
+    createdAtEpochMillis = timestamp,
+    updatedAtEpochMillis = timestamp,
+)
+
+private fun archivedLifecycle(existing: LifecycleMetadata, timestamp: Long) = existing.copy(
+    state = RecordLifecycle.RECYCLE_BIN,
+    updatedAtEpochMillis = timestamp,
+    deletedAtEpochMillis = timestamp,
+    deletedByUserId = SUPER_ADMIN_ACTOR_ID,
+)
+
+private fun restoredLifecycle(existing: LifecycleMetadata, timestamp: Long) = existing.copy(
+    state = RecordLifecycle.ACTIVE,
+    updatedAtEpochMillis = timestamp,
+    deletedAtEpochMillis = null,
+    deletedByUserId = null,
+)
+
+private fun purgedLifecycle(existing: LifecycleMetadata, timestamp: Long) = existing.copy(
+    state = RecordLifecycle.PURGED,
+    updatedAtEpochMillis = timestamp,
+)
+
+private fun <T> SnapshotStateList<T>.replaceFirst(predicate: (T) -> Boolean, transform: (T) -> T) {
+    val index = indexOfFirst(predicate)
+    if (index >= 0) this[index] = transform(this[index])
 }
 
 internal const val RECYCLE_RETENTION_LABEL = "60 days"
@@ -533,7 +727,14 @@ internal enum class WebDialogKind(
     ADD_KEY(
         title = "Add logical key",
         submitLabel = "Save key",
-        fields = listOf("Affiliated unit", "Terminal cabinet", "Key name", "Location / node", "Time limit", "Key group"),
+        fields = listOf(
+            "Affiliated unit",
+            "Terminal cabinet",
+            "Key name",
+            "Key node address (1 to terminal capacity, door node 0 not allowed)",
+            "Time limit",
+            "Key group",
+        ),
     ),
     ADD_EVENT(
         title = "Add event",
@@ -598,11 +799,21 @@ internal data class PortalTerminal(
     val siteId: String,
     val name: String,
     val deviceUid: String,
+    /** Cabinet protocol Box Address (1–255). One terminal owns exactly one Box Address. */
+    val boxAddress: Int,
     val nodeLayout: NodeLayoutType,
     val nodeCount: Int,
     val keyReturnAuthentication: Boolean,
     val status: PortalTerminalStatus,
     val lastSyncLabel: String,
+)
+
+/** Projects this preview terminal into the shared node-address validation policy's terminal shape. */
+internal fun PortalTerminal.toManagedTerminalOption(): ManagedTerminalOption = ManagedTerminalOption(
+    id = id,
+    siteId = siteId,
+    label = "$name · Box $boxAddress",
+    configuredSlotCount = nodeCount,
 )
 
 internal enum class NodeLayoutType(val label: String) {
@@ -642,35 +853,10 @@ internal enum class PortalAccountStatus(val label: String) {
     DISABLED("Disabled"),
 }
 
-internal data class PortalKey(
-    val id: String,
-    val siteId: String,
-    val terminalId: String,
-    val displayName: String,
-    val location: String,
+/** Supplier-workflow fields (time limit, key group) not yet part of the shared ManagedKey contract. */
+internal data class WebKeyExtra(
     val timeLimit: String,
     val keyGroup: String,
-    val fobEnrollmentStatus: FobEnrollmentStatus,
-    val availability: KeyAvailability,
-)
-
-internal enum class FobEnrollmentStatus(val label: String) {
-    NOT_ENROLLED("Fob enrolment required"),
-    ENROLLED("Fob enrolled"),
-    REVOKED("Fob revoked"),
-}
-
-internal enum class KeyAvailability(val label: String) {
-    AVAILABLE("Available"),
-    TAKEN("Taken"),
-    UNAVAILABLE("Unavailable"),
-}
-
-internal data class PortalAccessGrant(
-    val id: String,
-    val personId: String,
-    val keyId: String,
-    val validUntil: String,
 )
 
 internal data class PortalEventDefinition(
@@ -763,10 +949,5 @@ internal sealed interface PortalDeletedRecord {
     data class Person(val person: PortalPerson) : PortalDeletedRecord {
         override val label: String = person.displayName
         override val typeLabel: String = "Personnel"
-    }
-
-    data class Key(val key: PortalKey) : PortalDeletedRecord {
-        override val label: String = key.displayName
-        override val typeLabel: String = "Key"
     }
 }

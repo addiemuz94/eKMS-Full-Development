@@ -36,6 +36,7 @@ class TerminalAdminStore(context: Context) {
         private const val KEY_FORCE_PASSWORD_CHANGE = "force_password_change"
         private const val KEY_USERS = "managed_users"
         private const val KEY_KEYS = "managed_keys"
+        private const val KEY_ACCESS_GRANTS = "managed_access_grants"
         private const val PASSWORD_ITERATIONS = 120_000
         private const val SALT_BYTES = 16
         private const val HASH_BYTES = 32
@@ -62,6 +63,7 @@ class TerminalAdminStore(context: Context) {
             ),
         ) + readUsers(),
         keys = readKeys(),
+        accessGrants = readAccessGrants(),
     )
 
     @Synchronized
@@ -229,6 +231,47 @@ class TerminalAdminStore(context: Context) {
         return StoreResult.Success(key)
     }
 
+    /**
+     * Binds one enrolled user to one enrolled key. This is a local bootstrap
+     * grant only; the Super Admin's own access is implicit and is never
+     * represented as a grant. The central backend becomes authoritative for
+     * access grants during the sync milestone, following the same
+     * user-to-exact-key model as the Website (shared AccessGrant contract).
+     */
+    @Synchronized
+    fun grantAccess(userId: String, keyId: String): StoreResult<TerminalAccessGrant> {
+        if (readUsers().none { it.id == userId }) {
+            return StoreResult.Error("Select an enrolled user before granting a key.")
+        }
+        if (readKeys().none { it.id == keyId }) {
+            return StoreResult.Error("Select an enrolled key before granting access.")
+        }
+
+        val existingGrants = readAccessGrants()
+        if (existingGrants.any { it.userId == userId && it.keyId == keyId }) {
+            return StoreResult.Error("That exact key is already granted to this user.")
+        }
+
+        val grant = TerminalAccessGrant(
+            id = "grant_" + UUID.randomUUID().toString(),
+            userId = userId,
+            keyId = keyId,
+            createdAtEpochMillis = System.currentTimeMillis(),
+        )
+        saveAccessGrants(existingGrants + grant)
+        return StoreResult.Success(grant)
+    }
+
+    @Synchronized
+    fun revokeAccess(grantId: String): StoreResult<Unit> {
+        val existingGrants = readAccessGrants()
+        if (existingGrants.none { it.id == grantId }) {
+            return StoreResult.Error("This access grant no longer exists.")
+        }
+        saveAccessGrants(existingGrants.filterNot { it.id == grantId })
+        return StoreResult.Success(Unit)
+    }
+
     private fun ensureSeeded() {
         if (preferences.getBoolean(KEY_SEEDED, false)) return
 
@@ -240,6 +283,7 @@ class TerminalAdminStore(context: Context) {
             .putBoolean(KEY_FORCE_PASSWORD_CHANGE, true)
             .putString(KEY_USERS, "[]")
             .putString(KEY_KEYS, "[]")
+            .putString(KEY_ACCESS_GRANTS, "[]")
             .apply()
     }
 
@@ -298,6 +342,29 @@ class TerminalAdminStore(context: Context) {
             )
         }
         preferences.edit().putString(KEY_KEYS, items.toString()).apply()
+    }
+
+    private fun readAccessGrants(): List<TerminalAccessGrant> = decodeArray(KEY_ACCESS_GRANTS) { item ->
+        TerminalAccessGrant(
+            id = item.getString("id"),
+            userId = item.getString("userId"),
+            keyId = item.getString("keyId"),
+            createdAtEpochMillis = item.getLong("createdAtEpochMillis"),
+        )
+    }
+
+    private fun saveAccessGrants(grants: List<TerminalAccessGrant>) {
+        val items = JSONArray()
+        grants.forEach { grant ->
+            items.put(
+                JSONObject()
+                    .put("id", grant.id)
+                    .put("userId", grant.userId)
+                    .put("keyId", grant.keyId)
+                    .put("createdAtEpochMillis", grant.createdAtEpochMillis),
+            )
+        }
+        preferences.edit().putString(KEY_ACCESS_GRANTS, items.toString()).apply()
     }
 
     private fun <T> decodeArray(
@@ -359,6 +426,7 @@ data class TerminalAdminSnapshot(
     val forceSuperAdminPasswordChange: Boolean,
     val users: List<TerminalUser>,
     val keys: List<TerminalKey>,
+    val accessGrants: List<TerminalAccessGrant>,
 )
 
 data class TerminalUser(
@@ -385,6 +453,14 @@ data class TerminalKey(
     val nodeAddress: Int,
     /** SHA-256 of the raw fob UID; the raw UID is not retained. */
     val fobFingerprint: String,
+    val createdAtEpochMillis: Long,
+)
+
+/** Binds one enrolled user to one enrolled key. Separate from both records, matching the shared AccessGrant model. */
+data class TerminalAccessGrant(
+    val id: String,
+    val userId: String,
+    val keyId: String,
     val createdAtEpochMillis: Long,
 )
 
