@@ -30,6 +30,8 @@ object ApiPaths {
     const val RECYCLE_BIN = "/v1/admin/recycle-bin"
     const val SYNC_BOOTSTRAP = "/v1/terminal/sync/bootstrap"
     const val SYNC_PUSH = "/v1/terminal/sync/push"
+    const val TERMINAL_DATA_READ = "/v1/terminal/sync/read"
+    const val TERMINAL_DATA_DOWNLOAD = "/v1/terminal/sync/download"
     const val SYNC_CONFLICTS = "/v1/admin/sync-conflicts"
     const val AUDIT_EVENTS = "/v1/audit/events"
 }

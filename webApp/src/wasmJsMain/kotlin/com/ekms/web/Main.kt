@@ -57,8 +57,6 @@ import kotlinx.datetime.Clock
 
 private enum class WebScreen {
     OVERVIEW,
-    SITES_TERMINALS,
-    KEYS_ACCESS,
     USERS,
     USER_EDITOR,
     USER_DETAILS,
@@ -100,26 +98,8 @@ private fun SuperAdminWebApp() {
                     activeUserCount = users.count { it.lifecycle.state == RecordLifecycle.ACTIVE },
                     binCount = users.count { it.lifecycle.state == RecordLifecycle.RECYCLE_BIN },
                     onOpenUsers = { screen = WebScreen.USERS },
-                    onOpenSitesAndTerminals = { screen = WebScreen.SITES_TERMINALS },
-                    onOpenKeysAndAccess = { screen = WebScreen.KEYS_ACCESS },
                     onOpenRecycleBin = { screen = WebScreen.RECYCLE_BIN },
                 )
-
-                WebScreen.SITES_TERMINALS -> Box(
-                    modifier = Modifier.padding(scaffoldPadding),
-                ) {
-                    SiteTerminalWebScreen(
-                        onBack = { screen = WebScreen.OVERVIEW },
-                    )
-                }
-
-                WebScreen.KEYS_ACCESS -> Box(
-                    modifier = Modifier.padding(scaffoldPadding),
-                ) {
-                    KeyAccessWebScreen(
-                        onBack = { screen = WebScreen.OVERVIEW },
-                    )
-                }
 
                 WebScreen.USERS -> WebUserDirectoryPage(
                     scaffoldPadding = scaffoldPadding,
@@ -262,8 +242,6 @@ private fun WebOverviewPage(
     activeUserCount: Int,
     binCount: Int,
     onOpenUsers: () -> Unit,
-    onOpenSitesAndTerminals: () -> Unit,
-    onOpenKeysAndAccess: () -> Unit,
     onOpenRecycleBin: () -> Unit,
 ) {
     BoxWithConstraints(
@@ -290,8 +268,7 @@ private fun WebOverviewPage(
                 WebPageIntro(
                     title = "Super Admin Control Centre",
                     description = "The dashboard reflows automatically between browser, tablet and compact " +
-                            "mobile widths. Keys, cabinet slots and access grants are configured without " +
-                            "sending a cabinet command.",
+                            "mobile widths. The current step makes Users & Credentials functional.",
                 )
             }
             item {
@@ -306,19 +283,19 @@ private fun WebOverviewPage(
             item {
                 WebActionCard(
                     title = "Sites & Terminals",
-                    value = "Cabinet configuration",
+                    value = "Next module",
                     description = "Site, cabinet, Box Address, node range and sync configuration.",
-                    actionLabel = "Open Sites & Terminals",
-                    onClick = onOpenSitesAndTerminals,
+                    actionLabel = "Users first",
+                    onClick = {},
                 )
             }
             item {
                 WebActionCard(
-                    title = "Keys, Slots & Access",
-                    value = "Physical key configuration",
-                    description = "Register key records, assign cabinet node addresses and grant exact user access.",
-                    actionLabel = "Manage keys & access",
-                    onClick = onOpenKeysAndAccess,
+                    title = "Keys & Access",
+                    value = "Next module",
+                    description = "Exact user-to-key access, schedules and cabinet node assignments.",
+                    actionLabel = "Users first",
+                    onClick = {},
                 )
             }
             item {
