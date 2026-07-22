@@ -87,7 +87,12 @@ data class ManagedKey(
     val id: String,
     val siteId: String,
     val displayName: String,
-    val keyFobUid: String? = null,
+    /**
+     * Opaque value issued by the protected Android Terminal enrolment flow.
+     * It is intentionally not a card UID and cannot be reversed to one by
+     * Website, Mobile, or ordinary API responses.
+     */
+    val fobEnrollmentReference: String? = null,
     val lifecycle: LifecycleMetadata,
 )
 
@@ -165,6 +170,10 @@ enum class AuditEventType {
     TERMINAL_HARDWARE_CONFIGURATION_CHANGED,
     KEY_CREATED,
     KEY_UPDATED,
+    KEY_FOB_ENROLLED,
+    KEY_FOB_REPLACED,
+    KEY_FOB_REVOKED,
+    KEY_FOB_ENROLLMENT_DENIED,
     KEY_SLOT_CREATED,
     KEY_SLOT_UPDATED,
     ACCESS_GRANT_CREATED,

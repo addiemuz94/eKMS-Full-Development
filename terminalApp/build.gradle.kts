@@ -40,5 +40,5 @@ dependencies {
     implementation(libs.androidx.activity.compose)
     implementation(libs.androidx.lifecycle.runtime.ktx)
     implementation(libs.androidx.compose.material3)
-    implementation(libs.kotlinx.datetime)
+    implementation(files("libs/serialport.aar"))
 }

@@ -66,7 +66,6 @@ private data class KeyEditorState(
     val id: String? = null,
     val displayName: String = "",
     val siteId: String = "",
-    val fobUid: String = "",
 )
 
 private data class SlotEditorState(
@@ -262,7 +261,6 @@ fun KeyAccessWebScreen(onBack: () -> Unit) {
                                         id = key.id,
                                         displayName = key.displayName,
                                         siteId = key.siteId,
-                                        fobUid = key.keyFobUid.orEmpty(),
                                     )
                                 },
                                 onArchive = {
@@ -402,13 +400,13 @@ fun KeyAccessWebScreen(onBack: () -> Unit) {
             onDismiss = { keyEditor = null },
             onSave = { saved ->
                 val timestamp = now()
-                val normalizedUid = KeySlotAccessPolicy.normalizeFobUid(saved.fobUid).ifBlank { null }
+                val existing = keys.firstOrNull { it.id == saved.id }
                 val updated = ManagedKey(
                     id = saved.id ?: "key_local_${timestamp}",
                     siteId = saved.siteId,
                     displayName = saved.displayName.trim(),
-                    keyFobUid = normalizedUid,
-                    lifecycle = keys.firstOrNull { it.id == saved.id }?.lifecycle?.copy(
+                    fobEnrollmentReference = existing?.fobEnrollmentReference,
+                    lifecycle = existing?.lifecycle?.copy(
                         updatedAtEpochMillis = timestamp,
                     ) ?: LifecycleMetadata(
                         createdAtEpochMillis = timestamp,
@@ -419,7 +417,7 @@ fun KeyAccessWebScreen(onBack: () -> Unit) {
                     if (it.id == updated.id) updated else it
                 }
                 keyEditor = null
-                notice = "${updated.displayName} saved locally. Terminal hardware fob scanning is not enabled in this step."
+                notice = "${updated.displayName} saved locally. A physical fob can only be enrolled on the protected Android Terminal."
             },
         )
     }
@@ -541,10 +539,10 @@ private fun KeyRecordCard(
             Text(key.displayName, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
             Text(siteLabel)
             Text(
-                text = if (key.keyFobUid.isNullOrBlank()) {
-                    "Fob UID: not enrolled"
+                text = if (key.fobEnrollmentReference.isNullOrBlank()) {
+                    "Physical fob: not enrolled"
                 } else {
-                    "Fob UID: registered (not displayed)"
+                    "Physical fob: enrolled (identifier protected)"
                 },
                 style = MaterialTheme.typography.bodySmall,
             )
@@ -644,10 +642,8 @@ private fun KeyEditorDialog(
 ) {
     var form by remember(editor.id) { mutableStateOf(editor) }
     val issues = KeySlotAccessPolicy.validateKey(
-        draft = KeyDraft(form.displayName, form.siteId, form.fobUid),
+        draft = KeyDraft(form.displayName, form.siteId),
         knownSiteIds = sites.mapTo(linkedSetOf()) { it.id },
-        activeKeys = activeKeys,
-        editingKeyId = form.id,
     )
 
     AlertDialog(

@@ -23,8 +23,6 @@ data class ManagedTerminalOption(
 data class KeyDraft(
     val displayName: String,
     val siteId: String,
-    /** Optional 4–16 byte NFC fob UID. Terminal scanning replaces manual entry in production. */
-    val keyFobUid: String,
 )
 
 @Serializable
@@ -50,7 +48,6 @@ data class AccessGrantDraft(
 enum class KeyAccessField {
     KEY_NAME,
     KEY_SITE,
-    KEY_FOB_UID,
     SLOT_TERMINAL,
     SLOT_NODE_ADDRESS,
     SLOT_KEY,
@@ -71,36 +68,19 @@ object KeySlotAccessPolicy {
     const val MIN_KEY_NODE_ADDRESS = 1
     const val DOOR_NODE_ADDRESS = 0
 
-    /** Normalizes common UID separators without revealing or logging a UID. */
+    /** Used only by the Android Terminal protected reader flow; never by Web or Mobile UI. */
     fun normalizeFobUid(value: String): String =
         value.trim().replace(Regex("[:\\s-]"), "").uppercase()
 
     fun validateKey(
         draft: KeyDraft,
         knownSiteIds: Set<String>,
-        activeKeys: List<ManagedKey>,
-        editingKeyId: String? = null,
     ): List<KeyAccessValidationIssue> = buildList {
         if (draft.displayName.trim().length < 2) {
             add(KeyAccessValidationIssue(KeyAccessField.KEY_NAME, "Enter a key name with at least 2 characters."))
         }
         if (draft.siteId !in knownSiteIds) {
             add(KeyAccessValidationIssue(KeyAccessField.KEY_SITE, "Select an active site for this key."))
-        }
-        val normalizedUid = normalizeFobUid(draft.keyFobUid)
-        if (normalizedUid.isNotBlank() && !normalizedUid.matches(Regex("[0-9A-F]{8,32}"))) {
-            add(
-                KeyAccessValidationIssue(
-                    KeyAccessField.KEY_FOB_UID,
-                    "Fob UID must contain 8–32 hexadecimal characters when supplied.",
-                ),
-            )
-        }
-        if (normalizedUid.isNotBlank() && activeKeys.any {
-                it.id != editingKeyId && normalizeFobUid(it.keyFobUid.orEmpty()) == normalizedUid
-            }
-        ) {
-            add(KeyAccessValidationIssue(KeyAccessField.KEY_FOB_UID, "That fob UID is already registered to another active key."))
         }
     }
 
@@ -247,21 +227,18 @@ object KeySlotDemoData {
             id = "key_hq_vehicle_demo",
             siteId = "site_hq",
             displayName = "HQ Service Vehicle",
-            keyFobUid = "A1B2C3D4",
             lifecycle = activeLifecycle(),
         ),
         ManagedKey(
             id = "key_port_crane_demo",
             siteId = "site_port",
             displayName = "Port Crane Access",
-            keyFobUid = "B1C2D3E4",
             lifecycle = activeLifecycle(),
         ),
         ManagedKey(
             id = "key_service_store_demo",
             siteId = "site_service",
             displayName = "Service Store Master",
-            keyFobUid = "C1D2E3F4",
             lifecycle = activeLifecycle(),
         ),
     )

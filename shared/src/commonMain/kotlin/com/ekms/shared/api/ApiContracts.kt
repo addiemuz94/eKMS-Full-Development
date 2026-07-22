@@ -3,6 +3,7 @@ package com.ekms.shared.api
 import com.ekms.shared.domain.AuditEvent
 import com.ekms.shared.domain.AccountStatus
 import com.ekms.shared.domain.CredentialKind
+import com.ekms.shared.domain.RecordType
 import com.ekms.shared.domain.TerminalConnectionState
 import com.ekms.shared.domain.UserRole
 import com.ekms.shared.policy.RecycleBinEntry
@@ -106,6 +107,32 @@ data class KeyUpsertRequest(
     val displayName: String,
     val fobEnrollmentReference: String? = null,
     val expectedRevision: Long? = null,
+)
+
+/**
+ * Response from the Android Terminal-only fob-enrolment endpoint.
+ *
+ * The request body containing the scanned UID intentionally lives only in the
+ * Android Terminal module. This shared contract never carries a raw UID.
+ */
+@Serializable
+data class FobEnrollmentResponse(
+    val keyId: String,
+    val fobEnrollmentReference: String,
+    val replacedExistingEnrollment: Boolean,
+    val enrolledAtEpochMillis: Long,
+    val auditEventId: String,
+)
+
+/** Safe input for a Terminal sync outbox; it contains no raw fob identifier. */
+@Serializable
+data class FobEnrollmentAuditPayload(
+    val keyId: String,
+    val terminalId: String,
+    val siteId: String,
+    val eventType: String,
+    val occurredAtEpochMillis: Long,
+    val entityType: RecordType = RecordType.KEY,
 )
 
 @Serializable

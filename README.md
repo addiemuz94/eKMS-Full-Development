@@ -38,8 +38,16 @@ The web target is Kotlin/Wasm. It is suitable for the shared Super Admin UI foun
 
 ## Backend handover
 
-Give the backend developer [API_HANDOVER_SUPER_ADMIN.md](docs/API_HANDOVER_SUPER_ADMIN.md) before implementing login, master data, sync, vendor approval, or audit services.
+Give the backend developer [BACKEND_DEVELOPER_HANDOVER.md](docs/BACKEND_DEVELOPER_HANDOVER.md) first. It is the current cross-system handover for the Terminal workflow, backend APIs, offline sync, and guided live key enrolment. The earlier [API_HANDOVER_SUPER_ADMIN.md](docs/API_HANDOVER_SUPER_ADMIN.md) remains useful as foundation detail, but does not cover the later live-hardware flow.
+
+## Current implementation
+
+- Step 1: shared policy, sync-conflict and Recycle Bin foundation.
+- Step 2: Super Admin Users & Credentials (applied in the working Android Studio project).
+- Step 3: responsive Sites & Terminals UI, shared cabinet-configuration validation,
+  and backend handover. See `docs/STEP_3_SITES_TERMINALS_HANDOFF.md`.
 
 ## Next build step
 
-Implement actual Super Admin CRUD flows for Users, Sites, Terminals, Keys, Slots and Access Grants, backed initially by a local repository contract that can later switch to the documented backend APIs.
+Implement Keys, cabinet slots and access grants. That step will validate every
+key slot against the configured physical node-address range of its terminal.
