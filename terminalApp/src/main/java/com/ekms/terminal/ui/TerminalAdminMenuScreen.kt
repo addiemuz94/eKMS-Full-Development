@@ -46,9 +46,15 @@ fun TerminalAdminMenuScreen(
     settings: TerminalCabinetSettings,
     highestRegisteredNodeAddress: Int?,
     notice: String?,
+    syncBusy: Boolean = false,
+    pendingOutboxCount: Int = 0,
     onBack: () -> Unit,
     onSave: (TerminalCabinetSettings) -> Unit,
     onOpenPasswordChange: () -> Unit,
+    onBootstrap: () -> Unit = {},
+    onPush: () -> Unit = {},
+    onRead: () -> Unit = {},
+    onDownload: () -> Unit = {},
 ) {
     var cabinetName by remember(settings) { mutableStateOf(settings.cabinetName) }
     var cabinetId by remember(settings) { mutableStateOf(settings.cabinetId) }
@@ -90,6 +96,9 @@ fun TerminalAdminMenuScreen(
             modifier = Modifier.fillMaxWidth(),
             label = { Text("Key Cabinet ID") },
             singleLine = true,
+            supportingText = {
+                Text("Use the backend terminal UUID for sync bootstrap/push/read/download.")
+            },
         )
         OutlinedButton(onClick = onOpenPasswordChange, modifier = Modifier.fillMaxWidth()) {
             Text("Modify administrator password")
@@ -100,6 +109,9 @@ fun TerminalAdminMenuScreen(
             modifier = Modifier.fillMaxWidth(),
             label = { Text("Set server address") },
             singleLine = true,
+            supportingText = {
+                Text("LAN backend URL, e.g. http://192.168.1.10:3000 (not localhost on a physical device).")
+            },
         )
         OutlinedTextField(
             value = activationCode,
@@ -145,6 +157,31 @@ fun TerminalAdminMenuScreen(
             onCheckedChange = { keyRetrievalVideoEnabled = it },
         )
 
+        Card(modifier = Modifier.fillMaxWidth()) {
+            Column(
+                modifier = Modifier.padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                Text("Backend synchronization", fontWeight = FontWeight.SemiBold)
+                Text(
+                    "Pending offline changes: $pendingOutboxCount. Sign in with a server account, then run sync.",
+                    style = MaterialTheme.typography.bodySmall,
+                )
+                OutlinedButton(onClick = onBootstrap, enabled = !syncBusy, modifier = Modifier.fillMaxWidth()) {
+                    Text("Bootstrap from server")
+                }
+                OutlinedButton(onClick = onPush, enabled = !syncBusy, modifier = Modifier.fillMaxWidth()) {
+                    Text("Push offline changes")
+                }
+                OutlinedButton(onClick = onRead, enabled = !syncBusy, modifier = Modifier.fillMaxWidth()) {
+                    Text("Read request")
+                }
+                OutlinedButton(onClick = onDownload, enabled = !syncBusy, modifier = Modifier.fillMaxWidth()) {
+                    Text("Download configuration")
+                }
+            }
+        }
+
         Button(
             onClick = {
                 onSave(
@@ -161,7 +198,7 @@ fun TerminalAdminMenuScreen(
                 )
             },
             modifier = Modifier.fillMaxWidth(),
-            enabled = keyNodeCountError == null,
+            enabled = keyNodeCountError == null && !syncBusy,
         ) {
             Text("Save Admin Menu settings")
         }

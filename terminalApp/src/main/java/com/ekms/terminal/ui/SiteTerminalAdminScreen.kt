@@ -41,7 +41,8 @@ import com.ekms.shared.domain.TerminalEditorInput
  * Step 3 on-site Super Admin screen.
  *
  * It is intentionally independent from CabinetGateway: changing a site or a
- * terminal record never sends a cabinet serial command. Backend sync replaces
+ * terminal record never sends a cabinet serial command. Backend sync is available
+ * from Admin Menu once server address + terminal UUID are configured.
  * this local demo state in a later step.
  */
 @Composable
@@ -108,7 +109,7 @@ fun SiteTerminalAdminScreen(onBack: () -> Unit) {
             )
             Text(
                 text = "Create and maintain site records, terminal identity and cabinet connection settings. " +
-                        "Changes below are local demo data until backend sync is connected.",
+                        "Use Admin Menu sync after setting the server address and Key Cabinet ID (backend terminal UUID).",
                 style = MaterialTheme.typography.bodyMedium,
             )
 

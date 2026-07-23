@@ -7,5 +7,19 @@ html, body, #root {
 
 body {
   overflow: hidden;
-  font-family: Arial, sans-serif;
+  font-family: "Plus Jakarta Sans", "Segoe UI", sans-serif;
+  background: #f5f8fc;
+  color: #1e3a5f;
+  -webkit-font-smoothing: antialiased;
+}
+
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  background:
+    linear-gradient(150deg, #dbeafe 0%, transparent 40%),
+    linear-gradient(0deg, #f5f8fc, #f5f8fc);
+  pointer-events: none;
 }
