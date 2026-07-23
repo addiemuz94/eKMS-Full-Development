@@ -59,7 +59,10 @@ async function request<T>(
     headers.Authorization = `Bearer ${accessToken}`
   }
   if (opts?.idempotent) {
-    headers['Idempotency-Key'] = crypto.randomUUID()
+    headers['Idempotency-Key'] =
+      typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+        ? crypto.randomUUID()
+        : `idem-${Date.now()}-${Math.random().toString(16).slice(2)}`
   }
 
   const res = await fetch(path, {
