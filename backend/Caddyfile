@@ -1,0 +1,22 @@
+# Single host: kms-cvt.com serves web + API (no api.* subdomain).
+# DNS A records: kms-cvt.com (+ optional www) -> this VPS IP
+# Ports 80/443 must be free for Caddy (or put Caddy behind your existing proxy).
+
+kms-cvt.com, www.kms-cvt.com {
+	encode gzip
+
+	# Backend API (Node Express)
+	handle /v1/* {
+		reverse_proxy api:3000
+	}
+	handle /health {
+		reverse_proxy api:3000
+	}
+
+	# Wasm web portal
+	handle {
+		root * /srv/web
+		try_files {path} /index.html
+		file_server
+	}
+}

@@ -23,7 +23,6 @@ import androidx.compose.ui.unit.dp
 import com.ekms.shared.protocol.KeyCabinetLink.Companion.MAX_KEY_NODE_ADDRESS
 import com.ekms.terminal.data.TerminalCabinetSettings
 import com.ekms.terminal.hardware.readEthernetMacAddress
-import com.ekms.terminal.ui.theme.DataReadoutTextStyle
 
 /**
  * Smart Key Cabinet User Manual V2.1, Section 4 — Admin Menu.
@@ -40,14 +39,6 @@ import com.ekms.terminal.ui.theme.DataReadoutTextStyle
  * Items 1, 2, 4, 5, 6, 8, 9, 10 are one form saved together. Item 3 opens
  * the existing password-change screen rather than duplicating it. Item 7
  * is read-only and is not part of the saved settings record.
- *
- * Take Warning Time and Door-Close Warning Time are documented production
- * enhancements beyond the manual (CLAUDE.md "Terminal App UX Baseline
- * (Production)" §1/§2) — the Key Take Flow's and Key Return Flow's own
- * countdowns, in seconds, before their respective "please close the door"
- * voice lines. Two genuinely separate settings, not one shared value.
- * Saved alongside items 8-10 using the same settings record, not a
- * separate config path.
  */
 @Composable
 fun TerminalAdminMenuScreen(
@@ -67,8 +58,6 @@ fun TerminalAdminMenuScreen(
     var keyReturnCertificationEnabled by remember(settings) { mutableStateOf(settings.keyReturnCertificationEnabled) }
     var returnKeyVideoEnabled by remember(settings) { mutableStateOf(settings.returnKeyVideoEnabled) }
     var keyRetrievalVideoEnabled by remember(settings) { mutableStateOf(settings.keyRetrievalVideoEnabled) }
-    var takeWarningTimeText by remember(settings) { mutableStateOf(settings.takeWarningTimeSeconds.toString()) }
-    var doorCloseWarningTimeText by remember(settings) { mutableStateOf(settings.doorCloseWarningTimeSeconds.toString()) }
     val macAddress = remember { readEthernetMacAddress() ?: "Unavailable" }
 
     val keyNodeCount = keyNodeCountText.trim().toIntOrNull()
@@ -77,23 +66,6 @@ fun TerminalAdminMenuScreen(
         keyNodeCount !in 1..MAX_KEY_NODE_ADDRESS -> "Key node setting must be a number from 1 to $MAX_KEY_NODE_ADDRESS."
         highestRegisteredNodeAddress != null && keyNodeCount < highestRegisteredNodeAddress ->
             "A key is already registered at node $highestRegisteredNodeAddress. Remove it before lowering the key node setting below that."
-        else -> null
-    }
-
-    val takeWarningTimeSeconds = takeWarningTimeText.trim().toIntOrNull()
-    val takeWarningTimeError = when {
-        takeWarningTimeSeconds == null -> "Take Warning Time must be a number from 1 to $MAX_TAKE_WARNING_TIME_SECONDS."
-        takeWarningTimeSeconds !in 1..MAX_TAKE_WARNING_TIME_SECONDS ->
-            "Take Warning Time must be a number from 1 to $MAX_TAKE_WARNING_TIME_SECONDS."
-        else -> null
-    }
-
-    val doorCloseWarningTimeSeconds = doorCloseWarningTimeText.trim().toIntOrNull()
-    val doorCloseWarningTimeError = when {
-        doorCloseWarningTimeSeconds == null ->
-            "Door-Close Warning Time must be a number from 1 to $MAX_DOOR_CLOSE_WARNING_TIME_SECONDS."
-        doorCloseWarningTimeSeconds !in 1..MAX_DOOR_CLOSE_WARNING_TIME_SECONDS ->
-            "Door-Close Warning Time must be a number from 1 to $MAX_DOOR_CLOSE_WARNING_TIME_SECONDS."
         else -> null
     }
 
@@ -151,7 +123,7 @@ fun TerminalAdminMenuScreen(
                 verticalArrangement = Arrangement.spacedBy(4.dp),
             ) {
                 Text("Ethernet MAC address", fontWeight = FontWeight.SemiBold)
-                Text(macAddress, style = MaterialTheme.typography.bodyMedium.merge(DataReadoutTextStyle))
+                Text(macAddress, style = MaterialTheme.typography.bodyMedium)
             }
         }
         AdminMenuToggle(
@@ -172,34 +144,6 @@ fun TerminalAdminMenuScreen(
             checked = keyRetrievalVideoEnabled,
             onCheckedChange = { keyRetrievalVideoEnabled = it },
         )
-        OutlinedTextField(
-            value = takeWarningTimeText,
-            onValueChange = { takeWarningTimeText = it.filter { character -> character.isDigit() } },
-            modifier = Modifier.fillMaxWidth(),
-            label = { Text("Take Warning Time (seconds)") },
-            singleLine = true,
-            isError = takeWarningTimeError != null,
-            supportingText = {
-                Text(
-                    takeWarningTimeError
-                        ?: "Key Take Flow: how long after removal before the \"please close the door\" voice line.",
-                )
-            },
-        )
-        OutlinedTextField(
-            value = doorCloseWarningTimeText,
-            onValueChange = { doorCloseWarningTimeText = it.filter { character -> character.isDigit() } },
-            modifier = Modifier.fillMaxWidth(),
-            label = { Text("Door-Close Warning Time (seconds)") },
-            singleLine = true,
-            isError = doorCloseWarningTimeError != null,
-            supportingText = {
-                Text(
-                    doorCloseWarningTimeError
-                        ?: "Key Return Flow: how long after insertion before the \"please close the door\" voice line.",
-                )
-            },
-        )
 
         Button(
             onClick = {
@@ -213,21 +157,16 @@ fun TerminalAdminMenuScreen(
                         keyReturnCertificationEnabled = keyReturnCertificationEnabled,
                         returnKeyVideoEnabled = returnKeyVideoEnabled,
                         keyRetrievalVideoEnabled = keyRetrievalVideoEnabled,
-                        takeWarningTimeSeconds = requireNotNull(takeWarningTimeSeconds),
-                        doorCloseWarningTimeSeconds = requireNotNull(doorCloseWarningTimeSeconds),
                     ),
                 )
             },
             modifier = Modifier.fillMaxWidth(),
-            enabled = keyNodeCountError == null && takeWarningTimeError == null && doorCloseWarningTimeError == null,
+            enabled = keyNodeCountError == null,
         ) {
             Text("Save Admin Menu settings")
         }
     }
 }
-
-private const val MAX_TAKE_WARNING_TIME_SECONDS = 300
-private const val MAX_DOOR_CLOSE_WARNING_TIME_SECONDS = 300
 
 @Composable
 private fun AdminMenuToggle(

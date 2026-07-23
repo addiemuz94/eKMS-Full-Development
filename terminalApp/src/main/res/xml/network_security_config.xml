@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<network-security-config>
+    <!-- Debug / LAN backends commonly use cleartext HTTP until TLS is deployed. -->
+    <base-config cleartextTrafficPermitted="true" />
+</network-security-config>
