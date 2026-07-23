@@ -4,3 +4,15 @@ local.properties
 **/build/
 *.iml
 .DS_Store
+.kotlin/
+
+# Secrets — never commit real env files
+backend/.env
+backend/.env.production
+**/.env
+!**/.env.example
+!**/.env.production.example
+
+# React portal (also has web/.gitignore)
+web/node_modules/
+web/dist/

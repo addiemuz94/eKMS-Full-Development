@@ -10,6 +10,7 @@ import com.ekms.shared.api.AccessGrantUpsertRequest
 import com.ekms.shared.api.KeySlotUpsertRequest
 import com.ekms.shared.api.KeyUpsertRequest
 import com.ekms.shared.api.LoginResponse
+import com.ekms.shared.api.SiteUpsertRequest
 import com.ekms.shared.api.TerminalUpsertRequest
 import com.ekms.shared.domain.AccessGrant
 import com.ekms.shared.domain.AccountStatus
@@ -211,9 +212,9 @@ internal class WebPortalStore {
                     PortalSite(
                         id = it.id,
                         name = it.name,
-                        province = "",
-                        city = "",
-                        parentUnit = "",
+                        province = it.province.orEmpty(),
+                        city = it.city.orEmpty(),
+                        parentSiteId = it.parentSiteId,
                         address = it.address,
                         revision = it.revision,
                     )
@@ -354,9 +355,30 @@ internal class WebPortalStore {
         when (kind) {
             WebDialogKind.ADD_UNIT -> {
                 val name = field(values, 0, "New Unit")
-                val address = values.drop(1).map(String::trim).filter(String::isNotBlank).joinToString(", ").ifBlank { null }
-                createWithApi("Creating $name…") {
-                    ApiClient.createSite(name, address)
+                val province = values.getOrNull(1)?.trim().orEmpty().ifBlank { null }
+                val city = values.getOrNull(2)?.trim().orEmpty().ifBlank { null }
+                val superiorName = values.getOrNull(3)?.trim().orEmpty()
+                val parentSiteId = if (superiorName.isBlank()) {
+                    null
+                } else {
+                    optionalSiteIdFor(superiorName).also { resolved ->
+                        if (resolved == null) {
+                            notice = "Superior unit \"$superiorName\" was not found. Enter an existing unit name, or leave blank."
+                            closeDialog = false
+                        }
+                    }
+                }
+                if (closeDialog) {
+                    createWithApi("Creating $name…") {
+                        ApiClient.createSite(
+                            SiteUpsertRequest(
+                                name = name,
+                                province = province,
+                                city = city,
+                                parentSiteId = parentSiteId,
+                            ),
+                        )
+                    }
                 }
             }
 
@@ -805,6 +827,11 @@ internal class WebPortalStore {
 
     fun siteName(siteId: String): String = sites.firstOrNull { it.id == siteId }?.name ?: "Unassigned unit"
 
+    fun parentUnitName(site: PortalSite): String =
+        site.parentSiteId
+            ?.let { parentId -> sites.firstOrNull { it.id == parentId }?.name }
+            .orEmpty()
+
     fun terminalName(terminalId: String): String = terminals.firstOrNull { it.id == terminalId }?.name ?: "Unassigned terminal"
 
     fun personName(personId: String): String = people.firstOrNull { it.id == personId }?.displayName ?: "Unassigned person"
@@ -824,6 +851,12 @@ internal class WebPortalStore {
     fun keyTerminalName(keyId: String): String = keySlotFor(keyId)?.let { terminalName(it.terminalId) } ?: "Not assigned to a terminal"
 
     fun terminalFor(name: String): PortalTerminal? = terminals.firstOrNull { it.name.equals(name.trim(), ignoreCase = true) }
+
+    private fun optionalSiteIdFor(name: String): String? {
+        val trimmed = name.trim()
+        if (trimmed.isBlank()) return null
+        return sites.firstOrNull { it.name.equals(trimmed, ignoreCase = true) }?.id
+    }
 
     private fun siteIdFor(name: String): String =
         sites.firstOrNull { it.name.equals(name.trim(), ignoreCase = true) }?.id ?: sites.firstOrNull()?.id.orEmpty()
@@ -934,7 +967,12 @@ internal enum class WebDialogKind(
     ADD_UNIT(
         title = "Add unit",
         submitLabel = "Save unit",
-        fields = listOf("Unit name", "Province / state", "City", "Superior unit"),
+        fields = listOf(
+            "Unit name",
+            "Province / state",
+            "City",
+            "Superior unit (existing unit name, optional)",
+        ),
     ),
     ADD_TERMINAL(
         title = "Add Android terminal cabinet",
@@ -1027,7 +1065,7 @@ internal data class PortalSite(
     val name: String,
     val province: String,
     val city: String,
-    val parentUnit: String,
+    val parentSiteId: String? = null,
     val address: String? = null,
     val revision: Long = 1,
 )

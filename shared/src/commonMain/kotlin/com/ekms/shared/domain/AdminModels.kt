@@ -53,6 +53,9 @@ data class AdminUser(
 data class Site(
     val id: String,
     val name: String,
+    val province: String? = null,
+    val city: String? = null,
+    val parentSiteId: String? = null,
     val address: String? = null,
     val lifecycle: LifecycleMetadata,
 )

@@ -21,13 +21,17 @@ CREATE TABLE IF NOT EXISTS users (
 CREATE TABLE IF NOT EXISTS sites (
   id CHAR(36) NOT NULL PRIMARY KEY,
   name VARCHAR(255) NOT NULL,
+  province VARCHAR(128) NULL,
+  city VARCHAR(128) NULL,
+  parent_site_id CHAR(36) NULL,
   address VARCHAR(512) NULL,
   revision BIGINT NOT NULL DEFAULT 1,
   lifecycle_state VARCHAR(32) NOT NULL DEFAULT 'ACTIVE',
   created_at_epoch_ms BIGINT NOT NULL,
   updated_at_epoch_ms BIGINT NOT NULL,
   deleted_at_epoch_ms BIGINT NULL,
-  deleted_by_user_id CHAR(36) NULL
+  deleted_by_user_id CHAR(36) NULL,
+  CONSTRAINT fk_sites_parent FOREIGN KEY (parent_site_id) REFERENCES sites(id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS user_site_assignments (

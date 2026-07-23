@@ -4,7 +4,7 @@
 
 | Public URL | What runs |
 |------------|-----------|
-| `https://kms-cvt.com/` | Web portal (Wasm) |
+| `https://kms-cvt.com/` | Web portal (React in `web/`) |
 | `https://kms-cvt.com/v1/...` | Node API |
 | `https://kms-cvt.com/health` | Health check |
 
@@ -211,38 +211,28 @@ docker compose -f docker-compose.prod.yml --env-file .env.production logs -f cad
 
 ---
 
-## Part F — Build and upload the web portal
+## Part F — Build and upload the web portal (React)
 
-### 1. Build on your Windows PC (repo root)
+The live portal is the React app in `web/` (Kotlin/Wasm `webApp` is retired).
 
-```bat
-gradlew.bat :webApp:wasmJsBrowserDistribution
-```
-
-Output folder (typical):
-
-`webApp\build\dist\wasmJs\productionExecutable\`
-
-### 2. Copy to VPS
-
-From PowerShell (adjust user/IP/path):
-
-```powershell
-scp -r webApp\build\dist\wasmJs\productionExecutable\* USER@VPS_IP:/tmp/ekms-web/
-```
-
-Or use FileZilla / WinSCP to upload that folder’s **contents** to `/tmp/ekms-web/` on the VPS.
-
-### 3. Install into Caddy’s web volume
-
-On the VPS:
+### 1. Build (on VPS or any machine with Node 20+)
 
 ```bash
-# Find the exact volume name
-docker volume ls | grep web_dist
+cd web
+npm install
+npm run build
+```
 
-# Example name: backend_web_dist  (may vary)
+Output folder: `web/dist/`
+
+### 2. Install into Caddy’s web volume (on the VPS)
+
+```bash
+docker volume ls | grep web_dist
 export WEB_VOL=backend_web_dist
+
+rm -rf /tmp/ekms-web && mkdir -p /tmp/ekms-web
+cp -a web/dist/. /tmp/ekms-web/
 
 docker run --rm \
   -v "${WEB_VOL}:/srv" \
@@ -250,13 +240,16 @@ docker run --rm \
   alpine sh -c 'rm -rf /srv/* && cp -a /in/. /srv/ && ls -la /srv'
 ```
 
-### 4. Open the site
+### 3. Open the site
 
 Browser: **https://kms-cvt.com**
 
-Sign in with `SUPER_ADMIN_EMAIL` / `SUPER_ADMIN_PASSWORD` from `.env.production`.
+Hard-refresh (Ctrl+Shift+R) so the old Wasm bundle is not cached.
 
-The portal detects `kms-cvt.com` and calls `https://kms-cvt.com/v1/...` (same origin).
+Sign in with `SUPER_ADMIN_EMAIL` / `SUPER_ADMIN_PASSWORD` from `.env.production`
+(or the local seed account if you created one).
+
+Same-origin API: `/v1/...` and `/health`.
 
 ---
 
@@ -281,6 +274,37 @@ No `api.` subdomain.
 
 ---
 
+## Auto-start on VPS reboot
+
+Docker is enabled as a system service. Compose services already use
+`restart: unless-stopped`, so containers come back when Docker starts.
+
+For an explicit boot hook (recommended), install the systemd unit:
+
+```bash
+# already present on this VPS as /etc/systemd/system/ekms.service
+sudo systemctl enable --now ekms.service
+sudo systemctl status ekms.service
+```
+
+That unit runs:
+
+```bash
+docker compose -f docker-compose.prod.yml --env-file .env.production up -d
+```
+
+from `/root/eKMS/backend` after Docker is ready.
+
+Useful commands:
+
+```bash
+sudo systemctl status ekms
+sudo systemctl restart ekms
+sudo journalctl -u ekms -e
+```
+
+---
+
 ## Day-2 operations
 
 ### View logs
@@ -299,7 +323,8 @@ git pull
 cd backend
 docker compose -f docker-compose.prod.yml --env-file .env.production up -d --build
 docker compose -f docker-compose.prod.yml --env-file .env.production exec api node src/migratePhase2.js
-# rebuild web on PC and re-copy into web_dist (Part F)
+# rebuild React portal and re-copy into web_dist (Part F)
+#   cd ~/eKMS/web && npm run build && …
 ```
 
 ### Backup MySQL
