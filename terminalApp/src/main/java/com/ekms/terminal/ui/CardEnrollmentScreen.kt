@@ -13,15 +13,17 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import com.ekms.shared.domain.ManagedKey
+import com.ekms.terminal.data.TerminalKey
 import com.ekms.terminal.data.TerminalUser
 import com.ekms.terminal.hardware.PublicCardReaderController
 import com.ekms.terminal.hardware.PublicCardReaderState
 import com.ekms.terminal.hardware.UidEnrollmentResult
+import com.ekms.terminal.hardware.UidEnrollmentSummary
 
 /**
  * Manual capture enrolment for both personnel-card and key-card UIDs, per
@@ -42,11 +44,13 @@ import com.ekms.terminal.hardware.UidEnrollmentResult
 fun CardEnrollmentScreen(
     padding: PaddingValues,
     users: List<TerminalUser>,
-    keys: List<ManagedKey>,
+    keys: List<TerminalKey>,
     notice: String?,
     onBack: () -> Unit,
     onEnrollPersonnelCard: (userId: String, rawUid: String) -> UidEnrollmentResult,
     onEnrollKeyCard: (keyId: String, rawUid: String) -> UidEnrollmentResult,
+    onRevokePersonnelCard: (userId: String) -> UidEnrollmentSummary?,
+    onRevokeKeyCard: (keyId: String) -> UidEnrollmentSummary?,
 ) {
     var category by remember { mutableStateOf(CardEnrollmentCategory.PERSONNEL) }
     var selectedUserId by remember(users) { mutableStateOf(users.firstOrNull()?.id.orEmpty()) }
@@ -62,17 +66,21 @@ fun CardEnrollmentScreen(
         CardEnrollmentCategory.KEY -> selectedKey != null
     }
 
+    val currentCategory by rememberUpdatedState(category)
+    val currentSelectedUser by rememberUpdatedState(selectedUser)
+    val currentSelectedKey by rememberUpdatedState(selectedKey)
+
     val cardReader = remember {
         PublicCardReaderController(
             onStateChanged = { state -> readerState = state },
             onCardDetected = { rawUid ->
                 scanning = false
-                resultMessage = when (category) {
-                    CardEnrollmentCategory.PERSONNEL -> selectedUser?.let { user ->
+                resultMessage = when (currentCategory) {
+                    CardEnrollmentCategory.PERSONNEL -> currentSelectedUser?.let { user ->
                         describeOutcome(onEnrollPersonnelCard(user.id, rawUid), user.displayName)
                     }
 
-                    CardEnrollmentCategory.KEY -> selectedKey?.let { key ->
+                    CardEnrollmentCategory.KEY -> currentSelectedKey?.let { key ->
                         describeOutcome(onEnrollKeyCard(key.id, rawUid), key.displayName)
                     }
                 } ?: "No record was selected. Nothing was enrolled."
@@ -93,6 +101,20 @@ fun CardEnrollmentScreen(
     fun cancelScan() {
         scanning = false
         cardReader.stop()
+    }
+
+    fun revokeSelectedRecord() {
+        resultMessage = when (category) {
+            CardEnrollmentCategory.PERSONNEL -> selectedUser?.let { user ->
+                val summary = onRevokePersonnelCard(user.id)
+                if (summary != null) "Card revoked from ${user.displayName}." else "No card was enrolled to ${user.displayName}."
+            }
+
+            CardEnrollmentCategory.KEY -> selectedKey?.let { key ->
+                val summary = onRevokeKeyCard(key.id)
+                if (summary != null) "Card revoked from ${key.displayName}." else "No card was enrolled to ${key.displayName}."
+            }
+        } ?: "No record was selected. Nothing was revoked."
     }
 
     TerminalPage(padding) {
@@ -161,6 +183,13 @@ fun CardEnrollmentScreen(
             ) {
                 Text("Scan a card to enroll")
             }
+            OutlinedButton(
+                onClick = ::revokeSelectedRecord,
+                modifier = Modifier.fillMaxWidth(),
+                enabled = canScan,
+            ) {
+                Text("Revoke this record's card")
+            }
         } else {
             Text(
                 text = when (val state = readerState) {
@@ -193,7 +222,7 @@ private fun nextUserId(currentUserId: String, users: List<TerminalUser>): String
     return users[(index + 1 + users.size) % users.size].id
 }
 
-private fun nextKeyId(currentKeyId: String, keys: List<ManagedKey>): String {
+private fun nextKeyId(currentKeyId: String, keys: List<TerminalKey>): String {
     if (keys.isEmpty()) return ""
     val index = keys.indexOfFirst { it.id == currentKeyId }
     return keys[(index + 1 + keys.size) % keys.size].id

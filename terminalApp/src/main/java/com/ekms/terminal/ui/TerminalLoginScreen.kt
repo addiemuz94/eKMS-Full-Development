@@ -1,6 +1,5 @@
 package com.ekms.terminal.ui
 
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -13,7 +12,6 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
@@ -29,6 +27,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import com.ekms.terminal.data.TerminalAdminStore
+import com.ekms.terminal.ui.theme.StatusTone
 
 /**
  * Smart Key Cabinet User Manual V2.1, Section 1 — Login.
@@ -153,18 +152,10 @@ fun TerminalLoginScreen(
 
 @Composable
 private fun SwipeInputPanel(title: String, description: String, onClick: (() -> Unit)? = null) {
-    Card(
-        modifier = Modifier
-            .fillMaxWidth()
-            .then(if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
-    ) {
-        Column(
-            modifier = Modifier.padding(18.dp),
-            verticalArrangement = Arrangement.spacedBy(4.dp),
-        ) {
-            Text(title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
-            Text(description, style = MaterialTheme.typography.bodySmall)
-        }
+    // Ready-to-scan is itself a hardware-readiness state — same status-ring
+    // pattern as every other lifecycle indicator, not a bespoke color here.
+    StatusRingCard(tone = StatusTone.NORMAL, onClick = onClick, contentPadding = 18.dp) {
+        Text(title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+        Text(description, style = MaterialTheme.typography.bodySmall)
     }
 }
