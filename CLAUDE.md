@@ -4,7 +4,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project
 
-eKMS is a Kotlin Multiplatform key-management system: an Android Terminal (physical key cabinet controller), an Android mobile Super Admin companion app, and a Kotlin/Wasm Compose web portal, all sharing domain models/policies/API contracts through a `shared` module. There is no backend yet — the Website and Mobile UIs currently run against local in-memory sample data as an interactive preview of the workflow; a real backend must replace these with authenticated, revision-aware REST calls (see `docs/WEB_PORTAL_WORKFLOW_HANDOVER.md`).
+eKMS is a Kotlin Multiplatform key-management system: an Android Terminal (physical key cabinet controller), an Android mobile Super Admin companion app, and a Super Admin web portal, all sharing domain models/policies/API contracts through a `shared` module. A real backend now exists (`backend/`, Express.js + MySQL, REST API at `/v1`) — terminalApp has real offline-first sync wiring against it (`TerminalApiClient`/`TerminalSyncCoordinator`/`TerminalSyncOutbox`), and the web portal is real-backend-connected for some workflow areas but still hardcoded/in-memory for others (see `docs/WEB_PORTAL_WORKFLOW_HANDOVER.md` and the per-area breakdown that should live in Project Status). `mobileApp` remains 100% local in-memory demo data with zero network code.
+
+**Web portal note:** the Super Admin web portal is being migrated from the Kotlin/Wasm Compose `webApp` module to a React+Vite app at `web/`. `webApp` is now excluded from the Gradle build (`settings.gradle.kts` has `include(":webApp")` commented out — "Kotlin/Wasm webApp is frozen") and should be treated as a reference/legacy implementation, not a build target. New Super Admin portal work happens in `web/`.
 
 The `ekmshardwaretester-main` project mentioned in README.md is reference material only and is not part of this production build.
 
@@ -19,16 +21,22 @@ The `ekmshardwaretester-main` project mentioned in README.md is reference materi
 Run from the repo root (`gradlew.bat` on Windows, `./gradlew` on POSIX shells).
 
 ```
-gradlew.bat build                                  # build all modules
-gradlew.bat :shared:allTests                        # run shared commonTest (KMP test target)
+gradlew.bat build                                  # build all INCLUDED modules (shared, terminalApp, mobileApp — webApp is commented out of settings.gradle.kts and not built)
+gradlew.bat :shared:allTests                        # run shared commonTest (KMP test target); wasm test leg can fail on yarn.lock drift in this environment, see below
 gradlew.bat :shared:test --tests "*RecycleBinPolicyTest*"   # run a single test class
 gradlew.bat :terminalApp:assembleDebug               # build Android Terminal app
+gradlew.bat :terminalApp:build                        # compile + lint + assemble (debug & release) for terminalApp
 gradlew.bat :mobileApp:assembleDebug                  # build Android mobile companion app
-gradlew.bat :webApp:wasmJsBrowserDevelopmentRun       # run the web portal in a browser
-gradlew.bat :webApp:wasmJsBrowserProductionWebpack     # production web bundle
 ```
 
-`shared` is the only module with tests today (`shared/src/commonTest`), run via the Kotlin/JVM+Wasm multiplatform test tasks. There is no lint/format command configured beyond the Gradle/Kotlin compiler.
+The Super Admin web portal now builds separately from Gradle, as a plain npm project:
+```
+cd web && npm install && npm run dev     # local dev server (Vite proxies /v1 to http://127.0.0.1:3001)
+cd web && npm run build                  # production bundle -> dist/ (see backend/DEPLOY.md for deploy)
+```
+The old `gradlew.bat :webApp:wasmJsBrowserDevelopmentRun` / `:webApp:wasmJsBrowserProductionWebpack` commands no longer work — `webApp` is excluded from `settings.gradle.kts` (see Project note above) and has no Gradle tasks at all until re-included.
+
+`shared` is the only Gradle module with tests today (`shared/src/commonTest`), run via the Kotlin/JVM+Wasm multiplatform test tasks. `:shared:testDebugUnitTest`/`:shared:testReleaseUnitTest` (JVM) are reliable; the wasm leg of `:shared:allTests` depends on `kotlinWasmStoreYarnLock`, which has failed with "Lock file was changed" in this dev environment independent of any code change — treat that specific failure as a known environment/tooling gap, not a regression, unless you've just touched wasm npm dependencies yourself. There is no lint/format command configured beyond the Gradle/Kotlin compiler (and now also `web/.oxlintrc.json` for the React portal).
 
 Open the project in Android Studio at the repo root (not a module subfolder) with the Kotlin Multiplatform plugin; select JDK 17 and Gradle 8.13 explicitly, since the IDE default may pick something else.
 
@@ -36,11 +44,13 @@ Open the project in Android Studio at the repo root (not a module subfolder) wit
 
 | Module | Target | Role |
 |---|---|---|
-| `shared` | Android + Wasm (commonMain/commonTest) | Cross-platform domain models, access policies, soft-delete/Recycle Bin rules, sync-conflict DTOs, and the canonical API path/DTO contracts. This is the single source of truth other modules and the eventual backend must agree with. |
-| `terminalApp` | Android only | The physical F7G18P key-cabinet terminal app. Owns all hardware I/O: cabinet serial protocol, NFC UID reads, fingerprint/camera. |
-| `mobileApp` | Android only | Super Admin companion app (thin UI layer today, no hardware access). |
-| `webApp` | Kotlin/Wasm + Compose | Super Admin web portal, following the supplier's Web manual workflow sections (Unit/Terminal/Personnel/Key/Permission Settings, Data Sync, Reports, Appointments, etc). |
-| `docs` | — | Backend/API handover documents; treat `docs/WEB_PORTAL_WORKFLOW_HANDOVER.md` and the `API_HANDOVER_SUPER_ADMIN` series as the living spec for what the backend must implement. |
+| `shared` | Android + Wasm (commonMain/commonTest) | Cross-platform domain models, access policies, soft-delete/Recycle Bin rules, sync-conflict DTOs, and the canonical API path/DTO contracts. This is the single source of truth other modules and the backend must agree with. |
+| `terminalApp` | Android only | The physical F7G18P key-cabinet terminal app. Owns all hardware I/O: cabinet serial protocol, NFC UID reads, fingerprint/camera. Real backend sync client (`TerminalApiClient`/`TerminalSyncCoordinator`/`TerminalSyncOutbox`/`TerminalServerCache`). |
+| `mobileApp` | Android only | Super Admin companion app (thin UI layer today, no hardware access, no network code — still 100% local demo data). |
+| `webApp` | Kotlin/Wasm + Compose | **Frozen/legacy.** Excluded from `settings.gradle.kts` (`include(":webApp")` commented out). Was the Super Admin web portal following the supplier's Web manual workflow sections; superseded by `web/`. Kept in the tree as reference, not currently buildable as part of the Gradle build. |
+| `web` | React + Vite (TypeScript) | The current Super Admin web portal, replacing `webApp`. Calls the real backend directly over `/v1` (see `web/src/api/client.ts`). Not part of the Gradle build; builds via `npm`/Vite — see `web/README.md`. |
+| `backend` | Node.js (Express + MySQL) | The real REST API, mounted at `/v1` (`backend/src/index.js`): `auth`, `admin` (sites/terminals/users/keys/key-slots/access-grants/recycle-bin/sync-conflicts/event-definitions/schedules/personnel-groups/key-groups/multi-authentication-rules/appointment-reasons/appointments/appointment-permissions), `audit`, `reports`, `terminal/sync`. See `backend/DEPLOY.md`. |
+| `docs` | — | Backend/API handover documents; treat `docs/WEB_PORTAL_WORKFLOW_HANDOVER.md` and the `API_HANDOVER_SUPER_ADMIN` series as the living spec for the backend/portal contract. `docs/Backend_Integration_Handover.md` predates the real backend's existence and is now stale in places (still says "there is no backend today") — read it for the schema-fragmentation and NFC-UID background, which are still accurate, but don't trust its "not implemented" claims about the backend itself without checking `backend/` first. |
 
 ### Non-negotiable architectural boundaries
 
@@ -49,7 +59,7 @@ These rules are enforced by convention across the codebase (see comments in `Api
 1. **Only the Android Terminal touches cabinet hardware.** Website and Mobile must never open a serial port, send a cabinet command/frame, or perform reader/NFC/biometric capture. The split-nibble/CRC8 frame protocol and full node command set (`KeyCabinetLink`, plus `SplitNibbleCodec`/`KeyCabinetCrc8`/`KeyCabinetFrame`) live in `shared/.../protocol/` as pure Kotlin with no serial dependency, so they're unit-testable without hardware — but only `terminalApp/src/main/java/com/ekms/terminal/hardware/` (`AndroidSerialTransport`, `CabinetHardwareController`) may actually open `/dev/ttyS1`/`/dev/ttyS2` and drive them.
 2. **No raw credential material ever leaves the Terminal.** NFC UIDs, fingerprint/face templates, and Digital Key secrets are never represented in shared DTOs or sent to Website/Mobile — only an opaque `fobEnrollmentReference`/enrollment state. See `ManagedKey.fobEnrollmentReference` and `FobEnrollmentResponse` in `shared`.
 3. **Every physical key-node address is canonical.** Node address `0` is always the door; key nodes are addresses within `1..configuredSlotCount`. Never apply a hidden UI +1/-1 conversion (explicitly called out on `KeySlot.nodeAddress` and `KeySlotUpsertRequest.nodeAddress`).
-4. **All mutations are revision-safe.** Update/PATCH-style requests carry `expectedRevision`; the backend (not yet built) is expected to reject stale writes rather than silently overwrite.
+4. **All mutations are revision-safe.** Update/PATCH-style requests carry `expectedRevision`; the backend is expected to reject stale writes rather than silently overwrite. Note: the frozen `webApp` had no in-place edit/PATCH UI at all for Units/Terminals/Personnel/Keys/Permissions — only create and soft-delete, despite the backend PATCH routes existing and working. `web/` has not yet been audited for the same gap (see Project Status) — don't assume either way without checking.
 5. **Delete is always soft-delete.** Records move to a Super Admin-only Recycle Bin for 60 days (`RecycleBinPolicy.RETENTION_DAYS`) before purge; active dependents must block a hidden cascade delete. Historic audit events survive a purge.
 6. **Offline Terminal edits never silently overwrite server state.** A conflicting offline change becomes a `SyncConflict` that only a Super Admin (`ConflictReviewPolicy.mayResolve`) can resolve, via `KEEP_SERVER` / `KEEP_TERMINAL_CHANGE` / `MERGE_MANUALLY`.
 7. **Passwords and other secrets are write-only** — never rendered, logged, or returned by an API response.
@@ -61,7 +71,9 @@ These rules are enforced by convention across the codebase (see comments in `Api
 - `shared/.../sync/` — offline-change and conflict-resolution DTOs plus `ConflictReviewPolicy`.
 - `shared/.../api/ApiContracts.kt` — `ApiPaths` (every REST endpoint name) and every request/response DTO. Treat this file as the contract between all three apps and the future backend; when adding a feature, extend this file first.
 - `shared/.../protocol/` — the Key Cabinet Communication Protocol's frame layer (`SplitNibbleCodec`, `KeyCabinetCrc8`, `KeyCabinetFrame`/`KeyCabinetFrameCodec`) and command driver (`KeyCabinetLink`, `SerialTransport`), all pure Kotlin with unit tests against the vendor doc's worked examples (`shared/commonTest/.../protocol/`, including `FakeSerialTransport` for hardware-free testing). No serial I/O lives here — see boundary #1.
-- `webApp/src/wasmJsMain/kotlin/com/ekms/web/` — portal screens/models, one `*Screen.kt`/`*Models.kt` pair per workflow area (see the supplier-workflow-to-screen mapping table in `docs/WEB_PORTAL_WORKFLOW_HANDOVER.md`). Sample/in-memory data here stands in for the backend and must eventually be replaced by real API calls.
+- `webApp/src/wasmJsMain/kotlin/com/ekms/web/` — **frozen, not built** (see Module architecture). All 19 supplier-manual routes live in two monolith files, `WebPortalScreens.kt` and `WebPortalModels.kt` (`internal class WebPortalStore`), not a one-file-per-area split despite the doc comment that used to describe one. Historical reference only — `web/` has already surpassed several of its gaps (see Project Status), so don't assume `webApp`'s audit findings still describe `web/`.
+- `web/src/` — the live Super Admin portal (React+Vite+TypeScript). `src/api/client.ts` is the backend client; `src/App.tsx` is routing/shell; `src/pages/*.tsx` are the workflow screens; `src/components/MalaysiaUnitsMap.tsx` is the unit-hierarchy map view; `src/components/ErrorBoundary.tsx` guards against blank-screen failures (e.g. Leaflet map load failures in Edge).
+- `backend/src/routes/` — one router file per resource (`sites.js`, `terminals.js`, `users.js`, `keys.js`, `keySlots.js`, `accessGrants.js`, `recycleBin.js`, `credentials.js`, `audit.js`, `sync.js`) plus `phase4.js`, which bundles several newer routers together (event definitions, schedules, personnel/key groups, multi-auth rules, appointments + reasons + permissions, reports). `phase4.js`'s routers are fully implemented and mounted in `backend/src/index.js`; unlike the frozen `webApp` (which never wired any of this), `web/`'s API client (`web/src/api/client.ts`) already has list/create/delete methods for all of these, called from real pages (`SimpleResources.tsx` for events/schedules, `MultiAuthPage.tsx`, `AppointmentsPage.tsx`, `LogsPages.tsx`). One gap that persists in `web/` too: **no `update`/PATCH methods exist anywhere in `web/src/api/client.ts`** — list/create/delete only, matching boundary #4's note above.
 - `terminalApp/src/main/java/com/ekms/terminal/hardware/` — `AndroidSerialTransport` (implements `shared`'s `SerialTransport` against the vendor serial AAR), `CabinetHardwareController` (owns the connection, background executor, and guided enrolment/return flows on top of `KeyCabinetLink`), plus the separate `/dev/ttyS2` public-card-reader path (`PublicM1CardReader`/`PublicCardReaderController`) and NFC/fob enrollment; `terminalApp/.../ui/` — Terminal-side admin and enrollment screens; `terminalApp/.../data/TerminalAdminStore.kt` — local terminal-side state/outbox.
 - `mobileApp/src/main/java/com/ekms/mobile/` — currently a minimal Super Admin companion shell.
 
@@ -202,7 +214,7 @@ reuse the same resolution logic rather than reimplementing it.
 
 ## Web/Mobile App UX Consistency
 
-webApp and mobileApp are Super Admin-facing, not operator-facing — they do
+This section's rules apply to whichever app is the current Super Admin web portal — `web/` (React) going forward, `webApp` (frozen Kotlin/Wasm) as historical reference — plus `mobileApp`. Both are Super Admin-facing, not operator-facing — they do
 not need to replicate the physical swipe/insert return flow or hardware
 login methods (fingerprint, face, NFC) from the supplier manual. Those stay
 terminal-only.
@@ -524,11 +536,20 @@ terminalApp consume the same source of truth rather than reimplementing it.
   exercised: no manual UI walkthrough and no physical hardware run of the
   new flow — same caveat as the Key Take Flow above.
 
+- **Post-pull verification + backend/portal reconciliation.** After pulling `origin/master` (which had diverged with an in-progress, staged-but-uncommitted merge left over from an earlier pull attempt), verified the merge was safe before completing it: diffed base/local/remote file sets and confirmed **zero files were touched by both sides** (local's only change was the `retrievalTerminal` type-mismatch fix below; remote's only changes were 6 files under `web/`), so there was no possibility of the earlier silent-revert failure mode recurring. Completed the merge, pushed. Then ran a full verification pass:
+  - Fixed a build-breaking bug found on first build after the pull: `TerminalAdminApp.kt`'s `retrievalTerminal` mixed two unrelated types (`Terminal` from a downloaded server snapshot vs. `ManagedTerminalOption` from `KeySlotDemoData`'s fallback), which Kotlin silently widened to `Any`, breaking every `.siteId`/`.id`/`.copy()` access on it. Fixed with a `Terminal.toManagedTerminalOption()` adapter used at both assignment sites, so `retrievalTerminal` is consistently `ManagedTerminalOption`. Verified via `:terminalApp:compileDebugKotlin` and `:terminalApp:assembleDebug`.
+  - `:terminalApp:build` (compile, lint, debug+release assemble) passes clean.
+  - `:shared:testDebugUnitTest`/`:shared:testReleaseUnitTest` (JVM) pass; the wasm leg of `:shared:allTests` fails at `kotlinWasmStoreYarnLock` ("Lock file was changed") — confirmed pre-existing/environment, not caused by this pull (same failure reproduced before touching anything).
+  - **Discovered `webApp` is now frozen and excluded from the Gradle build** (`settings.gradle.kts` commit `54d67ae`, same commit that added `web/`): "Website portal is now React in `/web`... Kotlin/Wasm webApp is frozen." `web/README.md` confirms: "Super Admin portal replacing the Kotlin/Wasm `webApp` module." This was not previously reflected anywhere in this file — see the Module architecture table and Project intro, now updated.
+  - Confirmed current backend integration scope directly from code: `terminalApp` has real offline-first sync (`TerminalApiClient`/`TerminalSyncCoordinator`/`TerminalSyncOutbox`/`TerminalServerCache`); `web/`'s `src/api/client.ts` calls the real backend directly (no offline queue); `mobileApp` has zero network code anywhere (grepped, zero matches) — still 100% local demo data.
+  - **Super Admin portal audit — ran against the frozen `webApp` first (full 13-section detail below), then spot-checked against `web/` and found `web/` has already moved well past what the `webApp` audit would suggest — do not treat the `webApp` findings as a proxy for `web/`'s current state.** `webApp` findings: Login, Data Synchronization, and (partially) Report/Operation Logs were genuinely wired to the real backend; Unit/Terminal/Personnel/Key/Permission Settings had list/create/soft-delete but **no in-place edit UI at all** (`ApiClient.updateSite/updateTerminal/updateUser/updateKey/updateKeySlot/updateAccessGrant` all defined against working backend `PATCH` routes but zero call sites); Event Setup, Schedule Settings, Multi-Authentication Management, and Appointment Authorization were **entirely hardcoded/in-memory demo data**, despite the backend already having full mounted routers for all of them (`backend/src/routes/phase4.js`). `webApp`'s `WebPortalModels.kt` also has several fully dead symbols from an earlier local-mutation design (`store.recycleBin`/`PortalDeletedRecord`/`restore()`/`purge()`, `archivedLifecycle()`/`restoredLifecycle()`/`purgedLifecycle()`, `DEMO_CREATED_AT`) — moot now that the module is frozen.
+    **`web/` spot-check (not a full re-audit — worth doing properly as a follow-up):** `web/src/api/client.ts` already has real, backend-calling `list`/`create`/`delete` methods for every area `webApp` was missing — event definitions, schedules, personnel/key groups, multi-auth rules, appointments + reasons + permissions, key-operations report, system/equipment logs — and confirmed these are actually called from real pages (`SimpleResources.tsx`, `MultiAuthPage.tsx`, `AppointmentsPage.tsx`, `LogsPages.tsx`), not just defined-but-unused. One gap does carry over identically: **`web/src/api/client.ts` has zero `update`/PATCH methods for any resource** — same "create + delete, no edit" shape as `webApp` had. Personnel/Key-Records export-button completeness and dead-symbol cleanup were not re-checked against `web/`.
+
 ### Known issues / not yet resolved
-- Personnel management in webApp is currently a shallow free-text form
+- `web/` (the live Super Admin portal) has not had a full section-by-section audit against the vendor manual — only a spot-check of its API client (see Project Status). It already covers real backend `list`/`create`/`delete` for every area `webApp` was missing (events, schedules, groups, multi-auth, appointments, reports/logs), but no page-level UI/UX audit or shared-type-equivalent check has been done, and `update`/PATCH support is confirmed absent for every resource.
+- Personnel management in webApp (frozen/legacy) was a shallow free-text form
   (no role picker, no email/site validation) since the old
-  UserManagementPolicy-based flow was deleted — needs rebuilding against
-  current architecture
+  UserManagementPolicy-based flow was deleted — moot for webApp now that it's frozen; `web/`'s `PersonnelPage.tsx` needs the same check.
 - Orphaned scaffold TerminalWorkflowModels.kt/TerminalWorkflowScreens.kt in
   terminalApp — audited, found to NOT correctly match the manual (extra
   confirmation steps, recording notice banners violating "never
@@ -568,12 +589,13 @@ terminalApp consume the same source of truth rather than reimplementing it.
   Phase 10-deferred bug — see `phase10_retrieval_door_eject_bug.md`) —
   needs a dedicated design pass per the user's explicit request, not an
   ad hoc patch
-- webApp/mobileApp standing-alert UI: the Key Take Flow's door-left-open
+- Super Admin portal rework, now targeting `web/` (React) rather than the frozen `webApp`: a proper section-by-section audit of `web/` itself (not just the API-client spot-check) is the right next step before prioritizing further work, since `web/` is already meaningfully ahead of what the `webApp` audit would suggest. The one confirmed cross-cutting gap so far: **no `update`/PATCH support anywhere in `web/src/api/client.ts`**, for any resource — that's the first concrete rework target once confirmed against the backend's revision-safety requirement (boundary #4).
+- `web/`/mobileApp standing-alert UI: the Key Take Flow's door-left-open
   case (Super Admin-only) and the Key Return Flow's abandoned-return case
-  (terminal user + Super Admin, two-party) — both demo-data-driven
-  mockups, explicitly scoped out of their respective implementation
-  passes; likely worth building together given the overlapping UI
-- After hardware phases: rebuild Personnel management properly
+  (terminal user + Super Admin, two-party) — both need real backend/event
+  wiring now that one exists, rather than being demo-data-driven mockups;
+  likely worth building together given the overlapping UI
+- After hardware phases: rebuild Personnel management properly (on `web/`, not the frozen `webApp`)
 
 ### Reference
 - Hardware protocol: `docs/Key Cabinet Communication Protocol.md` (note
