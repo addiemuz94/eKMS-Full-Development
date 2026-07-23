@@ -764,7 +764,11 @@ private fun DashboardScreen(store: WebPortalStore) {
 private fun UnitsScreen(store: WebPortalStore) {
     var query by remember { mutableStateOf("") }
     val records = store.sites.filter {
-        it.name.matchesQuery(query) || it.province.matchesQuery(query) || it.city.matchesQuery(query) || it.parentUnit.matchesQuery(query)
+        val superior = store.parentUnitName(it)
+        it.name.matchesQuery(query) ||
+            it.province.matchesQuery(query) ||
+            it.city.matchesQuery(query) ||
+            superior.matchesQuery(query)
     }
 
     PageHeader(
@@ -780,9 +784,9 @@ private fun UnitsScreen(store: WebPortalStore) {
             title = site.name,
             status = "Active",
             lines = listOf(
-                "Province / state: ${site.province}",
-                "City: ${site.city}",
-                "Superior unit: ${site.parentUnit}",
+                "Province / state: ${site.province.ifBlank { "—" }}",
+                "City: ${site.city.ifBlank { "—" }}",
+                "Superior unit: ${store.parentUnitName(site).ifBlank { "—" }}",
             ),
         ) {
             TextButton(onClick = { store.archiveSite(site) }) { Text("Move to Recycle Bin") }

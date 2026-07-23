@@ -1,60 +1,56 @@
-# eKMS — Kotlin Multiplatform Foundation
+# eKMS — Key Management System
 
-This is a fresh production-oriented eKMS build. The supplied `ekmshardwaretester-main` project is reference material only; it is not reused as the production app.
+Production-oriented eKMS build. The supplied `ekmshardwaretester-main` project is reference material only.
 
 ## Modules
 
 | Module | Purpose |
 |---|---|
-| `shared` | Cross-platform domain models, access policies, soft-delete/Recycling Bin rules, sync conflict DTOs, API contract names. |
-| `terminalApp` | Android application for the F7G18P terminal. Cabinet serial, NFC UID reader, fingerprint and camera integrations remain Android-only. |
-| `mobileApp` | Android-first Super Admin companion and later Technician/Vendor app. |
-| `webApp` | Kotlin/Wasm Compose Super Admin web portal. |
-| `docs` | Backend handover documents. |
+| `shared` | Cross-platform domain models, policies, sync conflict DTOs, API contracts, cabinet protocol (pure Kotlin). |
+| `terminalApp` | Android app for the F7G18P terminal (cabinet serial, NFC, fingerprint/camera). |
+| `mobileApp` | Android Super Admin companion (thin UI today). |
+| `web/` | **Live** Super Admin portal — React + TypeScript + Vite (replaces Kotlin/Wasm `webApp`). |
+| `backend/` | Node/Express + MySQL API and Docker/Caddy deploy stack for `kms-cvt.com`. |
+| `webApp/` | Frozen Kotlin/Wasm portal (not in the Gradle build; kept for reference). |
+| `docs/` | Backend / workflow handover documents. |
 
-## Confirmed policies in Step 1
+## Confirmed policies
 
-- Website and Terminal both provide full Super Admin user/key/site editing.
-- Website/backend remains the source of truth; an offline Terminal queues changes.
-- Conflicting offline edits require Super Admin review. The system never silently overwrites either version.
-- Delete moves data to a Super Admin-only Recycle Bin for 60 days, or until a Super Admin clears it sooner.
-- Historic audit events are retained after a record is permanently purged.
-- Vendor passkeys are reusable until their approved expiry, but limited to approved terminal, site and exact keys.
+- Website and Terminal both provide Super Admin user/key/site editing.
+- Website/backend is the source of truth; an offline Terminal queues changes.
+- Conflicting offline edits require Super Admin review (never silent overwrite).
+- Delete moves data to a Super Admin-only Recycle Bin for 60 days.
+- Historic audit events are retained after permanent purge.
+- Vendor passkeys are reusable until approved expiry, limited to approved terminal/site/keys.
 
-## Open in Android Studio
+## Open in Android Studio (Terminal / Mobile / shared)
 
-1. Install a current Android Studio with the **Kotlin Multiplatform** plugin.
-2. Open the `ekms-platform` folder as a Gradle project.
-3. In **File > Settings > Build, Execution, Deployment > Build Tools > Gradle**, select **JDK 17** as the Gradle JDK.
-4. Select **Gradle 8.13** as the Gradle distribution. Do not use Gradle 9.x with this project baseline.
-5. Sync the project, then run `terminalApp` or `mobileApp` on an Android emulator/device.
-6. Run `webApp [wasmJs]` to open the Super Admin web screen in a browser.
+1. Install Android Studio with the **Kotlin Multiplatform** plugin.
+2. Open the **repo root** as a Gradle project (not a module subfolder).
+3. Set Gradle JDK to **JDK 17** and use **Gradle 8.13** (not 9.x).
+4. Sync, then run `terminalApp` or `mobileApp`.
 
-The baseline toolchain is: JDK 17, Gradle 8.13, Android Gradle Plugin 8.11.1,
-Kotlin 2.2.20, and `compileSdk = 36`. The Android modules explicitly compile
-both Java and Kotlin to JVM 17 so their bytecode targets cannot drift apart.
+Toolchain: JDK 17, Gradle 8.13, AGP 8.11.1, Kotlin 2.2.20, `compileSdk = 36`.
 
-The web target is Kotlin/Wasm. It is suitable for the shared Super Admin UI foundation; browser-specific integration should remain isolated in `webApp`.
+## Web portal (React)
 
-## Backend handover
+```bash
+cd web
+npm install
+npm run dev          # proxies /v1 to http://127.0.0.1:3001
+npm run build        # output in web/dist — see backend/DEPLOY.md Part F
+```
 
-Give the backend developer [BACKEND_DEVELOPER_HANDOVER.md](docs/BACKEND_DEVELOPER_HANDOVER.md) first. It is the current cross-system handover for the Terminal workflow, backend APIs, offline sync, and guided live key enrolment. The earlier [API_HANDOVER_SUPER_ADMIN.md](docs/API_HANDOVER_SUPER_ADMIN.md) remains useful as foundation detail, but does not cover the later live-hardware flow.
+Details: [web/README.md](web/README.md)
 
-## Current implementation
+## Backend / production
 
-- Step 1: shared policy, sync-conflict and Recycle Bin foundation.
-- Step 2: Super Admin Users & Credentials (applied in the working Android Studio project).
-- Step 3: responsive Sites & Terminals UI, shared cabinet-configuration validation,
-  and backend handover. See `docs/STEP_3_SITES_TERMINALS_HANDOFF.md`.
-- Step 4: Keys, cabinet slots and access grants, shared by Website and Terminal.
-  Every key slot is validated against its terminal's configured Box Address +
-  Node Address range (see `docs/Key_Cabinet_Communication_Protocol.md`), and
-  access grants bind a user to an exact set of keys as their own record,
-  separate from the user. Both follow the Step 1 soft-delete/Recycle Bin and
-  sync-conflict patterns.
+See [backend/README.md](backend/README.md) and [backend/DEPLOY.md](backend/DEPLOY.md).
 
-## Next build step
+Live site: **https://kms-cvt.com**
 
-Wire the Website and Terminal previews to the backend API described in
-`docs/API_HANDOVER_SUPER_ADMIN V4.md`, replacing local preview data with
-authenticated, revision-aware calls.
+## Docs
+
+- [docs/BACKEND_DEVELOPER_HANDOVER.md](docs/BACKEND_DEVELOPER_HANDOVER.md)
+- [docs/WEB_PORTAL_WORKFLOW_HANDOVER.md](docs/WEB_PORTAL_WORKFLOW_HANDOVER.md)
+- [docs/API_HANDOVER_SUPER_ADMIN V4.md](docs/API_HANDOVER_SUPER_ADMIN%20V4.md)

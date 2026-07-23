@@ -1,0 +1,18 @@
+[Unit]
+Description=eKMS production stack (MySQL + API + Caddy)
+Documentation=file:///root/eKMS/backend/DEPLOY.md
+Requires=docker.service
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+WorkingDirectory=/root/eKMS/backend
+Environment=COMPOSE_PROJECT_NAME=backend
+ExecStart=/usr/bin/docker compose -f /root/eKMS/backend/docker-compose.prod.yml --env-file /root/eKMS/backend/.env.production up -d
+ExecStop=/usr/bin/docker compose -f /root/eKMS/backend/docker-compose.prod.yml --env-file /root/eKMS/backend/.env.production stop
+TimeoutStartSec=0
+
+[Install]
+WantedBy=multi-user.target

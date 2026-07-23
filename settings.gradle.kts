@@ -18,4 +18,5 @@ rootProject.name = "eKMS"
 include(":shared")
 include(":terminalApp")
 include(":mobileApp")
-include(":webApp")
+// Website portal is now React in /web (see web/README.md). Kotlin/Wasm webApp is frozen.
+// include(":webApp")

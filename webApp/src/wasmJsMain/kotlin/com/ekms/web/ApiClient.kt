@@ -62,13 +62,14 @@ import kotlin.uuid.Uuid
 
 /** Production: same origin as the portal (path /v1 on kms-cvt.com). */
 internal const val PRODUCTION_API_BASE_URL: String = "https://kms-cvt.com"
-internal const val LOCAL_API_BASE_URL: String = "http://localhost:3000"
+/** Local Wasm preview. Port 3000 is often Fortress Control on this host — eKMS uses 3001. */
+internal const val LOCAL_API_BASE_URL: String = "http://localhost:3001"
 
 @OptIn(ExperimentalWasmJsInterop::class)
 @JsFun("() => (typeof window !== 'undefined' && window.location && window.location.hostname) ? window.location.hostname : ''")
 private external fun browserHostname(): String
 
-/** On kms-cvt.com use same-origin API; local Wasm run keeps localhost:3000. */
+/** On kms-cvt.com use same-origin API; local Wasm run keeps localhost:3001. */
 internal val API_BASE_URL: String =
     if (browserHostname().endsWith("kms-cvt.com", ignoreCase = true)) {
         PRODUCTION_API_BASE_URL
@@ -123,23 +124,11 @@ internal object ApiClient {
     suspend fun listSites(): List<SiteDto> =
         decode<SiteListResponse>(get(ApiPaths.ADMIN_SITES)).items
 
-    suspend fun createSite(name: String, address: String?): SiteDto =
-        decode(
-            post(
-                ApiPaths.ADMIN_SITES,
-                json.encodeToString(SiteUpsertRequest(name = name, address = address)),
-            ),
-        )
+    suspend fun createSite(request: SiteUpsertRequest): SiteDto =
+        decode(post(ApiPaths.ADMIN_SITES, json.encodeToString(request)))
 
-    suspend fun updateSite(id: String, name: String, address: String?, expectedRevision: Long): SiteDto =
-        decode(
-            patch(
-                "${ApiPaths.ADMIN_SITES}/$id",
-                json.encodeToString(
-                    SiteUpsertRequest(name = name, address = address, expectedRevision = expectedRevision),
-                ),
-            ),
-        )
+    suspend fun updateSite(id: String, request: SiteUpsertRequest): SiteDto =
+        decode(patch("${ApiPaths.ADMIN_SITES}/$id", json.encodeToString(request)))
 
     suspend fun deleteSite(id: String): SiteDto =
         decode(delete("${ApiPaths.ADMIN_SITES}/$id"))

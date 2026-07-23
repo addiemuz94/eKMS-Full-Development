@@ -94,6 +94,10 @@ data class RefreshTokenRequest(
 data class SiteDto(
     val id: String,
     val name: String,
+    val province: String? = null,
+    val city: String? = null,
+    /** Superior / parent unit id, when this unit sits under another site. */
+    val parentSiteId: String? = null,
     val address: String? = null,
     val revision: Long,
 )
@@ -262,6 +266,10 @@ data class TerminalSyncAckResponse(
 @Serializable
 data class SiteUpsertRequest(
     val name: String,
+    val province: String? = null,
+    val city: String? = null,
+    /** Superior unit id; omit or null for a top-level unit. */
+    val parentSiteId: String? = null,
     val address: String? = null,
     /** Required for PATCH and must match the current backend revision. */
     val expectedRevision: Long? = null,

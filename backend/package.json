@@ -7,6 +7,7 @@
     "dev": "node --watch src/index.js",
     "start": "node src/index.js",
     "seed": "node src/seed.js",
+    "seed:reset-password": "node src/resetSuperAdminPassword.js",
     "db:up": "docker compose up -d",
     "db:down": "docker compose down",
     "db:migrate:phase2": "node src/migratePhase2.js",

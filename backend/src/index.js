@@ -35,9 +35,23 @@ const corsOrigins = (process.env.CORS_ORIGINS || '')
   .map((s) => s.trim())
   .filter(Boolean);
 
+const isLocalDevOrigin = (origin) =>
+  /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/i.test(origin || '');
+
 app.use(
   cors({
-    origin: corsOrigins.length > 0 ? corsOrigins : true,
+    origin: (origin, callback) => {
+      // Non-browser / same-origin style requests may omit Origin.
+      if (!origin) {
+        callback(null, true);
+        return;
+      }
+      if (corsOrigins.length === 0 || corsOrigins.includes(origin) || isLocalDevOrigin(origin)) {
+        callback(null, true);
+        return;
+      }
+      callback(new Error(`CORS blocked for origin: ${origin}`));
+    },
     credentials: true,
     allowedHeaders: ['Content-Type', 'Authorization', 'Idempotency-Key'],
   }),
