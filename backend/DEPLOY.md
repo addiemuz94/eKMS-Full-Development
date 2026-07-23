@@ -278,14 +278,23 @@ Open the **repo root** in Android Studio (JDK 17, Gradle 8.13). Run `terminalApp
 
 ### Admin Menu settings (wire to live server)
 
+**First login is local** (Admin Menu is only reachable after sign-in):
+
+| Account | Password |
+|---|---|
+| `Super Admin` | `admin1234` (change when prompted) |
+
+Then open **Admin Menu** and set:
+
 | Field | Value |
 |---|---|
 | **Set server address** | `https://kms-cvt.com` (no trailing slash) |
 | **Key Cabinet ID** | UUID of the terminal row from **Terminal Settings** on the portal |
 
-1. Sign in with the same Super Admin email/password as the portal.
-2. Tap **Bootstrap** or **Download** — users/keys/slots/grants hydrate from the server.
-3. **Push** uploads offline outbox changes and local audit events.
+Save, sign out, then sign in with the **portal** Super Admin email/password (e.g. `admin@kms-cvt.com` from `.env.production`).
+
+1. Tap **Bootstrap** or **Download** — users/keys/slots/grants hydrate from the server.
+2. **Push** uploads offline outbox changes and local audit events.
 
 Emulator cannot drive real cabinet serial hardware; this validates server sync. Use the physical F7G18P for hardware flows.
 

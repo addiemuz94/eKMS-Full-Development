@@ -145,12 +145,10 @@ class TerminalSyncCoordinator(
 
     private fun mapIdentifier(identifier: String): String {
         val trimmed = identifier.trim()
-        return if (trimmed.equals(TerminalAdminStore.SUPER_ADMIN_USERNAME, ignoreCase = true)) {
-            // Seed Super Admin email used by backend/npm seed.
-            "superadmin@ekms.local"
-        } else {
-            trimmed
-        }
+        // Do not rewrite "Super Admin" to a seed email — production uses
+        // admin@kms-cvt.com (or SUPER_ADMIN_EMAIL). Local bootstrap still
+        // accepts "Super Admin" / admin1234 when server login fails.
+        return trimmed
     }
 
     private fun LoginResponse.toTerminalSession(): TerminalSession {
