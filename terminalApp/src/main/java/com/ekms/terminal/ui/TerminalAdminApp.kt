@@ -43,7 +43,9 @@ import com.ekms.shared.domain.KeySlot
 import com.ekms.shared.domain.KeySlotDemoData
 import com.ekms.shared.domain.LifecycleMetadata
 import com.ekms.shared.domain.ManagedKey
+import com.ekms.shared.domain.ManagedTerminalOption
 import com.ekms.shared.domain.RecordType
+import com.ekms.shared.domain.Terminal
 import com.ekms.shared.protocol.KeyCabinetLink.Companion.MAX_KEY_NODE_ADDRESS
 import com.ekms.terminal.data.AuthOutcome
 import com.ekms.terminal.data.StoreResult
@@ -128,7 +130,9 @@ fun TerminalAdminApp() {
     // fixtures remain only until the first successful Bootstrap/Download.
     val initialServerSnapshot = remember(serverCache) { serverCache.load() }
     var retrievalTerminal by remember {
-        mutableStateOf(initialServerSnapshot?.terminal ?: KeySlotDemoData.terminals.first())
+        mutableStateOf(
+            initialServerSnapshot?.terminal?.toManagedTerminalOption() ?: KeySlotDemoData.terminals.first(),
+        )
     }
     var retrievalKeys by remember {
         mutableStateOf(initialServerSnapshot?.keys ?: KeySlotDemoData.keys())
@@ -355,7 +359,7 @@ fun TerminalAdminApp() {
         pendingOutboxCount = syncOutbox.pending().size
         val serverSnapshot = syncCoordinator.cachedSnapshot()
         if (serverSnapshot != null) {
-            retrievalTerminal = serverSnapshot.terminal.copy(
+            retrievalTerminal = serverSnapshot.terminal.toManagedTerminalOption().copy(
                 configuredSlotCount = snapshot.cabinetSettings.configuredKeyNodeCount
                     .takeIf { it > 0 }
                     ?: serverSnapshot.terminal.configuredSlotCount,
@@ -1047,6 +1051,20 @@ private fun nextUserId(currentUserId: String, users: List<TerminalUser>): String
     val index = users.indexOfFirst { it.id == currentUserId }
     return users[(index + 1 + users.size) % users.size].id
 }
+
+// The server-authoritative `Terminal` (full shared/API model) and the
+// lighter-weight `ManagedTerminalOption` (what the retrieval grid/list and
+// KeySlotDemoData's local preview fixtures use) both describe "the cabinet
+// this terminal is" but are separate types with no relation — this adapts
+// a downloaded server snapshot's Terminal into the option type retrieval
+// screens actually consume, so retrievalTerminal always has one consistent
+// type regardless of whether it came from the server or the demo fallback.
+private fun Terminal.toManagedTerminalOption(): ManagedTerminalOption = ManagedTerminalOption(
+    id = id,
+    siteId = siteId,
+    label = name,
+    configuredSlotCount = configuredSlotCount,
+)
 
 @Composable
 private fun EnrollUserScreen(
