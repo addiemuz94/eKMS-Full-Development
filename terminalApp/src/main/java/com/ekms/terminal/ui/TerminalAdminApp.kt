@@ -53,6 +53,7 @@ import com.ekms.terminal.data.TerminalAdminStore
 import com.ekms.terminal.data.TerminalApiClient
 import com.ekms.terminal.data.TerminalKey
 import com.ekms.terminal.data.TerminalSession
+import com.ekms.terminal.data.TerminalServerCache
 import com.ekms.terminal.data.TerminalSyncCoordinator
 import com.ekms.terminal.data.TerminalSyncOutbox
 import com.ekms.terminal.data.TerminalUser
@@ -88,8 +89,9 @@ fun TerminalAdminApp() {
     val store = remember(applicationContext) { TerminalAdminStore(applicationContext) }
     val apiClient = remember(applicationContext) { TerminalApiClient(applicationContext) }
     val syncOutbox = remember(applicationContext) { TerminalSyncOutbox(applicationContext) }
-    val syncCoordinator = remember(apiClient, syncOutbox, store) {
-        TerminalSyncCoordinator(apiClient, syncOutbox, store)
+    val serverCache = remember(applicationContext) { TerminalServerCache(applicationContext) }
+    val syncCoordinator = remember(apiClient, syncOutbox, store, serverCache) {
+        TerminalSyncCoordinator(apiClient, syncOutbox, store, serverCache)
     }
     val scope = rememberCoroutineScope()
     val deviceId = remember(applicationContext) {
@@ -122,15 +124,21 @@ fun TerminalAdminApp() {
     var notice by remember { mutableStateOf<String?>(null) }
     var pendingPhysicalAction by remember { mutableStateOf<PendingPhysicalAction?>(null) }
 
-    // Section 2 (key retrieval) reads the shared ManagedKey/KeySlot model, the
-    // same one the Website uses, rather than the terminal-local TerminalKey
-    // bootstrap type. Until download payloads hydrate local caches, this
-    // terminal uses demo cabinet data for physical retrieve/return demos.
-    // configuredSlotCount is mutable because Section 4's "Key node setting"
-    // (Admin Menu) edits this same value, not a separate cosmetic copy.
-    var retrievalTerminal by remember { mutableStateOf(KeySlotDemoData.terminals.first()) }
-    val retrievalKeys = remember { KeySlotDemoData.keys() }
-    val retrievalSlots = remember { KeySlotDemoData.slots().filter { it.terminalId == retrievalTerminal.id } }
+    // Retrieval uses the last downloaded server snapshot when present; demo
+    // fixtures remain only until the first successful Bootstrap/Download.
+    val initialServerSnapshot = remember(serverCache) { serverCache.load() }
+    var retrievalTerminal by remember {
+        mutableStateOf(initialServerSnapshot?.terminal ?: KeySlotDemoData.terminals.first())
+    }
+    var retrievalKeys by remember {
+        mutableStateOf(initialServerSnapshot?.keys ?: KeySlotDemoData.keys())
+    }
+    var retrievalSlots by remember {
+        mutableStateOf(
+            initialServerSnapshot?.keySlots
+                ?: KeySlotDemoData.slots().filter { it.terminalId == KeySlotDemoData.terminals.first().id },
+        )
+    }
     var takenKeyIds by remember { mutableStateOf(emptySet<String>()) }
     var takeFlow by remember { mutableStateOf<TakeFlow?>(null) }
     var returnFlow by remember { mutableStateOf<ReturnFlow?>(null) }
@@ -345,6 +353,16 @@ fun TerminalAdminApp() {
     fun refreshSnapshot() {
         snapshot = store.snapshot()
         pendingOutboxCount = syncOutbox.pending().size
+        val serverSnapshot = syncCoordinator.cachedSnapshot()
+        if (serverSnapshot != null) {
+            retrievalTerminal = serverSnapshot.terminal.copy(
+                configuredSlotCount = snapshot.cabinetSettings.configuredKeyNodeCount
+                    .takeIf { it > 0 }
+                    ?: serverSnapshot.terminal.configuredSlotCount,
+            )
+            retrievalKeys = serverSnapshot.keys
+            retrievalSlots = serverSnapshot.keySlots
+        }
     }
 
     fun signOut() {
@@ -727,7 +745,8 @@ fun TerminalAdminApp() {
                     onBootstrap = {
                         runSyncAction("Bootstrap") {
                             val response = syncCoordinator.bootstrap()
-                            "Bootstrap OK · server revision ${response.serverRevision}."
+                            val keys = response.snapshot?.keys?.size ?: 0
+                            "Bootstrap OK · revision ${response.serverRevision} · $keys keys hydrated."
                         }
                     },
                     onPush = {
@@ -746,7 +765,8 @@ fun TerminalAdminApp() {
                     onDownload = {
                         runSyncAction("Download") {
                             val ack = syncCoordinator.downloadFromServer()
-                            ack.message ?: "Download staged (revision ${ack.serverRevision})."
+                            val keys = ack.snapshot?.keys?.size ?: 0
+                            ack.message ?: "Download OK · $keys keys hydrated (revision ${ack.serverRevision})."
                         }
                     },
                 )

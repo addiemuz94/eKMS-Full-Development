@@ -138,7 +138,7 @@ fun TerminalAdminMenuScreen(
             label = { Text("Set server address") },
             singleLine = true,
             supportingText = {
-                Text("LAN backend URL, e.g. http://192.168.1.10:3000 (not localhost on a physical device).")
+                Text("Production: https://kms-cvt.com — LAN: http://192.168.x.x:3001 (not localhost on a device).")
             },
         )
         OutlinedTextField(

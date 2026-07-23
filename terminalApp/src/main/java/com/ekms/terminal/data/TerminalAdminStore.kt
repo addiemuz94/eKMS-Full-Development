@@ -111,6 +111,10 @@ class TerminalAdminStore(context: Context) {
             it.username.equals(normalizedUsername, ignoreCase = true)
         } ?: return StoreResult.Error("Username or password is incorrect.")
 
+        if (user.passwordHash.isBlank() || user.passwordSalt.isBlank()) {
+            return StoreResult.Error("This account is server-managed. Sign in with the server password, or set a local password after enrollment.")
+        }
+
         if (!verifyPassword(password, user.passwordSalt, user.passwordHash)) {
             return StoreResult.Error("Username or password is incorrect.")
         }
@@ -394,6 +398,82 @@ class TerminalAdminStore(context: Context) {
 
     @Synchronized
     fun eventOutbox(): List<AuditEvent> = readEventOutbox()
+
+    @Synchronized
+    fun clearEventOutbox(ids: Collection<String>) {
+        if (ids.isEmpty()) return
+        saveEventOutbox(readEventOutbox().filterNot { it.id in ids })
+    }
+
+    /**
+     * Replaces local keys/users/grants from a server download snapshot.
+     * Does not overwrite serverAddress / activation toggles already set in Admin Menu.
+     */
+    @Synchronized
+    fun applyServerSnapshot(snapshot: com.ekms.shared.api.TerminalDownloadSnapshot) {
+        val current = readCabinetSettings()
+        val mergedSettings = current.copy(
+            cabinetName = snapshot.terminal.name.ifBlank { current.cabinetName },
+            cabinetId = snapshot.terminal.id.ifBlank { current.cabinetId },
+            configuredKeyNodeCount = snapshot.terminal.configuredSlotCount.coerceIn(
+                MIN_KEY_NODE_COUNT,
+                MAX_KEY_NODE_COUNT,
+            ),
+        )
+        saveCabinetSettings(mergedSettings)
+
+        val slotByKeyId = snapshot.keySlots
+            .mapNotNull { slot -> slot.managedKeyId?.let { it to slot } }
+            .toMap()
+
+        saveKeys(
+            snapshot.keys.map { key ->
+                val slot = slotByKeyId[key.id]
+                TerminalKey(
+                    id = key.id,
+                    displayName = key.displayName,
+                    boxAddress = snapshot.terminal.boxAddress,
+                    nodeAddress = slot?.nodeAddress ?: 0,
+                    fobFingerprint = key.fobEnrollmentReference.orEmpty(),
+                    createdAtEpochMillis = key.lifecycle.createdAtEpochMillis,
+                )
+            },
+        )
+
+        saveUsers(
+            snapshot.users
+                .filter { it.role != com.ekms.shared.domain.UserRole.SUPER_ADMIN }
+                .map { user ->
+                    TerminalUser(
+                        id = user.id,
+                        displayName = user.displayName,
+                        username = user.email.substringBefore('@').ifBlank { user.displayName },
+                        role = when (user.role) {
+                            com.ekms.shared.domain.UserRole.TECHNICIAN -> TerminalUserRole.TECHNICIAN
+                            com.ekms.shared.domain.UserRole.VENDOR -> TerminalUserRole.VENDOR
+                            com.ekms.shared.domain.UserRole.SUPER_ADMIN -> TerminalUserRole.SUPER_ADMIN
+                        },
+                        isPreset = false,
+                        createdAtEpochMillis = user.lifecycle.createdAtEpochMillis,
+                        passwordSalt = "",
+                        passwordHash = "",
+                    )
+                },
+        )
+
+        saveAccessGrants(
+            snapshot.accessGrants.flatMap { grant ->
+                grant.keyIds.map { keyId ->
+                    TerminalAccessGrant(
+                        id = "${grant.id}_$keyId",
+                        userId = grant.userId,
+                        keyId = keyId,
+                        createdAtEpochMillis = grant.lifecycle.createdAtEpochMillis,
+                    )
+                }
+            },
+        )
+    }
 
     private fun ensureSeeded() {
         if (preferences.getBoolean(KEY_SEEDED, false)) return

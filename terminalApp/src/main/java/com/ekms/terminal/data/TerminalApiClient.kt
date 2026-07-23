@@ -35,7 +35,8 @@ import java.util.UUID
 /**
  * HTTP client for the eKMS backend.
  *
- * Base URL comes from Admin Menu "Set server address" (e.g. http://192.168.1.10:3000).
+ * Base URL comes from Admin Menu "Set server address"
+ * (e.g. https://kms-cvt.com or http://192.168.1.10:3001).
  * Tokens are persisted so sync can run after a successful server login.
  */
 class TerminalApiClient(context: Context) {

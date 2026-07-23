@@ -1,9 +1,14 @@
 package com.ekms.shared.api
 
 import com.ekms.shared.domain.AuditEvent
+import com.ekms.shared.domain.AccessGrant
 import com.ekms.shared.domain.AccountStatus
+import com.ekms.shared.domain.AdminUser
 import com.ekms.shared.domain.CredentialKind
+import com.ekms.shared.domain.KeySlot
+import com.ekms.shared.domain.ManagedKey
 import com.ekms.shared.domain.RecordType
+import com.ekms.shared.domain.Terminal
 import com.ekms.shared.domain.TerminalConnectionState
 import com.ekms.shared.domain.UserRole
 import com.ekms.shared.policy.RecycleBinEntry
@@ -260,6 +265,21 @@ data class TerminalSyncAckResponse(
     val serverRevision: Long? = null,
     val issuedAtEpochMillis: Long? = null,
     val requestedAtEpochMillis: Long? = null,
+    /** Present on successful download; authoritative cabinet config for this terminal. */
+    val snapshot: TerminalDownloadSnapshot? = null,
+)
+
+/**
+ * Authoritative site-scoped config for one physical cabinet.
+ * Never includes passwords or raw NFC/biometric material.
+ */
+@Serializable
+data class TerminalDownloadSnapshot(
+    val terminal: Terminal,
+    val users: List<AdminUser>,
+    val keys: List<ManagedKey>,
+    val keySlots: List<KeySlot>,
+    val accessGrants: List<AccessGrant>,
 )
 
 /** API HANDOVER — Sites & Terminals. All PATCH requests use revision checks. */
@@ -382,7 +402,9 @@ data class TerminalBootstrapRequest(
 data class TerminalBootstrapResponse(
     val serverRevision: Long,
     val issuedAtEpochMillis: Long,
-    val changesJson: List<String>,
+    val changesJson: List<String> = emptyList(),
+    /** Same cabinet snapshot as download, so first sync can hydrate without a second call. */
+    val snapshot: TerminalDownloadSnapshot? = null,
 )
 
 @Serializable

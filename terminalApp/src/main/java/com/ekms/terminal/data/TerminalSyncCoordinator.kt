@@ -2,6 +2,7 @@ package com.ekms.terminal.data
 
 import com.ekms.shared.api.LoginResponse
 import com.ekms.shared.api.TerminalBootstrapResponse
+import com.ekms.shared.api.TerminalDownloadSnapshot
 import com.ekms.shared.api.TerminalSyncAckResponse
 import com.ekms.shared.api.TerminalSyncPushResponse
 import com.ekms.shared.domain.UserRole
@@ -15,6 +16,7 @@ class TerminalSyncCoordinator(
     private val api: TerminalApiClient,
     private val outbox: TerminalSyncOutbox,
     private val adminStore: TerminalAdminStore,
+    private val serverCache: TerminalServerCache,
 ) {
 
     fun resolveTerminalId(): String {
@@ -75,19 +77,25 @@ class TerminalSyncCoordinator(
             lastSuccessfulSyncEpochMillis = outbox.lastSuccessfulSyncEpochMillis(),
         )
         outbox.markSynced(response.serverRevision, response.issuedAtEpochMillis)
+        response.snapshot?.let { applySnapshot(it) }
         return response
     }
 
     suspend fun pushPending(submittedByUserId: String): TerminalSyncPushResponse {
         ensureReady()
         val pending = outbox.pending()
+        val auditEvents = adminStore.eventOutbox()
         val response = api.push(
             terminalId = resolveTerminalId(),
             changes = pending,
+            auditEvents = auditEvents,
         )
         outbox.removeAccepted(response.acceptedOperationIds)
         if (response.conflicts.isEmpty()) {
             outbox.markSynced(outbox.localRevision(), System.currentTimeMillis())
+        }
+        if (auditEvents.isNotEmpty()) {
+            adminStore.clearEventOutbox(auditEvents.map { it.id })
         }
         return response
     }
@@ -99,7 +107,21 @@ class TerminalSyncCoordinator(
 
     suspend fun downloadFromServer(): TerminalSyncAckResponse {
         ensureReady()
-        return api.download(resolveTerminalId())
+        val response = api.download(resolveTerminalId())
+        val snapshot = response.snapshot
+            ?: throw TerminalApiException(0, "Download succeeded but server returned no snapshot.")
+        applySnapshot(snapshot)
+        response.serverRevision?.let { rev ->
+            outbox.markSynced(rev, response.issuedAtEpochMillis ?: System.currentTimeMillis())
+        }
+        return response
+    }
+
+    fun cachedSnapshot(): TerminalDownloadSnapshot? = serverCache.load()
+
+    private fun applySnapshot(snapshot: TerminalDownloadSnapshot) {
+        serverCache.save(snapshot)
+        adminStore.applyServerSnapshot(snapshot)
     }
 
     fun enqueueLocalChange(
