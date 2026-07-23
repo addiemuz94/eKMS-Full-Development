@@ -1,3 +1,4 @@
+import bcrypt from 'bcryptjs';
 import { Router } from 'express';
 import { z } from 'zod';
 import pool from '../db.js';
@@ -87,6 +88,9 @@ router.post('/', async (req, res) => {
 
   const id = newId();
   const now = nowMs();
+  const passwordHash = parsed.data.password
+    ? await bcrypt.hash(parsed.data.password, 12)
+    : null;
   const conn = await pool.getConnection();
   try {
     await conn.beginTransaction();
@@ -95,11 +99,12 @@ router.post('/', async (req, res) => {
         (id, display_name, email, password_hash, role, account_status, revision,
          lifecycle_state, created_at_epoch_ms, updated_at_epoch_ms)
        VALUES
-        (:id, :displayName, :email, NULL, :role, 'ACTIVE', 1, 'ACTIVE', :now, :now)`,
+        (:id, :displayName, :email, :passwordHash, :role, 'ACTIVE', 1, 'ACTIVE', :now, :now)`,
       {
         id,
         displayName: parsed.data.displayName,
         email: parsed.data.email,
+        passwordHash,
         role: parsed.data.role,
         now,
       },

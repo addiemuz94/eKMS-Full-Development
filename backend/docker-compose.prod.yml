@@ -1,0 +1,81 @@
+# Production stack for https://kms-cvt.com (web + API on one host)
+# API paths: /v1/* and /health · Web: everything else
+#
+#   cp .env.production.example .env.production
+#   docker compose -f docker-compose.prod.yml --env-file .env.production up -d --build
+
+services:
+  mysql:
+    image: mysql:8.4
+    container_name: ekms-mysql
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+      MYSQL_DATABASE: ${DB_NAME:-ekms}
+      MYSQL_USER: ${DB_USER:-ekms}
+      MYSQL_PASSWORD: ${DB_PASSWORD}
+    volumes:
+      - ekms_mysql_data:/var/lib/mysql
+      - ./sql/001_init.sql:/docker-entrypoint-initdb.d/001_init.sql:ro
+      - ./sql/002_phase2.sql:/docker-entrypoint-initdb.d/002_phase2.sql:ro
+      - ./sql/003_phase4.sql:/docker-entrypoint-initdb.d/003_phase4.sql:ro
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-uroot", "-p${MYSQL_ROOT_PASSWORD}"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+    networks:
+      - ekms
+
+  api:
+    build: .
+    container_name: ekms-api
+    restart: unless-stopped
+    depends_on:
+      mysql:
+        condition: service_healthy
+    environment:
+      PORT: 3000
+      NODE_ENV: production
+      DB_HOST: mysql
+      DB_PORT: 3306
+      DB_USER: ${DB_USER:-ekms}
+      DB_PASSWORD: ${DB_PASSWORD}
+      DB_NAME: ${DB_NAME:-ekms}
+      JWT_ACCESS_SECRET: ${JWT_ACCESS_SECRET}
+      JWT_REFRESH_SECRET: ${JWT_REFRESH_SECRET}
+      JWT_ACCESS_TTL_SECONDS: ${JWT_ACCESS_TTL_SECONDS:-3600}
+      JWT_REFRESH_TTL_SECONDS: ${JWT_REFRESH_TTL_SECONDS:-604800}
+      SUPER_ADMIN_EMAIL: ${SUPER_ADMIN_EMAIL}
+      SUPER_ADMIN_PASSWORD: ${SUPER_ADMIN_PASSWORD}
+      SUPER_ADMIN_DISPLAY_NAME: ${SUPER_ADMIN_DISPLAY_NAME:-Super Admin}
+      CORS_ORIGINS: ${CORS_ORIGINS:-https://kms-cvt.com,https://www.kms-cvt.com}
+    networks:
+      - ekms
+
+  caddy:
+    image: caddy:2.9-alpine
+    container_name: ekms-caddy
+    restart: unless-stopped
+    depends_on:
+      - api
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+      - web_dist:/srv/web:ro
+    networks:
+      - ekms
+
+volumes:
+  ekms_mysql_data:
+  caddy_data:
+  caddy_config:
+  web_dist:
+
+networks:
+  ekms:
+    driver: bridge

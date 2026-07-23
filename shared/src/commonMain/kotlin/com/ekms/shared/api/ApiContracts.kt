@@ -7,6 +7,7 @@ import com.ekms.shared.domain.RecordType
 import com.ekms.shared.domain.TerminalConnectionState
 import com.ekms.shared.domain.UserRole
 import com.ekms.shared.policy.RecycleBinEntry
+import com.ekms.shared.sync.ConflictResolutionStrategy
 import com.ekms.shared.sync.OfflineChange
 import com.ekms.shared.sync.SyncConflict
 import kotlinx.serialization.Serializable
@@ -27,6 +28,18 @@ object ApiPaths {
     const val ADMIN_KEY_SLOTS = "/v1/admin/key-slots"
     const val ADMIN_ACCESS_GRANTS = "/v1/admin/access-grants"
     const val ADMIN_KEY_FOB_ENROLLMENT = "/v1/admin/keys/{keyId}/fob-enrollment"
+    const val ADMIN_EVENT_DEFINITIONS = "/v1/admin/event-definitions"
+    const val ADMIN_SCHEDULES = "/v1/admin/schedules"
+    const val ADMIN_PERSONNEL_GROUPS = "/v1/admin/personnel-groups"
+    const val ADMIN_KEY_GROUPS = "/v1/admin/key-groups"
+    const val ADMIN_MULTI_AUTH_RULES = "/v1/admin/multi-authentication-rules"
+    const val ADMIN_APPOINTMENTS = "/v1/admin/appointments"
+    const val ADMIN_APPOINTMENT_REASONS = "/v1/admin/appointment-reasons"
+    const val ADMIN_APPOINTMENT_PERMISSIONS = "/v1/admin/appointment-permissions"
+    const val REPORTS_KEY_OPERATIONS = "/v1/reports/key-operations"
+    const val REPORTS_SYSTEM_LOGS = "/v1/reports/system-operation-logs"
+    const val REPORTS_EQUIPMENT_LOGS = "/v1/reports/equipment-operation-logs"
+    const val REPORTS_EXPORTS = "/v1/reports/exports"
     const val RECYCLE_BIN = "/v1/admin/recycle-bin"
     const val SYNC_BOOTSTRAP = "/v1/terminal/sync/bootstrap"
     const val SYNC_PUSH = "/v1/terminal/sync/push"
@@ -164,6 +177,7 @@ data class CreateAdminUserRequest(
     val email: String,
     val role: UserRole,
     val assignedSiteIds: Set<String>,
+    val password: String? = null,
 )
 
 @Serializable
@@ -184,8 +198,64 @@ data class UpdateAdminUserAccountStatusRequest(
 @Serializable
 data class RequestCredentialEnrollmentRequest(
     val credentialKind: CredentialKind,
-    val terminalId: String?,
-    val expectedRevision: Long,
+    val terminalId: String? = null,
+    val expectedRevision: Long? = null,
+    val note: String? = null,
+)
+
+@Serializable
+data class CredentialStatusDto(
+    val id: String,
+    val userId: String,
+    val credentialKind: CredentialKind,
+    val enrollmentStatus: String,
+    val terminalId: String? = null,
+    val note: String? = null,
+    val revision: Long,
+)
+
+@Serializable
+data class CredentialStatusListResponse(
+    val items: List<CredentialStatusDto> = emptyList(),
+)
+
+@Serializable
+data class RecycleBinRestoreRequest(
+    val recordType: RecordType,
+    val recordId: String,
+    val expectedRevision: Long? = null,
+)
+
+@Serializable
+data class RecycleBinPurgeRequest(
+    val recordType: RecordType,
+    val recordId: String,
+)
+
+@Serializable
+data class AuditEventListResponse(
+    val items: List<AuditEvent> = emptyList(),
+)
+
+@Serializable
+data class SyncConflictListResponse(
+    val items: List<SyncConflict> = emptyList(),
+)
+
+@Serializable
+data class ResolveSyncConflictRequest(
+    val strategy: ConflictResolutionStrategy,
+    val mergedPayloadJson: String? = null,
+)
+
+@Serializable
+data class TerminalSyncAckResponse(
+    val ok: Boolean = true,
+    val terminalId: String,
+    val message: String? = null,
+    val serverRevision: Long? = null,
+    val issuedAtEpochMillis: Long? = null,
+    val requestedAtEpochMillis: Long? = null,
 )
 
 /** API HANDOVER — Sites & Terminals. All PATCH requests use revision checks. */
@@ -324,4 +394,232 @@ data class TerminalSyncPushResponse(
 data class RecycleBinListResponse(
     val entries: List<RecycleBinEntry>,
     val serverTimeEpochMillis: Long,
+)
+
+/* ---------- Phase 4 portal workflow contracts ---------- */
+
+@Serializable
+enum class ScheduleFrequency {
+    DAILY,
+    WEEKLY,
+    MONTHLY,
+}
+
+@Serializable
+enum class AppointmentStatusDto {
+    PENDING,
+    APPROVED,
+    REJECTED,
+}
+
+@Serializable
+enum class ReportExportFormat {
+    PDF,
+    EXCEL,
+}
+
+@Serializable
+enum class ReportExportKind {
+    KEY_OPERATIONS,
+    SYSTEM_OPERATION_LOGS,
+    EQUIPMENT_OPERATION_LOGS,
+}
+
+@Serializable
+data class EventDefinitionDto(
+    val id: String,
+    val siteId: String,
+    val name: String,
+    val eventNumber: String,
+    val requirement: String? = null,
+    val revision: Long,
+)
+
+@Serializable
+data class EventDefinitionUpsertRequest(
+    val siteId: String,
+    val name: String,
+    val eventNumber: String,
+    val requirement: String? = null,
+    val expectedRevision: Long? = null,
+)
+
+@Serializable
+data class EventDefinitionListResponse(val items: List<EventDefinitionDto> = emptyList())
+
+@Serializable
+data class ScheduleDto(
+    val id: String,
+    val siteId: String,
+    val name: String,
+    val frequency: ScheduleFrequency,
+    val timeWindowLabel: String,
+    val revision: Long,
+)
+
+@Serializable
+data class ScheduleUpsertRequest(
+    val siteId: String,
+    val name: String,
+    val frequency: ScheduleFrequency,
+    val timeWindowLabel: String,
+    val expectedRevision: Long? = null,
+)
+
+@Serializable
+data class ScheduleListResponse(val items: List<ScheduleDto> = emptyList())
+
+@Serializable
+data class NamedGroupDto(
+    val id: String,
+    val siteId: String,
+    val name: String,
+    val code: String,
+    val revision: Long,
+)
+
+@Serializable
+data class NamedGroupUpsertRequest(
+    val siteId: String,
+    val name: String,
+    val code: String,
+    val expectedRevision: Long? = null,
+)
+
+@Serializable
+data class NamedGroupListResponse(val items: List<NamedGroupDto> = emptyList())
+
+@Serializable
+data class MultiAuthRuleDto(
+    val id: String,
+    val siteId: String,
+    val primaryPersonnelGroupId: String,
+    val assistantGroupOneId: String? = null,
+    val assistantGroupTwoId: String? = null,
+    val keyGroupId: String,
+    val revision: Long,
+)
+
+@Serializable
+data class MultiAuthRuleUpsertRequest(
+    val siteId: String,
+    val primaryPersonnelGroupId: String,
+    val assistantGroupOneId: String? = null,
+    val assistantGroupTwoId: String? = null,
+    val keyGroupId: String,
+    val expectedRevision: Long? = null,
+)
+
+@Serializable
+data class MultiAuthRuleListResponse(val items: List<MultiAuthRuleDto> = emptyList())
+
+@Serializable
+data class AppointmentReasonDto(
+    val id: String,
+    val siteId: String,
+    val name: String,
+    val active: Boolean = true,
+    val revision: Long,
+)
+
+@Serializable
+data class AppointmentReasonUpsertRequest(
+    val siteId: String,
+    val name: String,
+    val active: Boolean = true,
+    val expectedRevision: Long? = null,
+)
+
+@Serializable
+data class AppointmentReasonListResponse(val items: List<AppointmentReasonDto> = emptyList())
+
+@Serializable
+data class AppointmentDto(
+    val id: String,
+    val siteId: String,
+    val terminalId: String,
+    val userId: String,
+    val reasonId: String? = null,
+    val reasonLabel: String? = null,
+    val keyIds: Set<String> = emptySet(),
+    val pickupWindowLabel: String,
+    val validFromEpochMillis: Long? = null,
+    val validUntilEpochMillis: Long? = null,
+    val status: AppointmentStatusDto = AppointmentStatusDto.PENDING,
+    val reviewerUserId: String? = null,
+    val reviewDetail: String? = null,
+    val revision: Long,
+)
+
+@Serializable
+data class AppointmentCreateRequest(
+    val siteId: String,
+    val terminalId: String,
+    val userId: String,
+    val reasonId: String? = null,
+    val reasonLabel: String? = null,
+    val keyIds: Set<String> = emptySet(),
+    val pickupWindowLabel: String,
+    val validFromEpochMillis: Long? = null,
+    val validUntilEpochMillis: Long? = null,
+)
+
+@Serializable
+data class AppointmentReviewRequest(
+    val status: AppointmentStatusDto,
+    val reviewDetail: String? = null,
+    val expectedRevision: Long,
+)
+
+@Serializable
+data class AppointmentPermissionsPatchRequest(
+    val keyIds: Set<String>,
+    val expectedRevision: Long,
+)
+
+@Serializable
+data class AppointmentListResponse(val items: List<AppointmentDto> = emptyList())
+
+@Serializable
+data class ReportFilterRequest(
+    val siteId: String? = null,
+    val terminalId: String? = null,
+    val userId: String? = null,
+    val keyId: String? = null,
+    val fromEpochMillis: Long? = null,
+    val untilEpochMillis: Long? = null,
+    val limit: Int = 100,
+)
+
+@Serializable
+data class KeyOperationReportRow(
+    val id: String,
+    val occurredAtEpochMillis: Long,
+    val eventType: String,
+    val terminalId: String? = null,
+    val siteId: String? = null,
+    val actorUserId: String? = null,
+    val entityId: String? = null,
+    val detail: String? = null,
+)
+
+@Serializable
+data class KeyOperationReportResponse(val items: List<KeyOperationReportRow> = emptyList())
+
+@Serializable
+data class ReportExportRequest(
+    val kind: ReportExportKind,
+    val format: ReportExportFormat,
+    val filter: ReportFilterRequest = ReportFilterRequest(),
+)
+
+@Serializable
+data class ReportExportResponse(
+    val jobId: String,
+    val kind: ReportExportKind,
+    val format: ReportExportFormat,
+    val status: String,
+    val createdAtEpochMillis: Long,
+    val downloadPath: String? = null,
+    val rowCount: Int = 0,
 )

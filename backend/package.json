@@ -9,7 +9,8 @@
     "seed": "node src/seed.js",
     "db:up": "docker compose up -d",
     "db:down": "docker compose down",
-    "db:init": "node src/initDb.js"
+    "db:migrate:phase2": "node src/migratePhase2.js",
+    "db:migrate": "node src/migratePhase2.js"
   },
   "dependencies": {
     "bcryptjs": "^3.0.2",

@@ -582,6 +582,7 @@ data class TerminalSession(
     val username: String,
     val role: TerminalUserRole,
     val requiresPasswordChange: Boolean,
+    val serverAuthenticated: Boolean = false,
 ) {
     val isSuperAdmin: Boolean
         get() = role == TerminalUserRole.SUPER_ADMIN

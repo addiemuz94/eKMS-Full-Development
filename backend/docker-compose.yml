@@ -13,6 +13,8 @@ services:
     volumes:
       - ekms_mysql_data:/var/lib/mysql
       - ./sql/001_init.sql:/docker-entrypoint-initdb.d/001_init.sql:ro
+      - ./sql/002_phase2.sql:/docker-entrypoint-initdb.d/002_phase2.sql:ro
+      - ./sql/003_phase4.sql:/docker-entrypoint-initdb.d/003_phase4.sql:ro
     healthcheck:
       test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-uroot", "-proot_dev_password"]
       interval: 5s

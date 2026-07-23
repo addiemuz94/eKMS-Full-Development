@@ -30,6 +30,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -42,13 +43,18 @@ import com.ekms.shared.domain.CardUidResolver
 import com.ekms.shared.domain.KeySlot
 import com.ekms.shared.domain.KeySlotDemoData
 import com.ekms.shared.domain.ManagedKey
+import com.ekms.shared.domain.RecordType
 import com.ekms.shared.protocol.KeyCabinetLink.Companion.MAX_KEY_NODE_ADDRESS
+import com.ekms.terminal.data.AuthOutcome
 import com.ekms.terminal.data.StoreResult
 import com.ekms.terminal.data.TerminalAccessGrant
 import com.ekms.terminal.data.TerminalAdminSnapshot
 import com.ekms.terminal.data.TerminalAdminStore
+import com.ekms.terminal.data.TerminalApiClient
 import com.ekms.terminal.data.TerminalKey
 import com.ekms.terminal.data.TerminalSession
+import com.ekms.terminal.data.TerminalSyncCoordinator
+import com.ekms.terminal.data.TerminalSyncOutbox
 import com.ekms.terminal.data.TerminalUser
 import com.ekms.terminal.data.TerminalUserRole
 import com.ekms.terminal.hardware.CabinetHardwareController
@@ -59,6 +65,8 @@ import com.ekms.terminal.hardware.TerminalNfcReaderController
 import com.ekms.terminal.hardware.TerminalNfcReaderState
 import com.ekms.terminal.hardware.UidEnrollmentResult
 import java.security.MessageDigest
+import kotlinx.coroutines.launch
+import android.provider.Settings
 
 /**
  * eKMS Terminal bootstrap and live hardware-control milestone.
@@ -74,11 +82,23 @@ import java.security.MessageDigest
 fun TerminalAdminApp() {
     val applicationContext = LocalContext.current.applicationContext
     val store = remember(applicationContext) { TerminalAdminStore(applicationContext) }
+    val apiClient = remember(applicationContext) { TerminalApiClient(applicationContext) }
+    val syncOutbox = remember(applicationContext) { TerminalSyncOutbox(applicationContext) }
+    val syncCoordinator = remember(apiClient, syncOutbox, store) {
+        TerminalSyncCoordinator(apiClient, syncOutbox, store)
+    }
+    val scope = rememberCoroutineScope()
+    val deviceId = remember(applicationContext) {
+        Settings.Secure.getString(applicationContext.contentResolver, Settings.Secure.ANDROID_ID)
+            ?: "terminal-unknown"
+    }
 
     var route by remember { mutableStateOf(SuperAdminRoute.LOGIN) }
     var session by remember { mutableStateOf<TerminalSession?>(null) }
     var snapshot by remember { mutableStateOf(store.snapshot()) }
     var hardwareState by remember { mutableStateOf(CabinetHardwareState()) }
+    var syncBusy by remember { mutableStateOf(false) }
+    var pendingOutboxCount by remember { mutableStateOf(syncOutbox.pending().size) }
     val hardwareController = remember {
         CabinetHardwareController { nextState -> hardwareState = nextState }
     }
@@ -100,8 +120,8 @@ fun TerminalAdminApp() {
 
     // Section 2 (key retrieval) reads the shared ManagedKey/KeySlot model, the
     // same one the Website uses, rather than the terminal-local TerminalKey
-    // bootstrap type. There is no backend sync yet, so this terminal's own
-    // cabinet is represented by one fixed demo terminal until sync lands.
+    // bootstrap type. Until download payloads hydrate local caches, this
+    // terminal uses demo cabinet data for physical retrieve/return demos.
     // configuredSlotCount is mutable because Section 4's "Key node setting"
     // (Admin Menu) edits this same value, not a separate cosmetic copy.
     var retrievalTerminal by remember { mutableStateOf(KeySlotDemoData.terminals.first()) }
@@ -202,14 +222,74 @@ fun TerminalAdminApp() {
 
     fun refreshSnapshot() {
         snapshot = store.snapshot()
+        pendingOutboxCount = syncOutbox.pending().size
     }
 
     fun signOut() {
         hardwareController.disconnect()
+        apiClient.clearSession()
         session = null
         capturedFob = null
         notice = null
         route = SuperAdminRoute.LOGIN
+    }
+
+    fun applyAuthSession(outcome: AuthOutcome) {
+        when (outcome) {
+            is AuthOutcome.Server -> {
+                session = outcome.session
+                notice = "Signed in to ${apiClient.baseUrl}."
+                route = when {
+                    outcome.session.requiresPasswordChange -> SuperAdminRoute.CHANGE_PASSWORD
+                    outcome.session.isSuperAdmin -> SuperAdminRoute.DASHBOARD
+                    else -> SuperAdminRoute.KEY_RETRIEVAL
+                }
+            }
+
+            is AuthOutcome.Local -> {
+                session = outcome.session
+                notice = outcome.serverWarning
+                route = when {
+                    outcome.session.requiresPasswordChange -> SuperAdminRoute.CHANGE_PASSWORD
+                    outcome.session.isSuperAdmin -> SuperAdminRoute.DASHBOARD
+                    else -> SuperAdminRoute.KEY_RETRIEVAL
+                }
+            }
+
+            is AuthOutcome.Failed -> notice = outcome.message
+        }
+    }
+
+    fun runServerLogin(username: String, password: String) {
+        scope.launch {
+            syncBusy = true
+            try {
+                applyAuthSession(syncCoordinator.authenticate(username, password, deviceId))
+            } finally {
+                syncBusy = false
+            }
+        }
+    }
+
+    fun runSyncAction(label: String, block: suspend () -> String) {
+        scope.launch {
+            syncBusy = true
+            notice = "$label…"
+            try {
+                notice = block()
+                refreshSnapshot()
+            } catch (error: Throwable) {
+                notice = "$label failed: ${error.message ?: "Unknown error"}"
+            } finally {
+                syncBusy = false
+            }
+        }
+    }
+
+    fun enqueueChange(entityType: RecordType, entityId: String, payloadJson: String) {
+        val actor = session?.userId ?: "local"
+        syncCoordinator.enqueueLocalChange(entityType, entityId, actor, payloadJson)
+        pendingOutboxCount = syncOutbox.pending().size
     }
 
     fun openAdmin(routeToOpen: SuperAdminRoute) {
@@ -318,21 +398,7 @@ fun TerminalAdminApp() {
                 else -> when (route) {
                 SuperAdminRoute.LOGIN -> TerminalLoginScreen(
                     padding = padding,
-                    onAccountLogin = { username, password ->
-                        when (val result = store.authenticate(username, password)) {
-                            is StoreResult.Success -> {
-                                session = result.value
-                                notice = null
-                                route = when {
-                                    result.value.requiresPasswordChange -> SuperAdminRoute.CHANGE_PASSWORD
-                                    result.value.isSuperAdmin -> SuperAdminRoute.DASHBOARD
-                                    else -> SuperAdminRoute.KEY_RETRIEVAL
-                                }
-                            }
-
-                            is StoreResult.Error -> notice = result.message
-                        }
-                    },
+                    onAccountLogin = { username, password -> runServerLogin(username, password) },
                     loginError = notice,
                     onKeyCardSwiped = { startKeyCardReturn() },
                 )
@@ -393,6 +459,11 @@ fun TerminalAdminApp() {
                     onSave = { displayName, username, password, role ->
                         when (val result = store.createUser(displayName, username, password, role)) {
                             is StoreResult.Success -> {
+                                enqueueChange(
+                                    RecordType.USER,
+                                    result.value.id,
+                                    """{"displayName":"${result.value.displayName}","username":"${result.value.username}","role":"${result.value.role.name}"}""",
+                                )
                                 refreshSnapshot()
                                 notice = result.value.displayName + " was enrolled as " + result.value.role.label + "."
                                 true
@@ -425,6 +496,11 @@ fun TerminalAdminApp() {
                             rawFobUid = rawFobUid,
                         )
                         if (result is StoreResult.Success) {
+                            enqueueChange(
+                                RecordType.KEY,
+                                result.value.id,
+                                """{"displayName":"${result.value.displayName}","nodeAddress":${result.value.nodeAddress},"boxAddress":${result.value.boxAddress}}""",
+                            )
                             refreshSnapshot()
                         }
                         result
@@ -465,6 +541,11 @@ fun TerminalAdminApp() {
                     onGrant = { userId, keyId ->
                         when (val result = store.grantAccess(userId, keyId)) {
                             is StoreResult.Success -> {
+                                enqueueChange(
+                                    RecordType.ACCESS_GRANT,
+                                    result.value.id,
+                                    """{"userId":"$userId","keyId":"$keyId"}""",
+                                )
                                 refreshSnapshot()
                                 notice = "Access granted."
                             }
@@ -475,6 +556,11 @@ fun TerminalAdminApp() {
                     onRevoke = { grantId ->
                         when (val result = store.revokeAccess(grantId)) {
                             is StoreResult.Success -> {
+                                enqueueChange(
+                                    RecordType.ACCESS_GRANT,
+                                    grantId,
+                                    """{"revoked":true}""",
+                                )
                                 refreshSnapshot()
                                 notice = "Access grant removed."
                             }
@@ -491,12 +577,20 @@ fun TerminalAdminApp() {
                         .filter { it.managedKeyId != null }
                         .maxOfOrNull { it.nodeAddress },
                     notice = notice,
+                    syncBusy = syncBusy,
+                    pendingOutboxCount = pendingOutboxCount,
                     onBack = { route = SuperAdminRoute.DASHBOARD },
                     onSave = { updatedSettings ->
                         when (val result = store.updateCabinetSettings(updatedSettings)) {
                             is StoreResult.Success -> {
+                                apiClient.syncBaseUrlFromSettings(result.value.serverAddress)
                                 refreshSnapshot()
                                 retrievalTerminal = retrievalTerminal.copy(configuredSlotCount = result.value.configuredKeyNodeCount)
+                                enqueueChange(
+                                    RecordType.TERMINAL,
+                                    result.value.cabinetId.ifBlank { "local-cabinet" },
+                                    """{"cabinetName":"${result.value.cabinetName}","configuredKeyNodeCount":${result.value.configuredKeyNodeCount}}""",
+                                )
                                 notice = "Admin Menu settings saved."
                             }
 
@@ -507,6 +601,31 @@ fun TerminalAdminApp() {
                         passwordChangeReturnRoute = SuperAdminRoute.ADMIN_MENU
                         notice = null
                         route = SuperAdminRoute.CHANGE_PASSWORD
+                    },
+                    onBootstrap = {
+                        runSyncAction("Bootstrap") {
+                            val response = syncCoordinator.bootstrap()
+                            "Bootstrap OK · server revision ${response.serverRevision}."
+                        }
+                    },
+                    onPush = {
+                        runSyncAction("Push") {
+                            val actor = session?.userId ?: "local"
+                            val response = syncCoordinator.pushPending(actor)
+                            "Push OK · accepted ${response.acceptedOperationIds.size}, conflicts ${response.conflicts.size}."
+                        }
+                    },
+                    onRead = {
+                        runSyncAction("Read") {
+                            val ack = syncCoordinator.readFromServer()
+                            ack.message ?: "Read request accepted."
+                        }
+                    },
+                    onDownload = {
+                        runSyncAction("Download") {
+                            val ack = syncCoordinator.downloadFromServer()
+                            ack.message ?: "Download staged (revision ${ack.serverRevision})."
+                        }
                     },
                 )
 
