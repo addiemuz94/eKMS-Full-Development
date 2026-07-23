@@ -159,6 +159,18 @@ enum class AuditEventType {
     LOGIN_DENIED,
     KEY_TAKEN,
     KEY_RETURNED,
+    /** Key Take Flow: a hardware fault before the key was ever released (e.g. the door never confirmed open). */
+    KEY_TAKE_FAILED,
+    /** Key Take Flow: the door opened but the key was never removed within the abandonment ceiling. */
+    KEY_TAKE_ABANDONED,
+    /** Key Take Flow: the key was removed but the door was still open after the Take Warning Time countdown. */
+    KEY_TAKE_DOOR_LEFT_OPEN,
+    /** Key Return Flow: a hardware fault before the door ever confirmed open. */
+    KEY_RETURN_FAILED,
+    /** Key Return Flow: the door opened but the key was never inserted within the 20s-from-swipe abandonment ceiling. */
+    KEY_RETURN_ABANDONED,
+    /** Key Return Flow: the key was inserted and locked but the door was still open after the Door-Close Warning Time countdown. */
+    KEY_RETURN_DOOR_LEFT_OPEN,
     USER_ACCOUNT_STATUS_CHANGED,
     USER_CREDENTIAL_ENROLLMENT_REQUESTED,
     RECORD_MOVED_TO_BIN,

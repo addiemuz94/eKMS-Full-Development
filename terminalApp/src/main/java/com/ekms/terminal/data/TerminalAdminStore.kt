@@ -3,6 +3,9 @@ package com.ekms.terminal.data
 import android.content.Context
 import android.content.SharedPreferences
 import android.util.Base64
+import com.ekms.shared.domain.AuditEvent
+import com.ekms.shared.domain.AuditEventType
+import com.ekms.shared.domain.RecordType
 import org.json.JSONArray
 import org.json.JSONObject
 import java.security.MessageDigest
@@ -38,6 +41,7 @@ class TerminalAdminStore(context: Context) {
         private const val KEY_KEYS = "managed_keys"
         private const val KEY_ACCESS_GRANTS = "managed_access_grants"
         private const val KEY_CABINET_SETTINGS = "cabinet_settings"
+        private const val KEY_EVENT_OUTBOX = "event_outbox"
         private const val PASSWORD_ITERATIONS = 120_000
         private const val SALT_BYTES = 16
         private const val HASH_BYTES = 32
@@ -45,6 +49,13 @@ class TerminalAdminStore(context: Context) {
         /** Per docs/Key Cabinet Communication Protocol.md §7.1: key nodes are 1-127. */
         private const val MAX_KEY_NODE_COUNT = 127
         private const val DEFAULT_KEY_NODE_COUNT = 24
+        private const val DEFAULT_TAKE_WARNING_TIME_SECONDS = 15
+        private const val MIN_TAKE_WARNING_TIME_SECONDS = 1
+        private const val MAX_TAKE_WARNING_TIME_SECONDS = 300
+        /** Key Return Flow — distinct setting from Take Warning Time, see CLAUDE.md "Terminal App UX Baseline (Production)" §2. */
+        private const val DEFAULT_DOOR_CLOSE_WARNING_TIME_SECONDS = 15
+        private const val MIN_DOOR_CLOSE_WARNING_TIME_SECONDS = 1
+        private const val MAX_DOOR_CLOSE_WARNING_TIME_SECONDS = 300
     }
 
     private val preferences: SharedPreferences =
@@ -325,6 +336,17 @@ class TerminalAdminStore(context: Context) {
         if (settings.configuredKeyNodeCount !in MIN_KEY_NODE_COUNT..MAX_KEY_NODE_COUNT) {
             return StoreResult.Error("Key node setting must be from $MIN_KEY_NODE_COUNT to $MAX_KEY_NODE_COUNT.")
         }
+        if (settings.takeWarningTimeSeconds !in MIN_TAKE_WARNING_TIME_SECONDS..MAX_TAKE_WARNING_TIME_SECONDS) {
+            return StoreResult.Error(
+                "Take Warning Time must be from $MIN_TAKE_WARNING_TIME_SECONDS to $MAX_TAKE_WARNING_TIME_SECONDS seconds.",
+            )
+        }
+        if (settings.doorCloseWarningTimeSeconds !in MIN_DOOR_CLOSE_WARNING_TIME_SECONDS..MAX_DOOR_CLOSE_WARNING_TIME_SECONDS) {
+            return StoreResult.Error(
+                "Door-Close Warning Time must be from $MIN_DOOR_CLOSE_WARNING_TIME_SECONDS to " +
+                    "$MAX_DOOR_CLOSE_WARNING_TIME_SECONDS seconds.",
+            )
+        }
 
         val normalized = settings.copy(
             cabinetName = settings.cabinetName.trim(),
@@ -335,6 +357,43 @@ class TerminalAdminStore(context: Context) {
         saveCabinetSettings(normalized)
         return StoreResult.Success(normalized)
     }
+
+    /**
+     * Local event outbox: terminal-originated records (starting with the
+     * Key Take Flow's take/failed-take/abandoned-take/door-left-open
+     * events — see CLAUDE.md "Terminal App UX Baseline (Production)" §1)
+     * persisted here using the same shared [AuditEvent] shape the eventual
+     * backend's `POST /v1/audit/events` expects. There is no sync transport
+     * yet — see the "no backend yet" project status — so nothing drains
+     * this today; it exists so a future sync pass has real data to send
+     * rather than needing to be retrofitted. [terminalId]/[siteId] are left
+     * null until this terminal has a real backend-assigned identity.
+     */
+    @Synchronized
+    fun logEvent(
+        eventType: AuditEventType,
+        actorUserId: String?,
+        entityType: RecordType? = null,
+        entityId: String? = null,
+        detail: String? = null,
+    ): AuditEvent {
+        val event = AuditEvent(
+            id = "event_" + UUID.randomUUID().toString(),
+            eventType = eventType,
+            actorUserId = actorUserId,
+            terminalId = null,
+            siteId = null,
+            entityType = entityType,
+            entityId = entityId,
+            occurredAtEpochMillis = System.currentTimeMillis(),
+            detail = detail,
+        )
+        saveEventOutbox(readEventOutbox() + event)
+        return event
+    }
+
+    @Synchronized
+    fun eventOutbox(): List<AuditEvent> = readEventOutbox()
 
     private fun ensureSeeded() {
         if (preferences.getBoolean(KEY_SEEDED, false)) return
@@ -433,7 +492,11 @@ class TerminalAdminStore(context: Context) {
 
     private fun readCabinetSettings(): TerminalCabinetSettings {
         val encoded = preferences.getString(KEY_CABINET_SETTINGS, null)
-            ?: return TerminalCabinetSettings(configuredKeyNodeCount = DEFAULT_KEY_NODE_COUNT)
+            ?: return TerminalCabinetSettings(
+                configuredKeyNodeCount = DEFAULT_KEY_NODE_COUNT,
+                takeWarningTimeSeconds = DEFAULT_TAKE_WARNING_TIME_SECONDS,
+                doorCloseWarningTimeSeconds = DEFAULT_DOOR_CLOSE_WARNING_TIME_SECONDS,
+            )
         return runCatching {
             val item = JSONObject(encoded)
             TerminalCabinetSettings(
@@ -449,8 +512,24 @@ class TerminalAdminStore(context: Context) {
                 keyReturnCertificationEnabled = item.optBoolean("keyReturnCertificationEnabled", false),
                 returnKeyVideoEnabled = item.optBoolean("returnKeyVideoEnabled", false),
                 keyRetrievalVideoEnabled = item.optBoolean("keyRetrievalVideoEnabled", false),
+                takeWarningTimeSeconds = if (item.has("takeWarningTimeSeconds")) {
+                    item.getInt("takeWarningTimeSeconds")
+                } else {
+                    DEFAULT_TAKE_WARNING_TIME_SECONDS
+                },
+                doorCloseWarningTimeSeconds = if (item.has("doorCloseWarningTimeSeconds")) {
+                    item.getInt("doorCloseWarningTimeSeconds")
+                } else {
+                    DEFAULT_DOOR_CLOSE_WARNING_TIME_SECONDS
+                },
             )
-        }.getOrElse { TerminalCabinetSettings(configuredKeyNodeCount = DEFAULT_KEY_NODE_COUNT) }
+        }.getOrElse {
+            TerminalCabinetSettings(
+                configuredKeyNodeCount = DEFAULT_KEY_NODE_COUNT,
+                takeWarningTimeSeconds = DEFAULT_TAKE_WARNING_TIME_SECONDS,
+                doorCloseWarningTimeSeconds = DEFAULT_DOOR_CLOSE_WARNING_TIME_SECONDS,
+            )
+        }
     }
 
     private fun saveCabinetSettings(settings: TerminalCabinetSettings) {
@@ -463,8 +542,49 @@ class TerminalAdminStore(context: Context) {
             .put("keyReturnCertificationEnabled", settings.keyReturnCertificationEnabled)
             .put("returnKeyVideoEnabled", settings.returnKeyVideoEnabled)
             .put("keyRetrievalVideoEnabled", settings.keyRetrievalVideoEnabled)
+            .put("takeWarningTimeSeconds", settings.takeWarningTimeSeconds)
+            .put("doorCloseWarningTimeSeconds", settings.doorCloseWarningTimeSeconds)
         preferences.edit().putString(KEY_CABINET_SETTINGS, item.toString()).apply()
     }
+
+    private fun readEventOutbox(): List<AuditEvent> = decodeArray(KEY_EVENT_OUTBOX) { item ->
+        AuditEvent(
+            id = item.getString("id"),
+            eventType = AuditEventType.valueOf(item.getString("eventType")),
+            actorUserId = item.optNullableString("actorUserId"),
+            terminalId = item.optNullableString("terminalId"),
+            siteId = item.optNullableString("siteId"),
+            entityType = item.optNullableString("entityType")?.let { RecordType.valueOf(it) },
+            entityId = item.optNullableString("entityId"),
+            occurredAtEpochMillis = item.getLong("occurredAtEpochMillis"),
+            detail = item.optNullableString("detail"),
+        )
+    }
+
+    private fun saveEventOutbox(events: List<AuditEvent>) {
+        val items = JSONArray()
+        events.forEach { event ->
+            items.put(
+                JSONObject()
+                    .put("id", event.id)
+                    .put("eventType", event.eventType.name)
+                    .putNullable("actorUserId", event.actorUserId)
+                    .putNullable("terminalId", event.terminalId)
+                    .putNullable("siteId", event.siteId)
+                    .putNullable("entityType", event.entityType?.name)
+                    .putNullable("entityId", event.entityId)
+                    .put("occurredAtEpochMillis", event.occurredAtEpochMillis)
+                    .putNullable("detail", event.detail),
+            )
+        }
+        preferences.edit().putString(KEY_EVENT_OUTBOX, items.toString()).apply()
+    }
+
+    private fun JSONObject.putNullable(key: String, value: String?): JSONObject =
+        put(key, value ?: JSONObject.NULL)
+
+    private fun JSONObject.optNullableString(key: String): String? =
+        if (has(key) && !isNull(key)) getString(key) else null
 
     private fun <T> decodeArray(
         preferenceKey: String,
@@ -539,6 +659,10 @@ data class TerminalCabinetSettings(
     val keyReturnCertificationEnabled: Boolean = false,
     val returnKeyVideoEnabled: Boolean = false,
     val keyRetrievalVideoEnabled: Boolean = false,
+    /** Key Take Flow (CLAUDE.md "Terminal App UX Baseline (Production)" §1): seconds before the "please close the door" voice line. */
+    val takeWarningTimeSeconds: Int = 15,
+    /** Key Return Flow (CLAUDE.md "Terminal App UX Baseline (Production)" §2): seconds after insertion before the "please close the door" voice line. Distinct setting from [takeWarningTimeSeconds]. */
+    val doorCloseWarningTimeSeconds: Int = 15,
 )
 
 data class TerminalUser(

@@ -69,39 +69,98 @@ These rules are enforced by convention across the codebase (see comments in `Api
 
 `docs/API_HANDOVER_SUPER_ADMIN V{1..4}.md` are dated snapshots of the API handover — V4 is the latest; don't edit older versions, add a new one instead if asked to revise the handover. `docs/WEB_PORTAL_WORKFLOW_HANDOVER.md` is the current living Website spec and includes an acceptance checklist — consult it before changing web portal workflow behavior.
 
-## Terminal App UX Baseline (STRICT — exact clone)
+## Terminal App UX Baseline (Production — baseline + defined enhancements)
 
-terminalApp must replicate the Smart Key Cabinet User Manual V2.1 exactly.
-This is not "inspired by" — every screen, flow order, interaction, button
-placement, and piece of terminology in the manual must be built as
-described. Do not add, remove, reorder, or reinterpret any step.
+terminalApp's core screens, flow order, and terminology continue to follow
+the Smart Key Cabinet User Manual V2.1 as the baseline. This is no longer
+a strict exact-clone requirement — production behavior may extend beyond
+the manual, but only via enhancements explicitly documented in this
+section. Undocumented deviation from the manual is still a bug; a
+documented enhancement below is not.
 
-The ONLY two things allowed to differ from the manual:
-1. Color theme / visual branding
-2. The first-start standby/screensaver screen shown before login
+Baseline (unchanged from the manual):
+- Standby -> tap-to-wake -> login screen
+- Login: personnel card swipe, key card swipe (returns directly),
+  account/password, Face Recognition, Fingerprint Recognition
+- Key retrieval: Layout Display / List Display, user-toggleable
+- Return flow: swipe -> door/blue light -> insert -> done
+- Admin Menu: all 10 items from the manual (terminal name, Key Cabinet ID,
+  password change, server address, activation code, key node setting, MAC
+  address, Key Return Certification, return video toggle, retrieval video
+  toggle)
+- Color theme and first-start screensaver remain the only purely cosmetic
+  differences, as before.
 
-Everything else must match, including:
-- Standby → tap-to-wake → login screen
-- Login screen with all four methods together: personnel card swipe, key
-  card swipe (returns directly), account/password, Face Recognition
-  button, Fingerprint Recognition button
-- Key retrieval: both "Layout Display" and "List Display", user-toggleable
-- Return flow: swipe key card near the card-swipe area, box door pops open
-  with blue light, insert key, done — no extra confirmation screens
-- Optional key-return re-authentication, controlled by a terminal setting
-  ("Key Return Certification")
-- Background video/photo recording during retrieval and/or return,
-  controlled by terminal settings, never a user-facing step
-- Full Admin Menu, reachable only after admin login, containing: terminal
-  name, Key Cabinet ID, modify administrator password, set server address,
-  activation code setup, key node setting, Ethernet MAC address display,
-  key return certification toggle, return video toggle, key retrieval
-  video toggle
+Documented production enhancements (beyond the manual):
 
-Before building or modifying any terminalApp screen, check it against the
-manual section by section. If something in the current code deviates from
-the manual (beyond color/screensaver), it is a bug to fix, not a design
-choice to keep.
+1. **Key Take Flow — active feedback and timed door-close enforcement**
+   (supersedes the manual's bare "door opens, insert key, done" return
+   description for the TAKE side specifically):
+   - Continuous beep from unlock through door-close confirmation
+   - Take Warning Time: a Super Admin-configurable setting, in seconds,
+     stored per-terminal (add alongside the existing Key Return
+     Certification / video toggles in the Admin Menu's terminal settings)
+   - Timer starts only on confirmed key-fob removal (0x16 bolt-removed),
+     never on unlock or door-eject alone
+   - If the timer expires before the door is reclosed, play a "please
+     close the door" voice line
+   - A door-left-open state (voice line played, door still not closed) is
+     logged as a distinct event from the take itself, and may surface as a
+     standing Super Admin alert
+   - A secondary, separate timeout governs the case where the door is
+     ejected but the key fob is never removed at all (open, no removal) --
+     see open implementation question in the Key Take Flow spec; do not
+     leave this case unbounded
+
+   All new admin-configurable timing values follow the same settings
+   storage/sync pattern as existing terminal settings (Key Return
+   Certification, video toggles) -- do not introduce a separate ad-hoc
+   config mechanism.
+
+2. **Key Return Flow — active feedback and timed door-close enforcement,
+   direction-reversed from the Key Take Flow** (supersedes the manual's
+   bare "door opens, insert key, done" description for the RETURN side,
+   layered on top of the existing Phase 3/9 return flow: swipe -> door/
+   blue light -> insert):
+   - The target node is identified via key-card UID swipe, resolved
+     through `CardUidResolver` (shared with the login flow's personnel-
+     card path -- one resolver, never re-derived per flow)
+   - From the moment of that swipe, a 20-second no-insert abandonment
+     ceiling starts, concurrently with the optional Key Return
+     Certification login gate if that setting is enabled -- the clock is
+     not paused for login, so a slow certification login eats into the
+     same 20s window
+   - Continuous beep from confirmed door-open through door-close
+     confirmation
+   - Insertion detected within 5s of door-open cancels the escalation;
+     not detected by 5s plays a "please insert the key" voice line once
+     and raises beep volume (same 1s interval) until insertion or
+     abandonment
+   - Not inserted by the 20s ceiling (measured from the original swipe,
+     not from door-open): locks the fob slot, turns the light off, logs a
+     distinct abandoned-return event, and alerts both the terminal user
+     and Super Admin (mobile app) -- deliberately not the same as Take
+     Flow's abandonment, which only re-locks an already-unlocked fob with
+     no two-party alert, since nothing was ever removed
+   - On confirmed insertion, the fob is locked immediately; the light
+     stays on through the Door-Close Warning Time countdown -- a NEW,
+     separate Super Admin-configurable setting from Take Warning Time
+   - If the door is still open when that countdown expires, play a
+     "please close the door" voice line and log a door-left-open event --
+     distinct from both the return record and the abandoned-return
+     notification, since never-inserted / inserted-but-door-left-open /
+     successful-close are three different failure modes, never collapsed
+     into one
+   - Every exit path (success, door-open hardware fault, abandoned-
+     return) leaves the light off and releases the concurrency guard
+
+   Door-Close Warning Time follows the same settings storage/sync pattern
+   as Take Warning Time and the other terminal settings -- same rule as
+   Take Flow, no separate config mechanism.
+
+Any future enhancement beyond the manual must be added to this list
+explicitly before being implemented -- this file is the single record of
+where terminalApp intentionally diverges from the supplier manual and why.
 
 Architecture note (unchanged): business logic stays in `shared`, hardware-
 specific code stays Android-only in terminalApp.
@@ -179,7 +238,8 @@ terminalApp consume the same source of truth rather than reimplementing it.
   AccessGrant + KeySlotAccessPolicy node-address validation), wired into
   webApp and terminalApp
 - terminalApp UI/UX rebuilt to strictly match Smart Key Cabinet User
-  Manual V2.1 (see "Terminal App UX Baseline (STRICT)" section):
+  Manual V2.1 (see "Terminal App UX Baseline (Production — baseline +
+  defined enhancements)" section):
   - Phase 1: Login screen (all 4 methods)
   - Phase 2: Key retrieval (Layout/List toggle)
   - Phase 3: Return flow
@@ -283,6 +343,187 @@ terminalApp consume the same source of truth rather than reimplementing it.
   Phase 9 above — no physical F7G18P run of the section 9 reader against
   real enrolled cards.
 
+- **Phase 10: physical F7G18P hardware verification.** First real run of
+  phases 7-9 and the card-UID fix against actual hardware (previously
+  exercised only through `FakeSerialTransport` and Gradle compile/test).
+  Driven interactively over ADB (screenshots + `input tap`/`input text`)
+  against a connected device, with the user performing the physical
+  actions (cabinet door, key fob, cards) on request.
+  - **Confirmed correct on real hardware:** cabinet connection at
+    `/dev/ttyS1` @ 19200 8N1; the 0x13=unlock/0x14=lock electromagnet
+    direction and `testMicroSwitch`/0x16-0x17 bolt-detection (both
+    absence and presence); the return flow's full sequence (blue light →
+    door eject → insert → secure → light off); the section 10.4
+    one-electromagnet-at-a-time concurrency guard (blocks a second node
+    with zero hardware side effects, purely client-side in
+    `KeyCabinetLink`); the public card reader detecting real M1 cards;
+    the guided key-enrolment screen's full release/NFC-compare/save/
+    return/auto-secure cycle; personnel-card swipe login end-to-end
+    (`CardUidResolver` → `authenticateByUserId`).
+  - **Bug found and fixed this session:** `CardEnrollmentScreen`'s
+    `PublicCardReaderController` was built inside a keyless `remember {}`,
+    so its `onCardDetected` closure permanently captured whichever
+    user/key was selected at first composition, ignoring later
+    selections — a scan could silently enrol to the wrong record despite
+    the UI showing the correct one selected. Fixed with
+    `rememberUpdatedState` on the category/selected-user/selected-key
+    reads. Also added a "Revoke this record's card" button (the store
+    already had `revoke()`; nothing called it), needed to clean up and
+    re-verify the fix live.
+  - **Bug found and fixed this session:** `CardEnrollmentScreen`'s key
+    list was wired to `retrievalKeys` (`KeySlotDemoData.keys()` — hard-
+    coded fixtures like "HQ Service Vehicle") instead of `snapshot.keys`
+    (the real `TerminalKey` records), so a key-card could only ever bind
+    to a fictional demo key, never a real enrolled one. Fixed by changing
+    `CardEnrollmentScreen`'s `keys` param from `List<ManagedKey>` to
+    `List<TerminalKey>` and passing `snapshot.keys`.
+  - **Bug found, NOT fixed (deferred — real design work, not a
+    one-liner):** `TerminalAdminApp`'s public-reader `CardUidMatch.Key`
+    branch looks up the matched key in `retrievalKeys` (demo `ManagedKey`
+    fixtures) using a real `TerminalKey.id` — two different ID
+    spaces/types that can never match. `matchedKey` is therefore always
+    null for a real enrolled key, so `TerminalKeyReturnScreen`'s
+    documented null-`slot` fallback ("no node to address... falls back to
+    the screen's original fixed-delay completion") fires every time:
+    confirmed live — tapping a real enrolled key fob at login correctly
+    resolved as `CardUidMatch.Key` and showed "insert the key," but sent
+    zero physical commands. This is the same "two incompatible key
+    schemas" gap the backend handover doc already flags
+    (`ManagedKey`+`KeySlot`, shared/demo, vs `TerminalKey`,
+    terminal-local) — the swipe-to-return production path is non-
+    functional for any real key until this is bridged.
+  - **Bug found, NOT fixed (deferred — needs a real design pass, same as
+    above):** `CabinetHardwareController.releaseKeyForPickup` (the
+    production key-retrieval path) only calls `engageElectromagnet` +
+    `testMicroSwitch` — it never calls `ejectDoor()`. Confirmed live: the
+    electromagnet unlocked correctly, but the door never physically
+    opened, so the key was unreachable. `beginKeyReturn` does not have
+    this bug (it already calls `ejectDoor()`). Manually sending 0x23 from
+    the admin console immediately fixed it, confirming the fix is just
+    adding the missing call — but the door-eject/electromagnet-engage
+    ordering and any UX implications are being left for a dedicated pass
+    rather than patched ad hoc.
+  - Both deferred bugs and both fixed bugs are logged in this session's
+    memory (`phase10_retrieval_door_eject_bug.md`,
+    `phase10_card_uid_bugs.md`) for continuity across conversations.
+
+- **Key Take Flow (production enhancement, not in the supplier manual)**:
+  implements CLAUDE.md's "Terminal App UX Baseline (Production)" §1 —
+  supersedes the manual's bare "door opens, insert key, done" description
+  for the TAKE side specifically. Selecting an available key in
+  `TerminalKeyRetrievalScreen` now hands off to a dedicated full-screen
+  `TerminalKeyTakeScreen` (same architecture as the Section 3 return
+  flow) instead of releasing inline; the grid's old `pendingKeyId`/
+  "Releasing…" state was removed as obsolete.
+  `CabinetHardwareController` gained three new methods: `beginKeyTake`
+  (Blue Light On → Unlock 0x13 → Eject Door 0x23 → confirm open via 0x22,
+  re-locking/light-off on any failure), `pollForKeyRemoval` (two
+  independent timers from door-open: 5 s raises beep volume only, 20 s is
+  the hard abandonment ceiling that auto re-locks and lights off before
+  reporting), and `waitForDoorCloseAfterTake` (polls until closed; the
+  Admin Menu-configurable Take Warning Time only triggers a "please close
+  the door" voice-line callback at expiry, polling continues indefinitely
+  until the door actually closes). A new `takeMonitoring` guard (mirrors
+  `returnMonitoring`) blocks admin-console commands during an active
+  take. Field-verified the 0x22 door-status byte mapping this session
+  (0x00 = open/ejected, 0xFF = closed) and documented it on the new
+  `isDoorOpen` helper.
+  New `TerminalCabinetSettings.takeWarningTimeSeconds` (default 15,
+  1-300) added to the Admin Menu alongside the existing Key Return
+  Certification/video toggles, same settings storage. New
+  `AudioFeedbackController` (beep/voice-line) is a no-op stub, matching
+  `VideoRecordingController`'s established pattern — no confirmed audio
+  hardware/asset pipeline yet.
+  Added a local event outbox to `TerminalAdminStore`
+  (`logEvent`/`eventOutbox`) persisting shared `AuditEvent`-shaped
+  records for the flow's four outcomes (`KEY_TAKEN`, and three new
+  `AuditEventType` values: `KEY_TAKE_FAILED`, `KEY_TAKE_ABANDONED`,
+  `KEY_TAKE_DOOR_LEFT_OPEN`) — nothing drains this yet since there is no
+  backend/sync transport, but it is real local persistence, not a stub.
+  **Explicitly deferred (separate follow-up task, not done here):**
+  surfacing a standing Super Admin alert for the door-left-open case in
+  webApp (Super Admin view) and mobileApp (targeted user + Super Admin
+  view) — both apps run on local demo data with no real cross-app sync
+  yet, so this would necessarily be a demo-data-driven mockup rather than
+  a live connection to terminalApp's event; deliberately scoped out of
+  this pass.
+  **Verified this session:** `:terminalApp:compileDebugKotlin`,
+  `:terminalApp:assembleDebug`, `:shared:allTests` all pass. Not yet
+  exercised: no manual UI walkthrough and no physical hardware run of the
+  new flow (door-open confirmation, the two removal timers, the warning
+  countdown) — built and verified by compile/test only.
+
+- **Key Return Flow (production enhancement, not in the supplier
+  manual)**: implements CLAUDE.md's "Terminal App UX Baseline
+  (Production)" §2 — direction-reversed mirror of the Key Take Flow,
+  layered on top of the existing Phase 3/9 return flow (swipe -> door/
+  blue light -> insert) rather than replacing its entry point.
+  `TerminalKeyReturnScreen` was rewritten in place with the same
+  stage-machine architecture as `TerminalKeyTakeScreen`, while
+  deliberately preserving the pre-existing null-key manual-tap fallback
+  (`resolveReturningKey`'s hardware-free testing convenience) untouched —
+  that path keeps its original simple fixed-delay behavior with no
+  timers, no hardware, nothing logged.
+  `CabinetHardwareController` gained `beginKeyReturnFlow` (Blue Light On →
+  Eject Door 0x23 → confirm open via 0x22 — never touches the
+  electromagnet, since nothing is locked to an empty node yet),
+  `pollForKeyInsertion` (two independent clocks, not one reused: a 5s
+  beep-volume threshold measured from door-open, and an externally-
+  supplied absolute `abandonAtEpochMillis` deadline computed by the
+  caller *at the original card swipe* — not from door-open, and not
+  paused for however long an optional Key Return Certification login
+  took), and `waitForDoorCloseAfterReturn` (mirrors the Take Flow's
+  equivalent). Reuses the pre-existing `returnMonitoring` guard (the same
+  one `waitForKeyInserted` used) rather than adding a new flag, since
+  both mean "a key return is being monitored."
+  **Fixed the Phase-10-deferred key-schema bug as part of this task** (at
+  the user's explicit direction, since the new flow depends on it): added
+  `managedKeyAndSlotFor()` in `TerminalAdminApp` to bridge a real
+  `TerminalKey` (what card enrollment actually binds to) into a synthetic
+  `ManagedKey`/`KeySlot` pair at the `CardUidMatch.Key` call site, so a
+  real card swipe can now identify a real node — previously this lookup
+  always failed (`retrievalKeys.firstOrNull { it.id == match.keyId }`
+  compared a real `TerminalKey.id` against demo `ManagedKey` fixtures).
+  This is a targeted bridge for the one call site that needed it, not a
+  full unification of the two schemas — see
+  `docs/Backend_Integration_Handover.md` for the underlying gap.
+  `ReturnFlow` now carries `matchedSlot` and `abandonAtEpochMillis`
+  explicitly (previously only `matchedKey`, with slot re-derived from
+  demo `retrievalSlots`, which would not have worked for a real
+  `TerminalKey`-backed match). A new top-level `LaunchedEffect` in
+  `TerminalAdminApp` races the same swipe-time deadline while an optional
+  Key Return Certification login is pending — if it fires first, the
+  flow is logged as abandoned with no hardware cleanup needed (nothing
+  was ever engaged at that stage), and is naturally cancelled by Compose
+  the moment `returnFlow` moves past that exact `AwaitingCertification`
+  instance.
+  New `TerminalCabinetSettings.doorCloseWarningTimeSeconds` (default 15,
+  1-300) added as a genuinely separate setting from `takeWarningTimeSeconds`,
+  same Admin Menu/storage pattern. `AudioFeedbackController` gained
+  `VoiceLine.PLEASE_INSERT_THE_KEY`.
+  Logs four outcomes via the same local event outbox the Take Flow uses:
+  `KEY_RETURNED` (existing type, reused) plus three new `AuditEventType`
+  values — `KEY_RETURN_FAILED`, `KEY_RETURN_ABANDONED`,
+  `KEY_RETURN_DOOR_LEFT_OPEN`. **Deliberate asymmetry with Take Flow,
+  not shared code:** Return's abandonment additionally records that both
+  the terminal user and Super Admin need alerting (via the outbox
+  record's `detail` field, since actual two-party delivery is the same
+  deferred webApp/mobileApp follow-up as Take Flow's standing-alert UI),
+  where Take's abandonment only ever implied a single Super Admin-facing
+  log entry.
+  On successful return, `takenKeyIds` is updated immediately in
+  `handleReturnFlowOutcome`'s `Success` case (not on `Failed`/`Abandoned`,
+  since in those cases the key's physical state is either unconfirmed or
+  known-unchanged) — note this bookkeeping is scoped to the demo
+  retrieval grid only; a real `TerminalKey` return via card swipe was
+  never reflected in `takenKeyIds` to begin with, since the grid and the
+  real key/card-enrollment system are separate demo-vs-real data sources
+  (see the schema-bridge note above).
+  **Verified this session:** `:terminalApp:compileDebugKotlin`,
+  `:terminalApp:assembleDebug`, `:shared:allTests` all pass. Not yet
+  exercised: no manual UI walkthrough and no physical hardware run of the
+  new flow — same caveat as the Key Take Flow above.
+
 ### Known issues / not yet resolved
 - Personnel management in webApp is currently a shallow free-text form
   (no role picker, no email/site validation) since the old
@@ -295,18 +536,43 @@ terminalApp consume the same source of truth rather than reimplementing it.
   see `terminalApp/reference/*.reference.kt.bak` (includes
   `FobEnrollmentScreen.reference.kt.bak`, archived alongside it since it
   depended on the same types) and `terminalApp/reference/README.md` for why.
-- **Needs physical hardware to fully verify (phases 7-9 and the card-UID
-  fix):** everything so far was only exercised through `FakeSerialTransport`
-  and Gradle compile/test/assemble — no physical F7G18P run yet for the
-  retrieval/return command sequences, the auto-connect path, real
-  bolt-detection timing, or the section 9 reader's UID lookup against real
-  enrolled cards.
+- **`releaseKeyForPickup` never ejects the cabinet door** (confirmed on
+  real hardware in Phase 10) — the production key-retrieval path unlocks
+  the electromagnet but never sends 0x23, so the operator cannot
+  physically reach the released key. `beginKeyReturn` does not have this
+  bug. Fix confirmed simple (add the missing `ejectDoor()` call,
+  empirically validated order: engage → eject → test micro switch) but
+  deliberately deferred to a dedicated pass rather than patched ad hoc —
+  see `phase10_retrieval_door_eject_bug.md` in this project's memory.
+- Phase 10 also found and fixed two bugs in `CardEnrollmentScreen` in the
+  same session (stale-closure enrollment misdirection; wired to demo key
+  fixtures instead of real keys) — see the Completed section above and
+  `phase10_card_uid_bugs.md` for detail; these are resolved, not
+  outstanding.
+- ~~The key-card swipe-to-return trigger cannot resolve any real enrolled
+  key~~ — **fixed** during the Key Return Flow implementation (see
+  Completed section above, `managedKeyAndSlotFor()`); was previously
+  logged here and in `phase10_card_uid_bugs.md` as a Phase 10-deferred
+  bug, now resolved.
+- Key Take Flow and Key Return Flow (both new this session) have not yet
+  been run against physical hardware — only compile/test/assemble
+  verified so far, same caveat the rest of the hardware-wired flows had
+  before Phase 10.
 
 ### Next steps (in order)
-- Phase 10 (suggested): verify phase 9's command sequences and the card-UID
-  disambiguation fix against a physical F7G18P — this is the first
-  not-yet-done item and unblocks confidently trusting the rest of the
-  hardware-wired flows
+- Verify the Key Take Flow and Key Return Flow against a physical
+  F7G18P (door-open confirmation, both flows' timer pairs, the Take
+  Warning Time / Door-Close Warning Time countdowns) — this is now the
+  first not-yet-hardware-verified item
+- Fix `releaseKeyForPickup`'s missing door-eject (the one remaining
+  Phase 10-deferred bug — see `phase10_retrieval_door_eject_bug.md`) —
+  needs a dedicated design pass per the user's explicit request, not an
+  ad hoc patch
+- webApp/mobileApp standing-alert UI: the Key Take Flow's door-left-open
+  case (Super Admin-only) and the Key Return Flow's abandoned-return case
+  (terminal user + Super Admin, two-party) — both demo-data-driven
+  mockups, explicitly scoped out of their respective implementation
+  passes; likely worth building together given the overlapping UI
 - After hardware phases: rebuild Personnel management properly
 
 ### Reference
@@ -315,5 +581,7 @@ terminalApp consume the same source of truth rather than reimplementing it.
   before any phase 8+ work. `docs/Key_Cabinet_Communication_Protocol.md`
   (underscored) is a project-level index onto it and defers to it on any
   conflict.
-- Terminal UX baseline: Smart Key Cabinet User Manual V2.1 (STRICT clone,
-  color theme + first-start screensaver are the only allowed differences)
+- Terminal UX baseline: Smart Key Cabinet User Manual V2.1 (baseline +
+  defined enhancements — see "Terminal App UX Baseline (Production —
+  baseline + defined enhancements)" section for what's permitted to
+  diverge and how)

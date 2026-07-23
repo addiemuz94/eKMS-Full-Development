@@ -1,6 +1,5 @@
 package com.ekms.terminal.ui
 
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
@@ -17,8 +16,6 @@ import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
@@ -37,6 +34,8 @@ import com.ekms.shared.domain.KeySlot
 import com.ekms.shared.domain.ManagedKey
 import com.ekms.shared.domain.ManagedTerminalOption
 import com.ekms.terminal.hardware.VideoRecordingController
+import com.ekms.terminal.ui.theme.DataReadoutTextStyle
+import com.ekms.terminal.ui.theme.StatusTone
 
 /**
  * Smart Key Cabinet User Manual V2.1, Section 2 — Key retrieval.
@@ -55,14 +54,13 @@ import com.ekms.terminal.hardware.VideoRecordingController
  * screen and the Website eventually read the same backend-synced data;
  * no terminal-only key/slot type is introduced here.
  *
- * Selecting a key now sends a real Magnet Engage (0x13) command to its
- * node and confirms removal via Test Micro Switch (0x16) — see
- * `CabinetHardwareController.releaseKeyForPickup`, phase 9 — which takes
- * long enough to be visibly async. [pendingKeyId] identifies the key
- * currently mid-release, if any; every other key is disabled for tap while
- * it's set, both to avoid a confusing double-dispatch and to make the
- * phase-7 one-electromagnet-at-a-time guard a backstop rather than the
- * primary way concurrent releases are prevented.
+ * Selecting an available key hands off to the Key Take Flow (CLAUDE.md
+ * "Terminal App UX Baseline (Production)" §1, `TerminalKeyTakeScreen`) —
+ * a dedicated full-screen takeover, the same pattern Section 3's return
+ * flow already uses, so this grid is never visible again until that flow
+ * ends. There is therefore no in-grid "pending/releasing" state to track
+ * here; a key already marked in [takenKeyIds] is the only reason a cell
+ * is disabled.
  */
 @Composable
 fun TerminalKeyRetrievalScreen(
@@ -71,7 +69,6 @@ fun TerminalKeyRetrievalScreen(
     keys: List<ManagedKey>,
     slots: List<KeySlot>,
     takenKeyIds: Set<String>,
-    pendingKeyId: String?,
     videoRecordingEnabled: Boolean,
     backLabel: String,
     onBack: () -> Unit,
@@ -126,7 +123,6 @@ fun TerminalKeyRetrievalScreen(
                     keyById = keyById,
                     slotsByNode = slotsByNode,
                     takenKeyIds = takenKeyIds,
-                    pendingKeyId = pendingKeyId,
                     onTakeKey = onTakeKey,
                 )
 
@@ -134,7 +130,6 @@ fun TerminalKeyRetrievalScreen(
                     slots = slots,
                     keyById = keyById,
                     takenKeyIds = takenKeyIds,
-                    pendingKeyId = pendingKeyId,
                     onTakeKey = onTakeKey,
                 )
             }
@@ -162,7 +157,6 @@ private fun KeyLayoutGrid(
     keyById: Map<String, ManagedKey>,
     slotsByNode: Map<Int, KeySlot>,
     takenKeyIds: Set<String>,
-    pendingKeyId: String?,
     onTakeKey: (ManagedKey) -> Unit,
 ) {
     LazyVerticalGrid(
@@ -179,8 +173,6 @@ private fun KeyLayoutGrid(
                 nodeAddress = nodeAddress,
                 key = key,
                 taken = key != null && key.id in takenKeyIds,
-                pending = key != null && key.id == pendingKeyId,
-                anyPending = pendingKeyId != null,
                 onTakeKey = onTakeKey,
             )
         }
@@ -192,40 +184,26 @@ private fun KeyNodeCell(
     nodeAddress: Int,
     key: ManagedKey?,
     taken: Boolean,
-    pending: Boolean,
-    anyPending: Boolean,
     onTakeKey: (ManagedKey) -> Unit,
 ) {
-    val selectable = key != null && !taken && !anyPending
-    Card(
-        modifier = Modifier
-            .fillMaxWidth()
-            .then(if (selectable) Modifier.clickable { onTakeKey(key!!) } else Modifier),
-        colors = CardDefaults.cardColors(
-            containerColor = when {
-                pending -> MaterialTheme.colorScheme.secondaryContainer
-                selectable -> MaterialTheme.colorScheme.primaryContainer
-                taken -> MaterialTheme.colorScheme.surfaceVariant
-                else -> MaterialTheme.colorScheme.surface
-            },
-        ),
+    val selectable = key != null && !taken
+    StatusRingCard(
+        tone = if (selectable) StatusTone.NORMAL else StatusTone.INACTIVE,
+        onClick = if (selectable) { { onTakeKey(key!!) } } else null,
+        contentPadding = 10.dp,
     ) {
-        Column(
-            modifier = Modifier.padding(10.dp),
-            verticalArrangement = Arrangement.spacedBy(4.dp),
-        ) {
-            Text("Node $nodeAddress", style = MaterialTheme.typography.labelSmall)
-            Text(
-                text = key?.displayName ?: "Empty",
-                style = MaterialTheme.typography.bodySmall,
-                fontWeight = FontWeight.SemiBold,
-                maxLines = 2,
-            )
-            if (pending) {
-                Text("Releasing…", style = MaterialTheme.typography.labelSmall)
-            } else if (taken) {
-                Text("Taken", style = MaterialTheme.typography.labelSmall)
-            }
+        Text(
+            text = "Node $nodeAddress",
+            style = MaterialTheme.typography.labelSmall.merge(DataReadoutTextStyle),
+        )
+        Text(
+            text = key?.displayName ?: "Empty",
+            style = MaterialTheme.typography.bodySmall,
+            fontWeight = FontWeight.SemiBold,
+            maxLines = 2,
+        )
+        if (taken) {
+            Text("Taken", style = MaterialTheme.typography.labelSmall)
         }
     }
 }
@@ -235,7 +213,6 @@ private fun KeyRetrievalList(
     slots: List<KeySlot>,
     keyById: Map<String, ManagedKey>,
     takenKeyIds: Set<String>,
-    pendingKeyId: String?,
     onTakeKey: (ManagedKey) -> Unit,
 ) {
     val rows = slots
@@ -250,30 +227,19 @@ private fun KeyRetrievalList(
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         rows.forEach { (nodeAddress, key) ->
             val taken = key.id in takenKeyIds
-            val pending = key.id == pendingKeyId
-            val selectable = !taken && pendingKeyId == null
-            Card(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .then(if (selectable) Modifier.clickable { onTakeKey(key) } else Modifier),
-                colors = CardDefaults.cardColors(
-                    containerColor = when {
-                        pending -> MaterialTheme.colorScheme.secondaryContainer
-                        taken -> MaterialTheme.colorScheme.surfaceVariant
-                        else -> MaterialTheme.colorScheme.primaryContainer
-                    },
-                ),
+            val selectable = !taken
+            StatusRingCard(
+                tone = if (selectable) StatusTone.NORMAL else StatusTone.INACTIVE,
+                onClick = if (selectable) { { onTakeKey(key) } } else null,
             ) {
-                Column(
-                    modifier = Modifier.padding(14.dp),
-                    verticalArrangement = Arrangement.spacedBy(4.dp),
-                ) {
-                    Text("Node $nodeAddress · ${key.displayName}", fontWeight = FontWeight.SemiBold)
-                    Text(
-                        text = if (pending) "Releasing…" else if (taken) "Taken" else "Available",
-                        style = MaterialTheme.typography.bodySmall,
-                    )
-                }
+                Text(
+                    text = "Node $nodeAddress · ${key.displayName}",
+                    fontWeight = FontWeight.SemiBold,
+                )
+                Text(
+                    text = if (taken) "Taken" else "Available",
+                    style = MaterialTheme.typography.bodySmall,
+                )
             }
         }
     }
