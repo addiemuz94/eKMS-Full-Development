@@ -263,14 +263,33 @@ If something breaks, set DNS back to **DNS only** while debugging.
 
 ---
 
-## Part H — Terminal app (colleague)
+## Part H — Terminal app (Android Studio on your PC)
 
-Admin Menu:
+### Clone and run
 
-- **Set server address:** `https://kms-cvt.com`
-- **Key Cabinet ID:** UUID of the terminal row in the backend
+```bash
+git clone https://github.com/addiemuz94/eKMS-Full-Development.git
+cd eKMS-Full-Development
+git checkout master
+git pull
+```
 
-No `api.` subdomain.
+Open the **repo root** in Android Studio (JDK 17, Gradle 8.13). Run `terminalApp` on an emulator or USB device.
+
+### Admin Menu settings (wire to live server)
+
+| Field | Value |
+|---|---|
+| **Set server address** | `https://kms-cvt.com` (no trailing slash) |
+| **Key Cabinet ID** | UUID of the terminal row from **Terminal Settings** on the portal |
+
+1. Sign in with the same Super Admin email/password as the portal.
+2. Tap **Bootstrap** or **Download** — users/keys/slots/grants hydrate from the server.
+3. **Push** uploads offline outbox changes and local audit events.
+
+Emulator cannot drive real cabinet serial hardware; this validates server sync. Use the physical F7G18P for hardware flows.
+
+No `api.` subdomain — same host as the portal.
 
 ---
 
