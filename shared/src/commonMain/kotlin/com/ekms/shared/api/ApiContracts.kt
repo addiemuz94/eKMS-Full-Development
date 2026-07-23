@@ -36,6 +36,127 @@ object ApiPaths {
     const val AUDIT_EVENTS = "/v1/audit/events"
 }
 
+@Serializable
+enum class AuthClientType {
+    WEB,
+    MOBILE,
+    TERMINAL,
+}
+
+@Serializable
+data class LoginRequest(
+    val identifier: String,
+    val password: String,
+    val clientType: AuthClientType = AuthClientType.WEB,
+    val deviceId: String? = null,
+)
+
+@Serializable
+data class AuthUserProfile(
+    val id: String,
+    val displayName: String,
+    val email: String,
+    val role: UserRole,
+    val assignedSiteIds: Set<String> = emptySet(),
+    val accountStatus: AccountStatus = AccountStatus.ACTIVE,
+    val revision: Long = 1,
+)
+
+@Serializable
+data class LoginResponse(
+    val accessToken: String,
+    val refreshToken: String,
+    val expiresAtEpochMillis: Long,
+    val profile: AuthUserProfile,
+    val role: UserRole,
+    val permittedSiteIds: Set<String> = emptySet(),
+)
+
+@Serializable
+data class RefreshTokenRequest(
+    val refreshToken: String,
+)
+
+@Serializable
+data class SiteDto(
+    val id: String,
+    val name: String,
+    val address: String? = null,
+    val revision: Long,
+)
+
+@Serializable
+data class TerminalDto(
+    val id: String,
+    val siteId: String,
+    val name: String,
+    val boxAddress: Int,
+    val serialNumber: String? = null,
+    val configuredSlotCount: Int = 0,
+    val cabinetSerialPort: String? = null,
+    val cabinetBaudRate: Int? = null,
+    val connectionState: TerminalConnectionState = TerminalConnectionState.UNKNOWN,
+    val revision: Long,
+)
+
+@Serializable
+data class UserDto(
+    val id: String,
+    val displayName: String,
+    val email: String,
+    val role: UserRole,
+    val assignedSiteIds: Set<String> = emptySet(),
+    val accountStatus: AccountStatus = AccountStatus.ACTIVE,
+    val revision: Long,
+)
+
+@Serializable
+data class KeyDto(
+    val id: String,
+    val siteId: String,
+    val displayName: String,
+    val fobEnrollmentReference: String? = null,
+    val revision: Long,
+)
+
+@Serializable
+data class KeySlotDto(
+    val id: String,
+    val terminalId: String,
+    val nodeAddress: Int,
+    val managedKeyId: String? = null,
+    val revision: Long,
+)
+
+@Serializable
+data class AccessGrantDto(
+    val id: String,
+    val userId: String,
+    val siteId: String,
+    val keyIds: Set<String> = emptySet(),
+    val validFromEpochMillis: Long? = null,
+    val validUntilEpochMillis: Long? = null,
+    val revision: Long,
+)
+
+@Serializable
+data class SiteListResponse(val items: List<SiteDto> = emptyList())
+
+@Serializable
+data class TerminalListResponse(val items: List<TerminalDto> = emptyList())
+
+@Serializable
+data class UserListResponse(val items: List<UserDto> = emptyList())
+
+@Serializable
+data class KeyListResponse(val items: List<KeyDto> = emptyList())
+
+@Serializable
+data class KeySlotListResponse(val items: List<KeySlotDto> = emptyList())
+
+@Serializable
+data class AccessGrantListResponse(val items: List<AccessGrantDto> = emptyList())
+
 /** API HANDOVER — Super Admin user management. Values are sent only over authenticated HTTPS. */
 @Serializable
 data class CreateAdminUserRequest(

@@ -34,6 +34,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -47,6 +48,7 @@ import com.ekms.shared.domain.AccessGrant
 import com.ekms.shared.domain.ManagedKey
 import com.ekms.shared.domain.RecordLifecycle
 import com.ekms.shared.policy.RecycleBinPolicy
+import kotlinx.coroutines.launch
 import kotlinx.datetime.Instant
 import kotlinx.datetime.TimeZone
 import kotlinx.datetime.toLocalDateTime
@@ -55,23 +57,31 @@ import kotlinx.datetime.toLocalDateTime
 @Composable
 internal fun EkmsWebApp() {
     val store = remember { WebPortalStore() }
+    val scope = rememberCoroutineScope()
 
     if (store.signedIn) {
         WebPortal(store = store)
     } else {
         WebLoginScreen(
-            onSignIn = {
-                store.signedIn = true
-                store.notice = "Local workflow preview opened. Production sign-in must use ${ApiPaths.AUTH_LOGIN} and a deployment-provisioned Super Admin account."
+            onSignIn = { account, password, setError ->
+                scope.launch {
+                    try {
+                        val login = ApiClient.login(account, password)
+                        store.onAuthenticated(login)
+                        store.reloadCoreData { error -> setError(error) }
+                    } catch (error: Throwable) {
+                        setError(error.message ?: "Unable to sign in.")
+                    }
+                }
             },
         )
     }
 }
 
 @Composable
-private fun WebLoginScreen(onSignIn: () -> Unit) {
+private fun WebLoginScreen(onSignIn: (String, String, (String?) -> Unit) -> Unit) {
     var company by remember { mutableStateOf("Cavotec Malaysia") }
-    var account by remember { mutableStateOf("Super Admin") }
+    var account by remember { mutableStateOf("superadmin@ekms.local") }
     var password by remember { mutableStateOf("") }
     var error by remember { mutableStateOf<String?>(null) }
 
@@ -125,7 +135,7 @@ private fun WebLoginScreen(onSignIn: () -> Unit) {
                     value = account,
                     onValueChange = { account = it },
                     modifier = Modifier.fillMaxWidth(),
-                    label = { Text("Account") },
+                    label = { Text("Account email") },
                     singleLine = true,
                 )
                 OutlinedTextField(
@@ -146,7 +156,7 @@ private fun WebLoginScreen(onSignIn: () -> Unit) {
                             error = "Enter company, account and password to continue."
                         } else {
                             error = null
-                            onSignIn()
+                            onSignIn(account, password) { error = it }
                         }
                     },
                     modifier = Modifier.fillMaxWidth(),
@@ -174,10 +184,10 @@ private fun WebPortal(store: WebPortalStore) {
         Column(modifier = Modifier.fillMaxSize()) {
             PortalTopBar(
                 currentRoute = store.route,
+                displayName = store.signedInDisplayName,
                 onSignOut = {
-                    store.signedIn = false
+                    store.signOut()
                     store.route = WebRoute.DASHBOARD
-                    store.notice = null
                 },
             )
             if (compact) {
@@ -226,7 +236,7 @@ private fun WebPortal(store: WebPortalStore) {
 }
 
 @Composable
-private fun PortalTopBar(currentRoute: WebRoute, onSignOut: () -> Unit) {
+private fun PortalTopBar(currentRoute: WebRoute, displayName: String, onSignOut: () -> Unit) {
     Surface(
         modifier = Modifier.fillMaxWidth(),
         color = MaterialTheme.colorScheme.primary,
@@ -254,7 +264,7 @@ private fun PortalTopBar(currentRoute: WebRoute, onSignOut: () -> Unit) {
             }
             Spacer(Modifier.weight(1f))
             Column(horizontalAlignment = Alignment.End) {
-                Text("Super Admin", style = MaterialTheme.typography.labelLarge)
+                Text(displayName, style = MaterialTheme.typography.labelLarge)
                 Text("Website management portal", style = MaterialTheme.typography.labelSmall, color = Color.White.copy(alpha = 0.78f))
             }
             Spacer(Modifier.width(12.dp))
@@ -369,6 +379,11 @@ private fun DashboardScreen(store: WebPortalStore) {
     PageHeader(
         title = "Home",
         description = "View cabinet-key status and real-time information across the managed organisation.",
+    )
+    Text(
+        if (store.apiConnected) "API connected · $API_BASE_URL" else "API disconnected · local preview records only",
+        color = if (store.apiConnected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error,
+        style = MaterialTheme.typography.bodyMedium,
     )
     MetricGrid(
         listOf(

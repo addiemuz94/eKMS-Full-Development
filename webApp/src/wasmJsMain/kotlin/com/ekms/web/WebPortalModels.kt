@@ -6,6 +6,11 @@ import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshots.SnapshotStateList
+import com.ekms.shared.api.AccessGrantUpsertRequest
+import com.ekms.shared.api.KeySlotUpsertRequest
+import com.ekms.shared.api.KeyUpsertRequest
+import com.ekms.shared.api.LoginResponse
+import com.ekms.shared.api.TerminalUpsertRequest
 import com.ekms.shared.domain.AccessGrant
 import com.ekms.shared.domain.KeyDraft
 import com.ekms.shared.domain.KeySlot
@@ -15,23 +20,22 @@ import com.ekms.shared.domain.LifecycleMetadata
 import com.ekms.shared.domain.ManagedKey
 import com.ekms.shared.domain.ManagedTerminalOption
 import com.ekms.shared.domain.RecordLifecycle
+import com.ekms.shared.domain.UserRole
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
 import kotlinx.datetime.Clock
+import kotlinx.serialization.json.Json
 
-/**
- * Browser-only view state for the supplier-aligned Website workflow.
- *
- * This is deliberately a local preview store. The backend integration points
- * are documented in shared/api/ApiContracts.kt and docs/WEB_PORTAL_WORKFLOW_HANDOVER.md.
- * No value in this file opens a terminal serial port or stores a raw fob UID.
- *
- * Keys, cabinet slots and access grants use the shared domain model
- * (shared/domain/AdminModels.kt, shared/domain/KeySlotManagement.kt) directly,
- * including its Box/Node address validation and soft-delete lifecycle, so the
- * same records and rules the backend will enforce are already exercised here.
- */
+/** Browser-only view state for the supplier-aligned Website workflow. */
 internal class WebPortalStore {
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     var route by mutableStateOf(WebRoute.DASHBOARD)
     var signedIn by mutableStateOf(false)
+    var signedInDisplayName by mutableStateOf("Super Admin")
+    var apiConnected by mutableStateOf(false)
+    var busy by mutableStateOf(false)
     var notice by mutableStateOf<String?>(null)
     var dialogKind by mutableStateOf<WebDialogKind?>(null)
     var activePersonId by mutableStateOf("person-001")
@@ -41,127 +45,11 @@ internal class WebPortalStore {
 
     private var nextLocalId = 100
 
-    val sites = mutableStateListOf(
-        PortalSite(
-            id = "site-kl",
-            name = "Kuala Lumpur HQ",
-            province = "Kuala Lumpur",
-            city = "Kuala Lumpur",
-            parentUnit = "Cavotec Malaysia",
-        ),
-        PortalSite(
-            id = "site-jb",
-            name = "Johor Service Hub",
-            province = "Johor",
-            city = "Johor Bahru",
-            parentUnit = "Cavotec Malaysia",
-        ),
-    )
-
-    val terminals = mutableStateListOf(
-        PortalTerminal(
-            id = "terminal-kl-01",
-            siteId = "site-kl",
-            name = "HQ Main Cabinet",
-            deviceUid = "F7G18P-KL-001",
-            boxAddress = 1,
-            nodeLayout = NodeLayoutType.A_STANDARD_KEY_SLOT,
-            nodeCount = 48,
-            keyReturnAuthentication = true,
-            status = PortalTerminalStatus.ONLINE,
-            lastSyncLabel = "Synced",
-        ),
-        PortalTerminal(
-            id = "terminal-jb-01",
-            siteId = "site-jb",
-            name = "Service Cabinet",
-            deviceUid = "F7G18P-JB-001",
-            boxAddress = 1,
-            nodeLayout = NodeLayoutType.B_COMPACT_DOOR_WITH_SLOT,
-            nodeCount = 24,
-            keyReturnAuthentication = false,
-            status = PortalTerminalStatus.SYNC_PENDING,
-            lastSyncLabel = "Configuration pending",
-        ),
-    )
-
-    val people = mutableStateListOf(
-        PortalPerson(
-            id = "person-001",
-            displayName = "Aina Rahman",
-            employeeId = "EMP-1001",
-            siteId = "site-kl",
-            userGroup = "Operations Team",
-            accessWindow = "Mon–Fri, 08:00–18:00",
-            accountStatus = PortalAccountStatus.ACTIVE,
-            credentialSummary = "NFC card enrolled",
-        ),
-        PortalPerson(
-            id = "person-002",
-            displayName = "Faizal Ismail",
-            employeeId = "EMP-1002",
-            siteId = "site-jb",
-            userGroup = "Field Service",
-            accessWindow = "Daily, 08:00–20:00",
-            accountStatus = PortalAccountStatus.ACTIVE,
-            credentialSummary = "Fingerprint enrolled",
-        ),
-        PortalPerson(
-            id = "person-003",
-            displayName = "Vendor Visitor",
-            employeeId = "VND-0007",
-            siteId = "site-kl",
-            userGroup = "Vendor",
-            accessWindow = "Pending approval",
-            accountStatus = PortalAccountStatus.PENDING_APPROVAL,
-            credentialSummary = "No active credential",
-        ),
-    )
-
-    val keys = mutableStateListOf(
-        ManagedKey(
-            id = "key-001",
-            siteId = "site-kl",
-            displayName = "Main Gate Key",
-            lifecycle = activeLifecycle(DEMO_CREATED_AT),
-        ),
-        ManagedKey(
-            id = "key-002",
-            siteId = "site-kl",
-            displayName = "Forklift Key A",
-            lifecycle = activeLifecycle(DEMO_CREATED_AT),
-        ),
-        ManagedKey(
-            id = "key-003",
-            siteId = "site-jb",
-            displayName = "Service Room Key",
-            lifecycle = activeLifecycle(DEMO_CREATED_AT),
-        ),
-    )
-
-    val keySlots = mutableStateListOf(
-        KeySlot(
-            id = "slot-001",
-            terminalId = "terminal-kl-01",
-            nodeAddress = 1,
-            managedKeyId = "key-001",
-            lifecycle = activeLifecycle(DEMO_CREATED_AT),
-        ),
-        KeySlot(
-            id = "slot-002",
-            terminalId = "terminal-kl-01",
-            nodeAddress = 12,
-            managedKeyId = "key-002",
-            lifecycle = activeLifecycle(DEMO_CREATED_AT),
-        ),
-        KeySlot(
-            id = "slot-003",
-            terminalId = "terminal-jb-01",
-            nodeAddress = 4,
-            managedKeyId = "key-003",
-            lifecycle = activeLifecycle(DEMO_CREATED_AT),
-        ),
-    )
+    val sites = mutableStateListOf<PortalSite>()
+    val terminals = mutableStateListOf<PortalTerminal>()
+    val people = mutableStateListOf<PortalPerson>()
+    val keys = mutableStateListOf<ManagedKey>()
+    val keySlots = mutableStateListOf<KeySlot>()
 
     /** Supplier-workflow fields not yet modeled in the shared domain (see Key Groups / Schedules). */
     val keyExtras = mutableStateMapOf(
@@ -170,30 +58,7 @@ internal class WebPortalStore {
         "key-003" to WebKeyExtra(timeLimit = "Daily, 08:00–20:00", keyGroup = "Maintenance Keys"),
     )
 
-    val accessGrants = mutableStateListOf(
-        AccessGrant(
-            id = "grant-001",
-            userId = "person-001",
-            siteId = "site-kl",
-            keyIds = setOf("key-001"),
-            lifecycle = activeLifecycle(DEMO_CREATED_AT),
-        ),
-        AccessGrant(
-            id = "grant-002",
-            userId = "person-001",
-            siteId = "site-kl",
-            keyIds = setOf("key-002"),
-            validUntilEpochMillis = KeySlotAccessPolicy.validUntilEpochMillis("2026-12-31"),
-            lifecycle = activeLifecycle(DEMO_CREATED_AT),
-        ),
-        AccessGrant(
-            id = "grant-003",
-            userId = "person-002",
-            siteId = "site-jb",
-            keyIds = setOf("key-003"),
-            lifecycle = activeLifecycle(DEMO_CREATED_AT),
-        ),
-    )
+    val accessGrants = mutableStateListOf<AccessGrant>()
 
     val eventDefinitions = mutableStateListOf(
         PortalEventDefinition("event-001", "site-kl", "Shift handover", "EVT-100", "Required remark"),
@@ -267,54 +132,183 @@ internal class WebPortalStore {
         dialogKind = kind
     }
 
+    fun onAuthenticated(login: LoginResponse) {
+        signedIn = true
+        signedInDisplayName = login.profile.displayName
+        apiConnected = true
+        notice = "Signed in to $API_BASE_URL as ${login.profile.displayName}. Loading core data…"
+    }
+
+    fun signOut() {
+        ApiClient.clearSession()
+        signedIn = false
+        signedInDisplayName = "Super Admin"
+        apiConnected = false
+        busy = false
+        sites.clear()
+        terminals.clear()
+        people.clear()
+        keys.clear()
+        keySlots.clear()
+        accessGrants.clear()
+        keyExtras.clear()
+        notice = null
+    }
+
+    fun reloadCoreData(onDone: ((String?) -> Unit)? = null) {
+        scope.launch {
+            busy = true
+            try {
+                val timestamp = now()
+                val loadedSites = ApiClient.listSites()
+                val loadedTerminals = ApiClient.listTerminals()
+                val loadedPeople = ApiClient.listUsers()
+                val loadedKeys = ApiClient.listKeys()
+                val loadedSlots = ApiClient.listKeySlots()
+                val loadedGrants = ApiClient.listAccessGrants()
+
+                sites.clear()
+                sites.addAll(loadedSites.map {
+                    PortalSite(
+                        id = it.id,
+                        name = it.name,
+                        province = "",
+                        city = "",
+                        parentUnit = "",
+                        address = it.address,
+                        revision = it.revision,
+                    )
+                })
+                terminals.clear()
+                terminals.addAll(loadedTerminals.map {
+                    PortalTerminal(
+                        id = it.id,
+                        siteId = it.siteId,
+                        name = it.name,
+                        deviceUid = it.serialNumber.orEmpty(),
+                        boxAddress = it.boxAddress,
+                        nodeLayout = NodeLayoutType.A_STANDARD_KEY_SLOT,
+                        nodeCount = it.configuredSlotCount,
+                        keyReturnAuthentication = false,
+                        status = when (it.connectionState.name) {
+                            "ONLINE" -> PortalTerminalStatus.ONLINE
+                            "OFFLINE" -> PortalTerminalStatus.OFFLINE
+                            else -> PortalTerminalStatus.SYNC_PENDING
+                        },
+                        lastSyncLabel = it.connectionState.name.lowercase().replace('_', ' '),
+                        revision = it.revision,
+                    )
+                })
+                people.clear()
+                people.addAll(loadedPeople.map { user ->
+                    PortalPerson(
+                        id = user.id,
+                        displayName = user.displayName,
+                        employeeId = user.email.substringBefore('@'),
+                        siteId = user.assignedSiteIds.firstOrNull().orEmpty(),
+                        userGroup = user.role.name,
+                        accessWindow = "Not configured",
+                        accountStatus = when (user.accountStatus.name) {
+                            "ACTIVE" -> PortalAccountStatus.ACTIVE
+                            "DISABLED" -> PortalAccountStatus.DISABLED
+                            else -> PortalAccountStatus.PENDING_APPROVAL
+                        },
+                        credentialSummary = "Managed by terminal",
+                        email = user.email,
+                        revision = user.revision,
+                        role = user.role,
+                    )
+                })
+                keys.clear()
+                keys.addAll(loadedKeys.map {
+                    ManagedKey(
+                        id = it.id,
+                        siteId = it.siteId,
+                        displayName = it.displayName,
+                        fobEnrollmentReference = it.fobEnrollmentReference,
+                        lifecycle = activeLifecycle(timestamp),
+                    )
+                })
+                keySlots.clear()
+                keySlots.addAll(loadedSlots.map {
+                    KeySlot(
+                        id = it.id,
+                        terminalId = it.terminalId,
+                        nodeAddress = it.nodeAddress,
+                        managedKeyId = it.managedKeyId,
+                        lifecycle = activeLifecycle(timestamp),
+                    )
+                })
+                accessGrants.clear()
+                accessGrants.addAll(loadedGrants.map {
+                    AccessGrant(
+                        id = it.id,
+                        userId = it.userId,
+                        siteId = it.siteId,
+                        keyIds = it.keyIds,
+                        validFromEpochMillis = it.validFromEpochMillis,
+                        validUntilEpochMillis = it.validUntilEpochMillis,
+                        lifecycle = activeLifecycle(timestamp),
+                    )
+                })
+                apiConnected = true
+                notice = "Connected to $API_BASE_URL. Core data loaded."
+                onDone?.invoke(null)
+            } catch (error: Throwable) {
+                apiConnected = false
+                val message = error.message ?: "Unable to load core data."
+                notice = "API load failed: $message"
+                onDone?.invoke(message)
+            } finally {
+                busy = false
+            }
+        }
+    }
+
     fun create(kind: WebDialogKind, values: List<String>) {
         var closeDialog = true
         when (kind) {
             WebDialogKind.ADD_UNIT -> {
-                val site = PortalSite(
-                    id = nextId("site"),
-                    name = field(values, 0, "New Unit"),
-                    province = field(values, 1, "Not set"),
-                    city = field(values, 2, "Not set"),
-                    parentUnit = field(values, 3, "Cavotec Malaysia"),
-                )
-                sites.add(site)
-                notice = "${site.name} was added to this local Website preview. Production will call POST /v1/admin/sites."
+                val name = field(values, 0, "New Unit")
+                val address = values.drop(1).map(String::trim).filter(String::isNotBlank).joinToString(", ").ifBlank { null }
+                createWithApi("Creating $name…") {
+                    ApiClient.createSite(name, address)
+                }
             }
 
             WebDialogKind.ADD_TERMINAL -> {
-                val terminal = PortalTerminal(
-                    id = nextId("terminal"),
-                    siteId = siteIdFor(field(values, 1, sites.firstOrNull()?.name.orEmpty())),
-                    name = field(values, 0, "New Cabinet"),
-                    deviceUid = field(values, 2, "Device UID pending"),
-                    boxAddress = 1,
-                    nodeLayout = NodeLayoutType.fromInput(field(values, 3, "A")),
-                    nodeCount = field(values, 4, "24").toIntOrNull()?.coerceIn(1, 255) ?: 24,
-                    keyReturnAuthentication = !field(values, 5, "Enabled").equals("disabled", ignoreCase = true),
-                    status = PortalTerminalStatus.SYNC_PENDING,
-                    lastSyncLabel = "Awaiting first download",
-                )
-                terminals.add(terminal)
-                selectedTerminalId = terminal.id
-                notice = "${terminal.name} was configured locally at Box Address ${terminal.boxAddress}. " +
-                        "The Website records configuration only; the terminal performs physical cabinet I/O."
+                val siteId = siteIdFor(field(values, 1, ""))
+                if (siteId.isBlank()) {
+                    notice = "Select a valid unit before saving a terminal."
+                    closeDialog = false
+                } else {
+                    createWithApi("Creating ${field(values, 0, "New Cabinet")}…") {
+                        ApiClient.createTerminal(
+                            TerminalUpsertRequest(
+                                siteId = siteId,
+                                name = field(values, 0, "New Cabinet"),
+                                boxAddress = 1,
+                                serialNumber = field(values, 2, "Device UID pending"),
+                                configuredSlotCount = field(values, 4, "24").toIntOrNull()?.coerceIn(1, 255) ?: 24,
+                            ),
+                        )
+                    }
+                }
             }
 
             WebDialogKind.ADD_PERSON -> {
-                val person = PortalPerson(
-                    id = nextId("person"),
-                    displayName = field(values, 0, "New person"),
-                    employeeId = field(values, 2, "Employee ID pending"),
-                    siteId = siteIdFor(field(values, 1, sites.firstOrNull()?.name.orEmpty())),
-                    userGroup = field(values, 3, "Unassigned"),
-                    accessWindow = field(values, 4, "Not configured"),
-                    accountStatus = PortalAccountStatus.PENDING_APPROVAL,
-                    credentialSummary = "Credential not enrolled",
-                )
-                people.add(person)
-                activePersonId = person.id
-                notice = "${person.displayName} is pending Super Admin approval. The browser does not persist the submitted password or biometric data."
+                val siteId = siteIdFor(field(values, 1, ""))
+                if (siteId.isBlank()) {
+                    notice = "Assign a unit before creating personnel."
+                    closeDialog = false
+                } else {
+                    val name = field(values, 0, "New person")
+                    val employeeId = field(values, 2, "")
+                    val email = employeeId.takeIf { it.contains("@") } ?: "${name.lowercase().replace(" ", ".")}@ekms.local"
+                    createWithApi("Creating $name…") {
+                        ApiClient.createUser(name, email, UserRole.TECHNICIAN, setOf(siteId))
+                    }
+                }
             }
 
             WebDialogKind.ADD_KEY -> {
@@ -341,31 +335,18 @@ internal class WebPortalStore {
                         notice = issues.joinToString(" ") { it.message }
                         closeDialog = false
                     } else {
-                        val timestamp = now()
-                        val keyId = nextId("key")
-                        keys.add(
-                            ManagedKey(
-                                id = keyId,
-                                siteId = terminal.siteId,
-                                displayName = displayName.trim(),
-                                lifecycle = activeLifecycle(timestamp),
-                            ),
-                        )
-                        keySlots.add(
-                            KeySlot(
-                                id = nextId("slot"),
-                                terminalId = terminal.id,
-                                nodeAddress = nodeAddressText.trim().toInt(),
-                                managedKeyId = keyId,
-                                lifecycle = activeLifecycle(timestamp),
-                            ),
-                        )
-                        keyExtras[keyId] = WebKeyExtra(
-                            timeLimit = field(values, 4, "Not configured"),
-                            keyGroup = field(values, 5, "Unassigned"),
-                        )
-                        notice = "${displayName.trim()} saved at Box ${terminal.boxAddress} · Node ${nodeAddressText.trim()}. " +
-                                "Physical fob enrolment remains a protected Terminal-only action."
+                        createWithApi("Creating ${displayName.trim()}…") {
+                            val key = ApiClient.createKey(
+                                KeyUpsertRequest(siteId = terminal.siteId, displayName = displayName.trim()),
+                            )
+                            ApiClient.createKeySlot(
+                                KeySlotUpsertRequest(
+                                    terminalId = terminal.id,
+                                    nodeAddress = nodeAddressText.trim().toInt(),
+                                    managedKeyId = key.id,
+                                ),
+                            )
+                        }
                     }
                 }
             }
@@ -472,6 +453,18 @@ internal class WebPortalStore {
         }
         if (alreadyGranted) {
             notice = "That exact key is already authorized for the selected person."
+            return
+        }
+        if (apiConnected) {
+            createWithApi("Saving key permission…") {
+                ApiClient.createAccessGrant(
+                    AccessGrantUpsertRequest(
+                        userId = personId,
+                        siteId = key.siteId,
+                        keyIds = setOf(keyId),
+                    ),
+                )
+            }
             return
         }
         accessGrants.add(
@@ -624,6 +617,27 @@ internal class WebPortalStore {
 
     private fun siteIdFor(name: String): String =
         sites.firstOrNull { it.name.equals(name.trim(), ignoreCase = true) }?.id ?: sites.firstOrNull()?.id.orEmpty()
+
+    private fun createWithApi(action: String, request: suspend () -> Any) {
+        if (!apiConnected) {
+            notice = "Sign in to $API_BASE_URL before saving core records."
+            return
+        }
+        scope.launch {
+            busy = true
+            notice = action
+            try {
+                request()
+                reloadCoreData { error ->
+                    if (error == null) notice = "Saved successfully."
+                }
+            } catch (error: Throwable) {
+                notice = "Save failed: ${error.message ?: "Unknown API error"}"
+            } finally {
+                busy = false
+            }
+        }
+    }
 
     private fun nextId(prefix: String): String = "$prefix-${nextLocalId++}"
 
@@ -792,6 +806,8 @@ internal data class PortalSite(
     val province: String,
     val city: String,
     val parentUnit: String,
+    val address: String? = null,
+    val revision: Long = 1,
 )
 
 internal data class PortalTerminal(
@@ -806,6 +822,7 @@ internal data class PortalTerminal(
     val keyReturnAuthentication: Boolean,
     val status: PortalTerminalStatus,
     val lastSyncLabel: String,
+    val revision: Long = 1,
 )
 
 /** Projects this preview terminal into the shared node-address validation policy's terminal shape. */
@@ -845,6 +862,9 @@ internal data class PortalPerson(
     val accessWindow: String,
     val accountStatus: PortalAccountStatus,
     val credentialSummary: String,
+    val email: String = "",
+    val revision: Long = 1,
+    val role: UserRole = UserRole.TECHNICIAN,
 )
 
 internal enum class PortalAccountStatus(val label: String) {
