@@ -22,7 +22,6 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
-import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -30,25 +29,32 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.platform.LocalContext
+import com.ekms.shared.domain.AuditEventType
 import com.ekms.shared.domain.CardUidMatch
 import com.ekms.shared.domain.CardUidResolver
 import com.ekms.shared.domain.KeySlot
 import com.ekms.shared.domain.KeySlotDemoData
+import com.ekms.shared.domain.LifecycleMetadata
 import com.ekms.shared.domain.ManagedKey
+import com.ekms.shared.domain.RecordType
 import com.ekms.shared.protocol.KeyCabinetLink.Companion.MAX_KEY_NODE_ADDRESS
+import com.ekms.terminal.data.AuthOutcome
 import com.ekms.terminal.data.StoreResult
 import com.ekms.terminal.data.TerminalAccessGrant
 import com.ekms.terminal.data.TerminalAdminSnapshot
 import com.ekms.terminal.data.TerminalAdminStore
+import com.ekms.terminal.data.TerminalApiClient
 import com.ekms.terminal.data.TerminalKey
 import com.ekms.terminal.data.TerminalSession
+import com.ekms.terminal.data.TerminalSyncCoordinator
+import com.ekms.terminal.data.TerminalSyncOutbox
 import com.ekms.terminal.data.TerminalUser
 import com.ekms.terminal.data.TerminalUserRole
 import com.ekms.terminal.hardware.CabinetHardwareController
@@ -58,7 +64,13 @@ import com.ekms.terminal.hardware.PublicCardReaderController
 import com.ekms.terminal.hardware.TerminalNfcReaderController
 import com.ekms.terminal.hardware.TerminalNfcReaderState
 import com.ekms.terminal.hardware.UidEnrollmentResult
+import com.ekms.terminal.ui.theme.DataReadoutTextStyle
+import com.ekms.terminal.ui.theme.EkmsTerminalTheme
+import com.ekms.terminal.ui.theme.StatusTone
 import java.security.MessageDigest
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import android.provider.Settings
 
 /**
  * eKMS Terminal bootstrap and live hardware-control milestone.
@@ -74,11 +86,23 @@ import java.security.MessageDigest
 fun TerminalAdminApp() {
     val applicationContext = LocalContext.current.applicationContext
     val store = remember(applicationContext) { TerminalAdminStore(applicationContext) }
+    val apiClient = remember(applicationContext) { TerminalApiClient(applicationContext) }
+    val syncOutbox = remember(applicationContext) { TerminalSyncOutbox(applicationContext) }
+    val syncCoordinator = remember(apiClient, syncOutbox, store) {
+        TerminalSyncCoordinator(apiClient, syncOutbox, store)
+    }
+    val scope = rememberCoroutineScope()
+    val deviceId = remember(applicationContext) {
+        Settings.Secure.getString(applicationContext.contentResolver, Settings.Secure.ANDROID_ID)
+            ?: "terminal-unknown"
+    }
 
     var route by remember { mutableStateOf(SuperAdminRoute.LOGIN) }
     var session by remember { mutableStateOf<TerminalSession?>(null) }
     var snapshot by remember { mutableStateOf(store.snapshot()) }
     var hardwareState by remember { mutableStateOf(CabinetHardwareState()) }
+    var syncBusy by remember { mutableStateOf(false) }
+    var pendingOutboxCount by remember { mutableStateOf(syncOutbox.pending().size) }
     val hardwareController = remember {
         CabinetHardwareController { nextState -> hardwareState = nextState }
     }
@@ -100,62 +124,150 @@ fun TerminalAdminApp() {
 
     // Section 2 (key retrieval) reads the shared ManagedKey/KeySlot model, the
     // same one the Website uses, rather than the terminal-local TerminalKey
-    // bootstrap type. There is no backend sync yet, so this terminal's own
-    // cabinet is represented by one fixed demo terminal until sync lands.
+    // bootstrap type. Until download payloads hydrate local caches, this
+    // terminal uses demo cabinet data for physical retrieve/return demos.
     // configuredSlotCount is mutable because Section 4's "Key node setting"
     // (Admin Menu) edits this same value, not a separate cosmetic copy.
     var retrievalTerminal by remember { mutableStateOf(KeySlotDemoData.terminals.first()) }
     val retrievalKeys = remember { KeySlotDemoData.keys() }
     val retrievalSlots = remember { KeySlotDemoData.slots().filter { it.terminalId == retrievalTerminal.id } }
     var takenKeyIds by remember { mutableStateOf(emptySet<String>()) }
-    var pendingTakeKeyId by remember { mutableStateOf<String?>(null) }
+    var takeFlow by remember { mutableStateOf<TakeFlow?>(null) }
     var returnFlow by remember { mutableStateOf<ReturnFlow?>(null) }
     var passwordChangeReturnRoute by remember { mutableStateOf(SuperAdminRoute.DASHBOARD) }
 
+    // Key Take Flow (CLAUDE.md "Terminal App UX Baseline (Production)" §1):
+    // the availability check below (no slot -> not selectable) is the same
+    // one the grid already enforces before ever calling this; entering
+    // takeFlow hands off to a dedicated full-screen takeover, same pattern
+    // as Section 3's return flow, so the grid is not shown again until it
+    // completes, fails, or is abandoned.
     fun takeKey(key: ManagedKey) {
-        val nodeAddress = retrievalSlots.firstOrNull { it.managedKeyId == key.id }?.nodeAddress
-        if (nodeAddress == null) {
+        val slot = retrievalSlots.firstOrNull { it.managedKeyId == key.id }
+        if (slot == null) {
             notice = "${key.displayName} is not assigned to a cabinet slot."
             return
         }
-        pendingTakeKeyId = key.id
-        hardwareController.releaseKeyForPickup(
-            nodeAddress = nodeAddress,
-            onReleased = {
-                pendingTakeKeyId = null
-                takenKeyIds = takenKeyIds + key.id
-            },
-            onFailure = { message ->
-                pendingTakeKeyId = null
-                notice = message
-            },
+        takeFlow = TakeFlow(key, slot)
+    }
+
+    fun handleTakeFlowOutcome(outcome: TakeFlowOutcome) {
+        val actorUserId = session?.userId
+        when (outcome) {
+            is TakeFlowOutcome.Success ->
+                store.logEvent(AuditEventType.KEY_TAKEN, actorUserId, RecordType.KEY, outcome.key.id)
+
+            is TakeFlowOutcome.Failed ->
+                store.logEvent(AuditEventType.KEY_TAKE_FAILED, actorUserId, RecordType.KEY, outcome.key.id, outcome.message)
+
+            is TakeFlowOutcome.Abandoned ->
+                store.logEvent(AuditEventType.KEY_TAKE_ABANDONED, actorUserId, RecordType.KEY, outcome.key.id)
+
+            is TakeFlowOutcome.DoorLeftOpen ->
+                store.logEvent(AuditEventType.KEY_TAKE_DOOR_LEFT_OPEN, actorUserId, RecordType.KEY, outcome.key.id)
+        }
+    }
+
+    // TerminalKey (terminal-local, embeds box/node address) has no shared-
+    // model equivalent yet — see docs/Backend_Integration_Handover.md's
+    // "two incompatible key schemas" gap (ManagedKey+KeySlot, shared/demo,
+    // vs TerminalKey, terminal-local). Synthesizes the pair the existing
+    // return-flow plumbing expects from the one real card-swipe case that
+    // needs it, rather than reworking that plumbing's type wholesale.
+    fun managedKeyAndSlotFor(terminalKey: TerminalKey): Pair<ManagedKey, KeySlot> {
+        val nowMillis = System.currentTimeMillis()
+        val lifecycle = LifecycleMetadata(createdAtEpochMillis = nowMillis, updatedAtEpochMillis = nowMillis)
+        val managedKey = ManagedKey(
+            id = terminalKey.id,
+            siteId = retrievalTerminal.siteId,
+            displayName = terminalKey.displayName,
+            lifecycle = lifecycle,
         )
+        val slot = KeySlot(
+            id = "slot_" + terminalKey.id,
+            terminalId = retrievalTerminal.id,
+            nodeAddress = terminalKey.nodeAddress,
+            managedKeyId = terminalKey.id,
+            lifecycle = lifecycle,
+        )
+        return managedKey to slot
     }
 
-    fun resolveDoorOpenState(matchedKey: ManagedKey?): ReturnFlow.DoorOpen {
-        // A real card-UID match (matchedKey) is authoritative and always
-        // preferred; the "only key currently taken" heuristic only fires for
-        // the login screen's UID-less manual key-card tap.
-        val key = matchedKey ?: resolveReturningKey(takenKeyIds, retrievalKeys)
+    fun resolveDoorOpenState(
+        matchedKey: ManagedKey?,
+        matchedSlot: KeySlot?,
+        abandonAtEpochMillis: Long?,
+    ): ReturnFlow.DoorOpen {
+        // A real card-UID match (matchedKey/matchedSlot) is authoritative and
+        // always preferred; the "only key currently taken" heuristic (no
+        // deadline — never a timed flow) only fires for the login screen's
+        // UID-less manual key-card tap.
+        if (matchedKey != null && matchedSlot != null) {
+            return ReturnFlow.DoorOpen(matchedKey, matchedSlot, abandonAtEpochMillis)
+        }
+        val key = resolveReturningKey(takenKeyIds, retrievalKeys)
         val slot = key?.let { returningKey -> retrievalSlots.firstOrNull { it.managedKeyId == returningKey.id } }
-        return ReturnFlow.DoorOpen(key, slot)
+        return ReturnFlow.DoorOpen(key, slot, null)
     }
 
-    fun startKeyCardReturn(matchedKey: ManagedKey? = null) {
+    // Key Return Flow (CLAUDE.md "Terminal App UX Baseline (Production)"
+    // §2): the 20s no-insert abandonment ceiling is computed once, here, at
+    // the moment of the original card swipe — it is threaded unchanged
+    // through AwaitingCertification and into DoorOpen, so a slow
+    // certification login eats into the same window rather than getting
+    // its own separate clock.
+    fun startKeyCardReturn(matchedKey: ManagedKey? = null, matchedSlot: KeySlot? = null) {
+        val abandonAtEpochMillis = if (matchedKey != null && matchedSlot != null) {
+            System.currentTimeMillis() + CabinetHardwareController.RETURN_FLOW_ABANDONMENT_TIMEOUT_MILLIS
+        } else {
+            null
+        }
         // "Key Return Certification" is Section 4's Admin Menu toggle, persisted
         // in TerminalAdminStore; Section 3's return flow only reacts to it.
         returnFlow = if (snapshot.cabinetSettings.keyReturnCertificationEnabled) {
-            ReturnFlow.AwaitingCertification(matchedKey = matchedKey)
+            ReturnFlow.AwaitingCertification(matchedKey, matchedSlot, abandonAtEpochMillis)
         } else {
-            resolveDoorOpenState(matchedKey)
+            resolveDoorOpenState(matchedKey, matchedSlot, abandonAtEpochMillis)
         }
     }
 
-    fun completeReturn(key: ManagedKey?) {
-        if (key != null) {
-            takenKeyIds = takenKeyIds - key.id
+    fun handleReturnFlowOutcome(outcome: ReturnFlowOutcome) {
+        val actorUserId = session?.userId
+        when (outcome) {
+            is ReturnFlowOutcome.Success -> {
+                outcome.key?.let { returnedKey -> takenKeyIds = takenKeyIds - returnedKey.id }
+                store.logEvent(AuditEventType.KEY_RETURNED, actorUserId, RecordType.KEY, outcome.key?.id)
+            }
+
+            is ReturnFlowOutcome.Failed ->
+                store.logEvent(
+                    AuditEventType.KEY_RETURN_FAILED,
+                    actorUserId,
+                    RecordType.KEY,
+                    outcome.key?.id,
+                    outcome.message,
+                )
+
+            // Deliberate asymmetry with the Key Take Flow's abandonment: a
+            // Return abandonment additionally implies a two-party alert (the
+            // terminal user and Super Admin), not just a log entry — see
+            // CLAUDE.md "Terminal App UX Baseline (Production)" §2. The
+            // actual two-party delivery mechanism (mobileApp/webApp) is the
+            // same deferred follow-up as the Take Flow's standing-alert UI;
+            // this records the intent in the outbox record's detail so a
+            // future consumer knows to alert both, not just Super Admin.
+            is ReturnFlowOutcome.Abandoned ->
+                store.logEvent(
+                    AuditEventType.KEY_RETURN_ABANDONED,
+                    actorUserId,
+                    RecordType.KEY,
+                    outcome.key?.id,
+                    "Alert both the terminal user and Super Admin.",
+                )
+
+            is ReturnFlowOutcome.DoorLeftOpen ->
+                store.logEvent(AuditEventType.KEY_RETURN_DOOR_LEFT_OPEN, actorUserId, RecordType.KEY, outcome.key?.id)
         }
-        returnFlow = null
     }
 
     // Section 9's public card-swipe reader — a wholly separate device/protocol
@@ -186,8 +298,13 @@ fun TerminalAdminApp() {
                     }
 
                     is CardUidMatch.Key -> {
-                        val matchedKey = retrievalKeys.firstOrNull { it.id == match.keyId }
-                        startKeyCardReturn(matchedKey)
+                        val terminalKey = snapshot.keys.firstOrNull { it.id == match.keyId }
+                        if (terminalKey != null) {
+                            val (matchedKey, matchedSlot) = managedKeyAndSlotFor(terminalKey)
+                            startKeyCardReturn(matchedKey, matchedSlot)
+                        } else {
+                            notice = "This card's enrolled key no longer exists."
+                        }
                     }
 
                     is CardUidMatch.Ambiguous ->
@@ -200,16 +317,101 @@ fun TerminalAdminApp() {
     }
     val isIdleAtLogin = route == SuperAdminRoute.LOGIN && returnFlow == null
 
+    // Key Return Flow (CLAUDE.md "Terminal App UX Baseline (Production)"
+    // §2): races the same 20s-from-swipe deadline while a Key Return
+    // Certification login is pending. Cancelled automatically (Compose
+    // key-change semantics) the moment `returnFlow` moves past this exact
+    // AwaitingCertification instance — login success, login retry, or the
+    // user backing out — so reaching the code after delay() always means
+    // this specific swipe's certification never completed in time. No
+    // hardware was ever engaged at this stage, so there is nothing to
+    // re-lock or turn off — only the log entry and clearing the flow.
+    LaunchedEffect(returnFlow) {
+        val flow = returnFlow
+        if (flow is ReturnFlow.AwaitingCertification && flow.abandonAtEpochMillis != null) {
+            val remainingMillis = flow.abandonAtEpochMillis - System.currentTimeMillis()
+            if (remainingMillis > 0) delay(remainingMillis)
+            store.logEvent(
+                AuditEventType.KEY_RETURN_ABANDONED,
+                session?.userId,
+                RecordType.KEY,
+                flow.matchedKey?.id,
+                "Key Return Certification did not complete before the 20s ceiling. Alert both the terminal user and Super Admin.",
+            )
+            returnFlow = null
+        }
+    }
+
     fun refreshSnapshot() {
         snapshot = store.snapshot()
+        pendingOutboxCount = syncOutbox.pending().size
     }
 
     fun signOut() {
         hardwareController.disconnect()
+        apiClient.clearSession()
         session = null
         capturedFob = null
         notice = null
         route = SuperAdminRoute.LOGIN
+    }
+
+    fun applyAuthSession(outcome: AuthOutcome) {
+        when (outcome) {
+            is AuthOutcome.Server -> {
+                session = outcome.session
+                notice = "Signed in to ${apiClient.baseUrl}."
+                route = when {
+                    outcome.session.requiresPasswordChange -> SuperAdminRoute.CHANGE_PASSWORD
+                    outcome.session.isSuperAdmin -> SuperAdminRoute.DASHBOARD
+                    else -> SuperAdminRoute.KEY_RETRIEVAL
+                }
+            }
+
+            is AuthOutcome.Local -> {
+                session = outcome.session
+                notice = outcome.serverWarning
+                route = when {
+                    outcome.session.requiresPasswordChange -> SuperAdminRoute.CHANGE_PASSWORD
+                    outcome.session.isSuperAdmin -> SuperAdminRoute.DASHBOARD
+                    else -> SuperAdminRoute.KEY_RETRIEVAL
+                }
+            }
+
+            is AuthOutcome.Failed -> notice = outcome.message
+        }
+    }
+
+    fun runServerLogin(username: String, password: String) {
+        scope.launch {
+            syncBusy = true
+            try {
+                applyAuthSession(syncCoordinator.authenticate(username, password, deviceId))
+            } finally {
+                syncBusy = false
+            }
+        }
+    }
+
+    fun runSyncAction(label: String, block: suspend () -> String) {
+        scope.launch {
+            syncBusy = true
+            notice = "$label…"
+            try {
+                notice = block()
+                refreshSnapshot()
+            } catch (error: Throwable) {
+                notice = "$label failed: ${error.message ?: "Unknown error"}"
+            } finally {
+                syncBusy = false
+            }
+        }
+    }
+
+    fun enqueueChange(entityType: RecordType, entityId: String, payloadJson: String) {
+        val actor = session?.userId ?: "local"
+        syncCoordinator.enqueueLocalChange(entityType, entityId, actor, payloadJson)
+        pendingOutboxCount = syncOutbox.pending().size
     }
 
     fun openAdmin(routeToOpen: SuperAdminRoute) {
@@ -257,19 +459,7 @@ fun TerminalAdminApp() {
         onDispose { cardReaderController.close() }
     }
 
-    MaterialTheme(
-        colorScheme = lightColorScheme(
-            primary = Color(0xFF0B5A73),
-            onPrimary = Color.White,
-            primaryContainer = Color(0xFFD5F0F7),
-            onPrimaryContainer = Color(0xFF063A4A),
-            secondary = Color(0xFF396B78),
-            secondaryContainer = Color(0xFFE0F0F3),
-            background = Color(0xFFF7FAFB),
-            surface = Color.White,
-            surfaceVariant = Color(0xFFEAF2F4),
-        ),
-    ) {
+    EkmsTerminalTheme {
         Scaffold(
             topBar = {
                 TopAppBar(
@@ -295,9 +485,15 @@ fun TerminalAdminApp() {
                     padding = padding,
                     onAccountLogin = { username, password ->
                         when (val result = store.authenticate(username, password)) {
-                            is StoreResult.Success -> returnFlow = resolveDoorOpenState(activeReturnFlow.matchedKey)
+                            is StoreResult.Success -> returnFlow = resolveDoorOpenState(
+                                activeReturnFlow.matchedKey,
+                                activeReturnFlow.matchedSlot,
+                                activeReturnFlow.abandonAtEpochMillis,
+                            )
                             is StoreResult.Error -> returnFlow = ReturnFlow.AwaitingCertification(
                                 matchedKey = activeReturnFlow.matchedKey,
+                                matchedSlot = activeReturnFlow.matchedSlot,
+                                abandonAtEpochMillis = activeReturnFlow.abandonAtEpochMillis,
                                 loginError = result.message,
                             )
                         }
@@ -307,32 +503,22 @@ fun TerminalAdminApp() {
 
                 activeReturnFlow is ReturnFlow.DoorOpen -> TerminalKeyReturnScreen(
                     padding = padding,
-                    key = activeReturnFlow.key,
-                    slot = activeReturnFlow.slot,
+                    key = activeReturnFlow.matchedKey,
+                    slot = activeReturnFlow.matchedSlot,
+                    abandonAtEpochMillis = activeReturnFlow.abandonAtEpochMillis,
+                    doorCloseWarningTimeSeconds = snapshot.cabinetSettings.doorCloseWarningTimeSeconds,
                     videoRecordingEnabled = snapshot.cabinetSettings.returnKeyVideoEnabled,
-                    onBeginReturn = hardwareController::beginKeyReturn,
-                    onAwaitInsertion = hardwareController::waitForKeyInserted,
-                    onCompleted = { completeReturn(activeReturnFlow.key) },
+                    onBeginReturnFlow = hardwareController::beginKeyReturnFlow,
+                    onPollInsertion = hardwareController::pollForKeyInsertion,
+                    onWaitForDoorClose = hardwareController::waitForDoorCloseAfterReturn,
+                    onEvent = ::handleReturnFlowOutcome,
+                    onCompleted = { returnFlow = null },
                 )
 
                 else -> when (route) {
                 SuperAdminRoute.LOGIN -> TerminalLoginScreen(
                     padding = padding,
-                    onAccountLogin = { username, password ->
-                        when (val result = store.authenticate(username, password)) {
-                            is StoreResult.Success -> {
-                                session = result.value
-                                notice = null
-                                route = when {
-                                    result.value.requiresPasswordChange -> SuperAdminRoute.CHANGE_PASSWORD
-                                    result.value.isSuperAdmin -> SuperAdminRoute.DASHBOARD
-                                    else -> SuperAdminRoute.KEY_RETRIEVAL
-                                }
-                            }
-
-                            is StoreResult.Error -> notice = result.message
-                        }
-                    },
+                    onAccountLogin = { username, password -> runServerLogin(username, password) },
                     loginError = notice,
                     onKeyCardSwiped = { startKeyCardReturn() },
                 )
@@ -393,6 +579,11 @@ fun TerminalAdminApp() {
                     onSave = { displayName, username, password, role ->
                         when (val result = store.createUser(displayName, username, password, role)) {
                             is StoreResult.Success -> {
+                                enqueueChange(
+                                    RecordType.USER,
+                                    result.value.id,
+                                    """{"displayName":"${result.value.displayName}","username":"${result.value.username}","role":"${result.value.role.name}"}""",
+                                )
                                 refreshSnapshot()
                                 notice = result.value.displayName + " was enrolled as " + result.value.role.label + "."
                                 true
@@ -425,6 +616,11 @@ fun TerminalAdminApp() {
                             rawFobUid = rawFobUid,
                         )
                         if (result is StoreResult.Success) {
+                            enqueueChange(
+                                RecordType.KEY,
+                                result.value.id,
+                                """{"displayName":"${result.value.displayName}","nodeAddress":${result.value.nodeAddress},"boxAddress":${result.value.boxAddress}}""",
+                            )
                             refreshSnapshot()
                         }
                         result
@@ -436,7 +632,7 @@ fun TerminalAdminApp() {
                 SuperAdminRoute.CARD_ENROLLMENT -> CardEnrollmentScreen(
                     padding = padding,
                     users = snapshot.users,
-                    keys = retrievalKeys,
+                    keys = snapshot.keys,
                     notice = notice,
                     onBack = { route = SuperAdminRoute.DASHBOARD },
                     onEnrollPersonnelCard = { userId, rawUid ->
@@ -453,6 +649,8 @@ fun TerminalAdminApp() {
                             keyCardStore.enroll(keyId, rawUid, System.currentTimeMillis())
                         }
                     },
+                    onRevokePersonnelCard = personnelCardStore::revoke,
+                    onRevokeKeyCard = keyCardStore::revoke,
                 )
 
                 SuperAdminRoute.ACCESS_GRANTS -> AccessGrantsScreen(
@@ -465,6 +663,11 @@ fun TerminalAdminApp() {
                     onGrant = { userId, keyId ->
                         when (val result = store.grantAccess(userId, keyId)) {
                             is StoreResult.Success -> {
+                                enqueueChange(
+                                    RecordType.ACCESS_GRANT,
+                                    result.value.id,
+                                    """{"userId":"$userId","keyId":"$keyId"}""",
+                                )
                                 refreshSnapshot()
                                 notice = "Access granted."
                             }
@@ -475,6 +678,11 @@ fun TerminalAdminApp() {
                     onRevoke = { grantId ->
                         when (val result = store.revokeAccess(grantId)) {
                             is StoreResult.Success -> {
+                                enqueueChange(
+                                    RecordType.ACCESS_GRANT,
+                                    grantId,
+                                    """{"revoked":true}""",
+                                )
                                 refreshSnapshot()
                                 notice = "Access grant removed."
                             }
@@ -491,12 +699,20 @@ fun TerminalAdminApp() {
                         .filter { it.managedKeyId != null }
                         .maxOfOrNull { it.nodeAddress },
                     notice = notice,
+                    syncBusy = syncBusy,
+                    pendingOutboxCount = pendingOutboxCount,
                     onBack = { route = SuperAdminRoute.DASHBOARD },
                     onSave = { updatedSettings ->
                         when (val result = store.updateCabinetSettings(updatedSettings)) {
                             is StoreResult.Success -> {
+                                apiClient.syncBaseUrlFromSettings(result.value.serverAddress)
                                 refreshSnapshot()
                                 retrievalTerminal = retrievalTerminal.copy(configuredSlotCount = result.value.configuredKeyNodeCount)
+                                enqueueChange(
+                                    RecordType.TERMINAL,
+                                    result.value.cabinetId.ifBlank { "local-cabinet" },
+                                    """{"cabinetName":"${result.value.cabinetName}","configuredKeyNodeCount":${result.value.configuredKeyNodeCount}}""",
+                                )
                                 notice = "Admin Menu settings saved."
                             }
 
@@ -507,6 +723,31 @@ fun TerminalAdminApp() {
                         passwordChangeReturnRoute = SuperAdminRoute.ADMIN_MENU
                         notice = null
                         route = SuperAdminRoute.CHANGE_PASSWORD
+                    },
+                    onBootstrap = {
+                        runSyncAction("Bootstrap") {
+                            val response = syncCoordinator.bootstrap()
+                            "Bootstrap OK · server revision ${response.serverRevision}."
+                        }
+                    },
+                    onPush = {
+                        runSyncAction("Push") {
+                            val actor = session?.userId ?: "local"
+                            val response = syncCoordinator.pushPending(actor)
+                            "Push OK · accepted ${response.acceptedOperationIds.size}, conflicts ${response.conflicts.size}."
+                        }
+                    },
+                    onRead = {
+                        runSyncAction("Read") {
+                            val ack = syncCoordinator.readFromServer()
+                            ack.message ?: "Read request accepted."
+                        }
+                    },
+                    onDownload = {
+                        runSyncAction("Download") {
+                            val ack = syncCoordinator.downloadFromServer()
+                            ack.message ?: "Download staged (revision ${ack.serverRevision})."
+                        }
                     },
                 )
 
@@ -552,24 +793,40 @@ fun TerminalAdminApp() {
 
                 SuperAdminRoute.KEY_RETRIEVAL -> {
                     val activeSession = session
-                    TerminalKeyRetrievalScreen(
-                        padding = padding,
-                        terminal = retrievalTerminal,
-                        keys = retrievalKeys,
-                        slots = retrievalSlots,
-                        takenKeyIds = takenKeyIds,
-                        pendingKeyId = pendingTakeKeyId,
-                        videoRecordingEnabled = snapshot.cabinetSettings.keyRetrievalVideoEnabled,
-                        backLabel = if (activeSession?.isSuperAdmin == true) "Back to dashboard" else "Sign out",
-                        onBack = {
-                            if (activeSession?.isSuperAdmin == true) {
-                                route = SuperAdminRoute.DASHBOARD
-                            } else {
-                                signOut()
-                            }
-                        },
-                        onTakeKey = ::takeKey,
-                    )
+                    val activeTakeFlow = takeFlow
+                    if (activeTakeFlow != null) {
+                        TerminalKeyTakeScreen(
+                            padding = padding,
+                            key = activeTakeFlow.key,
+                            slot = activeTakeFlow.slot,
+                            takeWarningTimeSeconds = snapshot.cabinetSettings.takeWarningTimeSeconds,
+                            videoRecordingEnabled = snapshot.cabinetSettings.keyRetrievalVideoEnabled,
+                            onBeginTake = hardwareController::beginKeyTake,
+                            onPollRemoval = hardwareController::pollForKeyRemoval,
+                            onWaitForDoorClose = hardwareController::waitForDoorCloseAfterTake,
+                            onKeyRemoved = { takenKeyIds = takenKeyIds + activeTakeFlow.key.id },
+                            onEvent = ::handleTakeFlowOutcome,
+                            onCompleted = { takeFlow = null },
+                        )
+                    } else {
+                        TerminalKeyRetrievalScreen(
+                            padding = padding,
+                            terminal = retrievalTerminal,
+                            keys = retrievalKeys,
+                            slots = retrievalSlots,
+                            takenKeyIds = takenKeyIds,
+                            videoRecordingEnabled = snapshot.cabinetSettings.keyRetrievalVideoEnabled,
+                            backLabel = if (activeSession?.isSuperAdmin == true) "Back to dashboard" else "Sign out",
+                            onBack = {
+                                if (activeSession?.isSuperAdmin == true) {
+                                    route = SuperAdminRoute.DASHBOARD
+                                } else {
+                                    signOut()
+                                }
+                            },
+                            onTakeKey = ::takeKey,
+                        )
+                    }
                 }
                 }
             }
@@ -653,11 +910,14 @@ private fun SuperAdminDashboardScreen(
         DashboardMetric("Users", snapshot.users.size.toString(), "1 preset Super Admin · " + (snapshot.users.size - 1) + " enrolled")
         DashboardMetric("Keys", snapshot.keys.size.toString(), "All keys must be enrolled from a verified cabinet node")
         DashboardMetric("Access grants", snapshot.accessGrants.size.toString(), "Exact user-to-key bindings")
-        DashboardMetric(
-            "Cabinet",
-            if (hardwareState.connected) "Connected" else "Disconnected",
-            hardwareState.message,
-        )
+        StatusRingCard(tone = if (hardwareState.connected) StatusTone.NORMAL else StatusTone.INACTIVE) {
+            Text("Cabinet", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+            Text(
+                text = if (hardwareState.connected) "Connected" else "Disconnected",
+                style = MaterialTheme.typography.bodyLarge,
+            )
+            Text(hardwareState.message, style = MaterialTheme.typography.bodySmall)
+        }
         Button(onClick = onEnrollUser, modifier = Modifier.fillMaxWidth()) {
             Text("Enroll new user")
         }
@@ -1476,26 +1736,24 @@ internal fun BackButton(
 
 @Composable
 private fun HardwareStatusCard(state: CabinetHardwareState) {
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(
-            containerColor = if (state.connected) {
-                MaterialTheme.colorScheme.primaryContainer
-            } else {
-                MaterialTheme.colorScheme.surfaceVariant
-            },
-        ),
-    ) {
-        Box(modifier = Modifier.padding(16.dp)) {
-            Text(
-                text = "Cabinet: " + (if (state.connected) "Connected" else "Disconnected") +
-                        "\nPort: " + state.portPath + " @ " + state.baudRate + " · Box " + state.boxAddress +
-                        (if (state.keyReturnMonitoring) "\nKey return monitor: active" else "") +
-                        "\n" + state.message +
-                        (state.doorStatus?.let { "\n" + it } ?: "") +
-                        (state.nodeStatus?.let { "\n" + it } ?: ""),
-            )
+    // Admin device health indicator — same status-ring pattern as every
+    // other hardware/lifecycle state, not a one-off color check.
+    StatusRingCard(tone = if (state.connected) StatusTone.NORMAL else StatusTone.INACTIVE) {
+        Text(
+            text = "Cabinet: " + if (state.connected) "Connected" else "Disconnected",
+            style = MaterialTheme.typography.titleSmall,
+            fontWeight = FontWeight.SemiBold,
+        )
+        Text(
+            text = "Port: " + state.portPath + " @ " + state.baudRate + " · Box " + state.boxAddress,
+            style = MaterialTheme.typography.bodySmall.merge(DataReadoutTextStyle),
+        )
+        if (state.keyReturnMonitoring) {
+            Text("Key return monitor: active", style = MaterialTheme.typography.bodySmall)
         }
+        Text(state.message, style = MaterialTheme.typography.bodySmall)
+        state.doorStatus?.let { Text(it, style = MaterialTheme.typography.bodySmall.merge(DataReadoutTextStyle)) }
+        state.nodeStatus?.let { Text(it, style = MaterialTheme.typography.bodySmall.merge(DataReadoutTextStyle)) }
     }
     if (state.busy) {
         CircularProgressIndicator()
@@ -1576,12 +1834,33 @@ private data class PendingPhysicalAction(
 
 /**
  * Section 3 (key return) state, driven by a key-card swipe rather than
- * `route`. [AwaitingCertification.matchedKey] carries a real card-UID match
- * through the certification-login step, so it is used directly once
- * certification succeeds instead of being lost and re-resolved by the
- * "only key currently taken" heuristic.
+ * `route`. [matchedKey]/[matchedSlot] carry a real card-UID match through
+ * the certification-login step, so it is used directly once certification
+ * succeeds instead of being lost and re-resolved by the "only key
+ * currently taken" heuristic. [abandonAtEpochMillis] is the Key Return
+ * Flow's 20s-from-swipe abandonment deadline (CLAUDE.md "Terminal App UX
+ * Baseline (Production)" §2) — computed once at the original swipe and
+ * threaded unchanged through both states, null only for the login
+ * screen's UID-less manual key-card tap (never a timed flow).
  */
 private sealed interface ReturnFlow {
-    data class AwaitingCertification(val matchedKey: ManagedKey? = null, val loginError: String? = null) : ReturnFlow
-    data class DoorOpen(val key: ManagedKey?, val slot: KeySlot?) : ReturnFlow
+    val matchedKey: ManagedKey?
+    val matchedSlot: KeySlot?
+    val abandonAtEpochMillis: Long?
+
+    data class AwaitingCertification(
+        override val matchedKey: ManagedKey? = null,
+        override val matchedSlot: KeySlot? = null,
+        override val abandonAtEpochMillis: Long? = null,
+        val loginError: String? = null,
+    ) : ReturnFlow
+
+    data class DoorOpen(
+        override val matchedKey: ManagedKey?,
+        override val matchedSlot: KeySlot?,
+        override val abandonAtEpochMillis: Long?,
+    ) : ReturnFlow
 }
+
+/** Key Take Flow (CLAUDE.md "Terminal App UX Baseline (Production)" §1) in-progress state; see `TerminalKeyTakeScreen`. */
+private data class TakeFlow(val key: ManagedKey, val slot: KeySlot)
