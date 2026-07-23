@@ -8,25 +8,30 @@ type Props = {
   sites: SiteDto[]
 }
 
-const markerIcon = L.divIcon({
-  className: 'ekms-map-marker',
-  html: '<span class="ekms-map-marker-dot"></span>',
-  iconSize: [18, 18],
-  iconAnchor: [9, 9],
-})
-
-const selectedIcon = L.divIcon({
-  className: 'ekms-map-marker selected',
-  html: '<span class="ekms-map-marker-dot"></span>',
-  iconSize: [22, 22],
-  iconAnchor: [11, 11],
-})
+function makeIcons() {
+  return {
+    marker: L.divIcon({
+      className: 'ekms-map-marker',
+      html: '<span class="ekms-map-marker-dot"></span>',
+      iconSize: [18, 18],
+      iconAnchor: [9, 9],
+    }),
+    selected: L.divIcon({
+      className: 'ekms-map-marker selected',
+      html: '<span class="ekms-map-marker-dot"></span>',
+      iconSize: [22, 22],
+      iconAnchor: [11, 11],
+    }),
+  }
+}
 
 export function MalaysiaUnitsMap({ sites }: Props) {
   const [selectedId, setSelectedId] = useState<string | null>(null)
+  const [mapError, setMapError] = useState<string | null>(null)
   const mapEl = useRef<HTMLDivElement | null>(null)
   const mapRef = useRef<L.Map | null>(null)
   const markersRef = useRef<L.LayerGroup | null>(null)
+  const icons = useMemo(() => makeIcons(), [])
 
   const points = useMemo(
     () =>
@@ -50,24 +55,31 @@ export function MalaysiaUnitsMap({ sites }: Props) {
   useEffect(() => {
     if (!mapEl.current || mapRef.current) return
 
-    const map = L.map(mapEl.current, {
-      zoomControl: true,
-      attributionControl: true,
-      minZoom: 5,
-      maxZoom: 12,
-    })
+    try {
+      const map = L.map(mapEl.current, {
+        zoomControl: true,
+        attributionControl: true,
+        minZoom: 5,
+        maxZoom: 12,
+      })
 
-    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-      attribution: '&copy; OpenStreetMap',
-      maxZoom: 19,
-    }).addTo(map)
+      L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+        attribution: '&copy; OpenStreetMap',
+        maxZoom: 19,
+      }).addTo(map)
 
-    map.fitBounds(MALAYSIA_BOUNDS, { padding: [24, 24] })
-    markersRef.current = L.layerGroup().addTo(map)
-    mapRef.current = map
+      map.fitBounds(MALAYSIA_BOUNDS, { padding: [24, 24] })
+      markersRef.current = L.layerGroup().addTo(map)
+      mapRef.current = map
+
+      // Leaflet needs a invalidate after layout settles (common white/grey map cause).
+      requestAnimationFrame(() => map.invalidateSize())
+    } catch (err) {
+      setMapError(err instanceof Error ? err.message : 'Map failed to start')
+    }
 
     return () => {
-      map.remove()
+      mapRef.current?.remove()
       mapRef.current = null
       markersRef.current = null
     }
@@ -81,7 +93,7 @@ export function MalaysiaUnitsMap({ sites }: Props) {
     group.clearLayers()
     for (const point of points) {
       const marker = L.marker([point.lat, point.lng], {
-        icon: selectedId === point.id ? selectedIcon : markerIcon,
+        icon: selectedId === point.id ? icons.selected : icons.marker,
         title: point.name,
       })
       marker.bindPopup(
@@ -99,7 +111,8 @@ export function MalaysiaUnitsMap({ sites }: Props) {
     } else {
       map.fitBounds(MALAYSIA_BOUNDS, { padding: [24, 24] })
     }
-  }, [points, selectedId])
+    map.invalidateSize()
+  }, [points, selectedId, icons])
 
   useEffect(() => {
     if (!selected || !mapRef.current) return
@@ -117,7 +130,13 @@ export function MalaysiaUnitsMap({ sites }: Props) {
 
       <div className="map-layout">
         <div className="map-canvas-wrap">
-          <div className="map-canvas" ref={mapEl} />
+          {mapError ? (
+            <div className="empty-state" style={{ margin: 16 }}>
+              Map unavailable: {mapError}. Unit list still works.
+            </div>
+          ) : (
+            <div className="map-canvas" ref={mapEl} />
+          )}
           {selected && (
             <div className="layout-map-detail">
               <strong>{selected.name}</strong>
