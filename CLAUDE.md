@@ -8,7 +8,8 @@ Guidance for agents working in this repository. **Read Directory + Production + 
 |---|---|
 | [Project](#project) | What eKMS is; live URLs; agent scope |
 | [Production is already live](#production-is-already-live--do-not-reinvent-the-backend) | VPS / `kms-cvt.com` — backend already running |
-| [Terminal → live API](#terminal--live-api-how-terminalapp-reaches-the-portal-backend) | How terminalApp configures and calls `/v1` so data shows on the web portal |
+| [Terminal → live API](#terminal--live-api-how-terminalapp-reaches-the-portal-backend) | How terminalApp configures and calls `/v1` so data shows on the web portal — **manual steps below are being superseded by pairing-code registration, see next row** |
+| [Web Portal — Pending UI Work (Registration Workflow)](#web-portal--pending-ui-work-registration-workflow) | **Read before building Key Cabinet / Personnel registration pages in `web/`** — exact fields, endpoints, and the pairing-code display requirement |
 | [Toolchain](#toolchain-do-not-drift-from-this-baseline) | JDK / Gradle / Kotlin pins |
 | [Common commands](#common-commands) | Gradle + `web/` npm |
 | [Module architecture](#module-architecture) | shared / terminal / mobile / web / backend |
@@ -41,6 +42,16 @@ eKMS is a Kotlin Multiplatform key-management system: an Android Terminal (physi
 Deploy/ops details live in `backend/DEPLOY.md` (Docker Compose prod, Caddy, Cloudflare DNS for `kms-cvt.com`). **Default agent scope:** work on `shared/`, `terminalApp/`, `web/`, and docs. Touch `backend/` only when the user explicitly asks for an API/schema/deploy change — and even then prefer updating the existing VPS deploy over standing up a parallel stack. A laptop without Node/Docker can still verify against production (browser → portal, terminal → `https://kms-cvt.com`); “no local Node” only means you cannot run `npm run build` / local Vite in that environment, **not** that the backend is unavailable.
 
 ### Terminal → live API (how terminalApp reaches the portal backend)
+
+> **Being superseded.** terminalApp now has a pairing-code flow (a fresh terminal's first
+> screen is a 6-digit code entry that calls `POST /v1/terminal/pair-with-code`, then reuses
+> this same bootstrap pipeline automatically) that replaces steps 2-4 below. That code is
+> written and committed, but the backend pairing endpoint is **not yet deployed to the VPS**
+> and the flow has **not been run against a live terminal**. Until both of those happen, the
+> manual steps below remain the only working path — do not tell a user "just use the pairing
+> code" until this note is updated to say the flow is live. See "Web Portal — Pending UI Work
+> (Registration Workflow)" below for what `web/` needs to build so a Super Admin can actually
+> generate a code to type in.
 
 The terminal does **not** talk to the React UI. It talks to the **same backend** the portal uses (`https://kms-cvt.com/v1/...`). When the terminal creates personnel or completes card enrollment, the portal’s Personnel page sees it after refresh because both share MySQL on the VPS.
 
@@ -84,6 +95,68 @@ Full admin/report path catalog (portal-only and unused by terminal yet) is still
 **Web portal note:** the Super Admin web portal is being migrated from the Kotlin/Wasm Compose `webApp` module to a React+Vite app at `web/`. `webApp` is now excluded from the Gradle build (`settings.gradle.kts` has `include(":webApp")` commented out — "Kotlin/Wasm webApp is frozen") and should be treated as a reference/legacy implementation, not a build target. New Super Admin portal work happens in `web/`.
 
 The `ekmshardwaretester-main` project mentioned in README.md is reference material only and is not part of this production build.
+
+### Web Portal — Pending UI Work (Registration Workflow)
+
+**Scope note:** `web/` UI is owned by a separate developer. The session that added the fields/
+endpoints below did backend/`shared`/terminalApp only, deliberately built **no** `web/` pages
+or components — this section is that handoff. Everything referenced here already exists in
+`shared/.../api/ApiContracts.kt` (the canonical contract — read the actual DTOs there, this
+section is a summary, not a substitute) and in the backend routes; it needs a redeploy to the
+VPS before it's callable at `https://kms-cvt.com` (see `backend/DEPLOY.md`) — check with
+whoever owns deploys before assuming it's live.
+
+**1. Key Cabinet (Terminal) registration form** — `POST /v1/admin/terminals`, body is
+`TerminalUpsertRequest`:
+
+| Field | Type | Notes |
+|---|---|---|
+| `siteId` | string (UUID) | required — pick from the Units list |
+| `name` | string | required |
+| `boxAddress` | int | required, positive |
+| `serialNumber` | string? | optional |
+| `configuredSlotCount` | int | required, **server-validated 1–127** (docs/Key Cabinet Communication Protocol.md §7.1) — validate client-side too so the error isn't a surprise 400 |
+| `cabinetSerialPort` | string? | optional |
+| `cabinetBaudRate` | int? | optional |
+| `vendorDeviceId` | string? | optional — vendor-assigned physical device ID, **distinct from the backend `id`** (a UUID minted on create). Commonly unknown at registration time; fine to leave blank and fill in later via edit. |
+| `nodeRows` | int? | optional — **structured**, not free text. Pair with `nodesPerRow` to describe the physical cabinet layout (e.g. 4 rows × 6 nodes). |
+| `nodesPerRow` | int? | optional, see above |
+| `latitude` | double? | optional, must be -90..90 if present |
+| `longitude` | double? | optional, must be -180..180 if present |
+
+**Response is `TerminalRegistrationResponse`, not a bare `TerminalDto`** — this is a breaking
+change from the old create response shape:
+```
+{ terminal: TerminalDto, pairingCode: string, pairingCodeExpiresAtEpochMillis: number }
+```
+`pairingCode` is a **plaintext 6-digit code, shown exactly once** — the backend only ever
+stores its hash and cannot show it again. **The registration form's success state must display
+this code prominently** (large, easy to read off a screen, with an explicit "expires at
+`pairingCodeExpiresAtEpochMillis`" — 30 minutes from generation) so the Super Admin can type it
+into the terminal's pairing screen. If the admin navigates away without noting it down, the
+only recovery is regenerate (next).
+
+**Regenerate code** — `POST /v1/admin/terminals/{id}/pairing-code` (no body), response is
+`RegeneratePairingCodeResponse`: `{ terminalId, code, expiresAtEpochMillis }`. Same "shown once"
+requirement — same prominent display treatment as registration. **Put a visible warning on this
+action**: regenerating immediately revokes that terminal's current TERMINAL_DEVICE session (see
+`backend/src/routes/pairing.js`'s `revokeTerminalSessions` — this was a deliberate, user-
+confirmed design choice: a lost/reset device's old session must not keep syncing once a new
+code is issued for a replacement device). This has no effect on a terminal still running the
+legacy manual-login flow above (that terminal's tokens are ordinary Super Admin user tokens,
+unaffected). Surface `terminal.paired` (on `TerminalDto`) somewhere in the Terminals list/detail
+view so an admin can tell at a glance whether a cabinet has completed pairing at all.
+
+**2. Personnel registration form** — `POST /v1/admin/users`, body is `CreateAdminUserRequest`.
+Only what's new/relevant here (the rest of this form should already exist per Project Status):
+add a `staffId` text field, optional (`staffId: String? = null`), described in `UserDto`/
+`CreateAdminUserRequest`/`UpdateAdminUserRequest` as "external/employee identifier, distinct
+from `id`". The role picker's "Vendor" option (`UserRole.VENDOR`) **already exists** — nothing
+new needed there, it was not added as part of this work.
+
+**3. What did NOT change:** Sites/Units registration, Keys, Key Slots, Access Grants, and every
+other existing `web/` form are untouched by this work — do not extend this section's scope
+beyond Terminal registration + `staffId` on Personnel.
 
 ## Toolchain (do not drift from this baseline)
 
@@ -331,7 +404,7 @@ Project Status below is an **append-only session diary**. Older bullets were oft
 | **Personnel on web** | Next steps said "rebuild Personnel management properly on web/". | Core list/create/delete/update + card-enrollment status already exist on `web/` Personnel page. Remaining work is UX/audit polish and standing-alert features — **not** a greenfield rebuild. |
 | **Theme / fonts (terminal)** | Cavotec rewrite paragraph mentions Inter and older hex tokens, then says a later pull changed Outfit / hex. | Trust **`terminalApp/.../ui/theme/Color.kt` and `Typography.kt`** in the tree, not hex values quoted in older diary paragraphs. |
 | **Take/Return Flow audio** | Take/Return Flow Completed bullets above say `AudioFeedbackController` is a no-op stub. | **No longer true.** Real `SoundPool` (beep) + `MediaPlayer` (voice lines) implementation shipped and hardware-verified — see Completed "Implement real audio feedback" below. |
-| **Terminal pairing** | "Terminal → live API" section documents manual Admin Menu pairing (Set server address + Key Cabinet ID + Super Admin sign-in). | **Still the only working pairing path today.** Backend/shared support for a 6-digit one-time-code pairing flow now exists (`POST /v1/terminal/pair-with-code`, see Completed "Key Cabinet + Personnel registration"), but terminalApp does not call it yet — that's Part 2, not yet started. Do not treat "Terminal → live API" as superseded until Part 2 ships and this table is updated. |
+| **Terminal pairing** | "Terminal → live API" section documents manual Admin Menu pairing (Set server address + Key Cabinet ID + Super Admin sign-in). | **Still the only working pairing path in production today.** Backend/shared (6-digit code endpoints) and terminalApp's pairing-code screen are both **implemented and committed** (see Completed "Key Cabinet + Personnel registration" and "terminalApp pairing-code flow"), but the backend change is **not yet deployed to the VPS** and the flow has **not been run live** — `web/` also has no registration UI yet to generate a code with (see "Web Portal — Pending UI Work" section). Do not tell a user the pairing code flow works today; it's built, not live. |
 
 **Agent rule:** When deciding whether a bug is open, check **Known issues / not yet resolved** and **Next steps** first. Only use older Completed Phase notes for history. Do not re-open struck-through or superseded items.
 
@@ -648,11 +721,20 @@ Project Status below is an **append-only session diary**. Older bullets were oft
   **Verified:** `:shared:compileDebugKotlinAndroid`, `:terminalApp:compileDebugKotlin`, `:terminalApp:assembleDebug`, `:shared:testDebugUnitTest` all pass — confirms `shared`'s new `Terminal`/`AdminUser` fields don't break terminalApp. **Not verified:** the backend JS changes were reviewed by careful manual line-by-line reading only (file-by-file: `pairing.js`, `terminals.js`, `users.js`, `index.js`, `middleware/auth.js`, `routes/auth.js`, `credentials.js`, `sync.js` — every `req.auth.sub` usage checked against the TERMINAL_DEVICE allowlist), never by actual execution — this dev machine has no Node (same known gap as the PATCH-rollout authoring machine above). Since production already runs on the VPS, this is a **redeploy gap, not an unreachable-backend gap**: `pair-with-code` will not be live at `https://kms-cvt.com` until these changes are deployed there (see `backend/DEPLOY.md`).
   **Not done in this pass (see Next steps):** terminalApp's actual pairing-flow UI (Part 2), the `mobileApp` check (Part 3), and the `web/` handoff documentation (Part 4) — Parts 2-4 were scoped as follow-on work, not bundled into this commit.
 
+- **terminalApp pairing-code flow (Part 2).** A fresh/unpaired terminal's first screen is now `TerminalPairingScreen` (6-digit code entry) — gates the entire app (standby, login, Admin Menu) until redeemed, exactly as specced. `TerminalApiClient.baseUrl` now defaults to `https://kms-cvt.com` (no manual entry required); Admin Menu's "Set server address" remains as a fallback, and the pairing screen itself has a collapsed "Advanced: server address" field for the same reason — a 6-digit code can't encode a URL, something has to supply one before pairing for on-prem/non-default deployments. `TerminalApiClient.pairWithCode()` calls the new unauthenticated endpoint and stores the returned TERMINAL_DEVICE-scoped tokens in the same `accessToken`/`refreshToken` slots `login()` uses (this terminal has no separate device-identity storage — pairing establishes the terminal's persistent backend session the same way manual Super Admin sign-in used to). On success, `TerminalAdminApp` persists `terminal.id` as Key Cabinet ID and reuses the **existing** `syncCoordinator.bootstrap()` pipeline (same call Admin Menu's Bootstrap button makes) — best-effort, since a bootstrap hiccup shouldn't undo pairing that already succeeded. Invalid/expired/consumed code or a network failure shows an explicit error with no partial state (cabinetId/tokens only written after `pairWithCode()` actually succeeds).
+  **Pairing gate is keyed on `cabinetId.isNotBlank()` alone, deliberately not `apiClient.isAuthenticated`** — the existing `signOut()` (unchanged) already clears the stored access/refresh token on every personnel sign-out, so gating on token presence would have re-shown the pairing screen after the very first operator logout. "Reset" per spec means explicitly clearing Key Cabinet ID; nothing here does that implicitly.
+  Scope was kept to exactly device-to-account pairing: existing NFC/password/fingerprint/face personnel login, `CardUidResolver`, Key Take/Return Flow, and hardware protocol code are all untouched (grep-verified, not just asserted).
+  **Verified:** `:terminalApp:compileDebugKotlin`, `:terminalApp:assembleDebug`, `:shared:testDebugUnitTest` all pass. **Not verified:** no manual UI walkthrough, no live run against the pairing endpoint — which itself isn't deployed yet (see status-truth table). Do not report this flow as working end-to-end until both the deploy and a live run happen.
+
+- **`mobileApp` check (Part 3) — no changes needed, confirmed not assumed.** Grepped the whole module for every new field/concept from this work (`staffId`, `vendorDeviceId`, `nodeRows`, `nodesPerRow`, `latitude`, `longitude`, pairing, `VendorRole`) — zero matches. `mobileApp`'s only file touching `shared` (`SuperAdminCompanionApp.kt`) imports just `CredentialKind`/`KeySlotDemoData`/`TerminalConnectionState`, none of which changed, and never constructs a `Terminal(...)` or `AdminUser(...)` directly. `mobileApp` still has zero network dependencies (grepped for ktor/retrofit/okhttp — none) and remains 100% local demo data, consistent with its existing status. Confirmed `:mobileApp:compileDebugKotlin` still passes clean against the updated `shared` module. No speculative work was built here.
+
+- **`web/` registration-workflow handoff documentation (Part 4)** — added the "Web Portal — Pending UI Work (Registration Workflow)" section above (Terminal registration form fields + breaking response-shape change + pairing-code display/regenerate requirements, Personnel `staffId` field, confirmation that `UserRole.VENDOR` already existed and needed no new work) and marked "Terminal → live API"'s manual steps as being-superseded-but-not-yet, pending VPS deploy and a live run of Part 2. No `web/` code was written or should be inferred from this — that remains the other developer's work, this session's job ends at documenting the contract precisely enough to build from.
+
 ### Known issues / not yet resolved
 
 Open work only — resolved/superseded items live in Completed or the status-truth table, not here.
 
-- **Terminal pairing backend/shared work needs a VPS redeploy before it's live**, and terminalApp has no UI for it yet (Part 2, not started) — see Completed "Key Cabinet + Personnel registration". Until Part 2 ships, the only working pairing path is still the manual Admin Menu flow in "Terminal → live API".
+- **Pairing-code flow (backend + terminalApp, both Parts 1-2) is fully coded and committed but not live**: needs a VPS redeploy (`backend/DEPLOY.md`) and has never been run against a real terminal/server. `web/` also has no registration UI yet to generate a code with — see "Web Portal — Pending UI Work (Registration Workflow)". Until all three land, the only working pairing path is the manual Admin Menu flow in "Terminal → live API".
 - **Key Take Flow and Key Return Flow not hardware-verified** on a physical F7G18P — only compile/assemble verified. This is the highest-priority untested hardware path (`beginKeyTake` / return-side equivalents).
 - **`web/` PATCH/update rollout not verified by build or live edit** in the environment that authored the change (that laptop had no Node — it could not `npm run build` locally). That does **not** mean the backend is missing: production is `https://kms-cvt.com`. Remaining work is rebuild/redeploy `web/` to the VPS (see `backend/DEPLOY.md` Part F) and manually test at least Units edit + `409` conflict against the live API.
 - **`web/` has not had a full section-by-section UX audit** against the vendor manual — only API-client / spot checks. Page-level UX and shared-type-equivalent checks still outstanding.
@@ -665,7 +747,7 @@ Open work only — resolved/superseded items live in Completed or the status-tru
 - Theme polish: terminal red/alarm status tone was never confirmed live on hardware (deferred by user during Cavotec pass).
 
 ### Next steps (in order)
-- Deploy the pairing/registration backend changes to the VPS (`backend/DEPLOY.md`), then implement terminalApp's pairing-code UI (Part 2) — see Completed "Key Cabinet + Personnel registration" for the endpoint contract
+- Deploy the pairing/registration backend changes to the VPS (`backend/DEPLOY.md`); build `web/`'s Terminal/Personnel registration UI per "Web Portal — Pending UI Work (Registration Workflow)" (someone else's work, not this session's); then do a live end-to-end pairing run (register a terminal on the portal → type the code into a fresh terminalApp install → confirm bootstrap sync completes) before calling the flow done — code for all three pieces already exists, none of it has been run together
 - Verify Key Take Flow and Key Return Flow on a physical F7G18P (door-open confirmation, timer pairs, Take Warning Time / Door-Close Warning Time)
 - Verify `web/` PATCH/update against **live** `https://kms-cvt.com`: rebuild portal, deploy `web_dist` on the VPS, manually edit at least Units (including `409` conflict reload). Do not stand up a new backend for this.
 - Full section-by-section audit of `web/` against the vendor manual / handover checklist
