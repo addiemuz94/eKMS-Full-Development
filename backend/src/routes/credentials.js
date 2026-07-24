@@ -33,6 +33,51 @@ function actorUserIdFor(req) {
   return req.auth?.role === 'TERMINAL_DEVICE' ? null : req.auth.sub;
 }
 
+/**
+ * Boundary #2 ("no raw credential material ever leaves the Terminal") enforced per
+ * credentialKind. Same permissive-with-denylist philosophy as the original NFC-only check:
+ * an unrecognized-but-short opaque string is still allowed through (this is not a strict
+ * allowlist of reference formats — VENDOR_PASSKEY and future kinds are not constrained here),
+ * but anything shaped like the kind's own raw material is rejected outright.
+ *   - NFC_CARD / STATIC_UID_DIGITAL_KEY_PROTOTYPE: raw UIDs are short hex strings.
+ *   - FINGERPRINT: real R503 templates are binary blobs; even base64-encoded they run to
+ *     hundreds of characters. terminalApp's real enrollment reference is `fptemplate_<0-199>`
+ *     (the on-device template slot — the template itself never leaves the R503 module), so
+ *     anything base64/hex-blob-shaped and long enough to plausibly BE template data is rejected.
+ *   - FACE_RECOGNITION: SFace embeddings are float arrays, typically sent as base64 when
+ *     serialized — same blob-shape rejection as fingerprint. terminalApp's real reference is
+ *     an opaque `faceref_<id>`, never the embedding itself (see FaceProfileStore's local-only
+ *     encrypted storage — the embedding is never meant to reach this API at all).
+ */
+const RAW_MATERIAL_CHECKS = {
+  NFC_CARD: {
+    pattern: /^[0-9A-Fa-f]{4,32}$/,
+    message: 'Raw NFC UIDs must not be sent; use an opaque enrollment reference',
+  },
+  STATIC_UID_DIGITAL_KEY_PROTOTYPE: {
+    pattern: /^[0-9A-Fa-f]{4,32}$/,
+    message: 'Raw UIDs must not be sent; use an opaque enrollment reference',
+  },
+  FINGERPRINT: {
+    pattern: /^[0-9A-Za-z+/=]{20,}$/,
+    message: 'Raw fingerprint template data must not be sent; use the on-device template reference (fptemplate_<id>)',
+  },
+  FACE_RECOGNITION: {
+    pattern: /^[0-9A-Za-z+/=]{20,}$/,
+    message: 'Raw face embedding data must not be sent; use an opaque enrollment reference (faceref_<id>)',
+  },
+};
+
+/** Recognized opaque-reference prefixes always pass, regardless of the denylist above. */
+const KNOWN_GOOD_REFERENCE_PREFIX = /^(cardref|fptemplate|faceref|vendorref|ref)_[A-Za-z0-9_-]+$/i;
+
+function rejectRawMaterialReference(credentialKind, ref) {
+  if (KNOWN_GOOD_REFERENCE_PREFIX.test(ref)) return null;
+  const check = RAW_MATERIAL_CHECKS[credentialKind];
+  if (check && check.pattern.test(ref)) return check.message;
+  return null;
+}
+
 async function requireActiveUser(userId, res) {
   const [users] = await pool.execute(
     `SELECT id FROM users WHERE id = :id AND lifecycle_state = 'ACTIVE' LIMIT 1`,
@@ -150,12 +195,10 @@ router.post('/complete', async (req, res) => {
   const parsed = schema.safeParse(req.body);
   if (!parsed.success) return badRequest(res, 'Invalid credential enrollment completion');
 
-  // Reject payloads that look like raw UIDs (hex blobs) — only opaque refs.
   const ref = parsed.data.enrollmentReference.trim();
-  if (!/^cardref_[A-Za-z0-9_-]+$/i.test(ref) && !/^ref_[A-Za-z0-9_-]+$/i.test(ref)) {
-    if (/^[0-9A-Fa-f]{4,32}$/.test(ref)) {
-      return badRequest(res, 'Raw NFC UIDs must not be sent; use an opaque enrollment reference');
-    }
+  const rawMaterialMessage = rejectRawMaterialReference(parsed.data.credentialKind, ref);
+  if (rawMaterialMessage) {
+    return badRequest(res, rawMaterialMessage);
   }
 
   const userId = req.params.userId;
