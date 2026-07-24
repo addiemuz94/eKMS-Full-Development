@@ -1,0 +1,5 @@
+terminalApp/src/main/assets/models/*.onnx filter=lfs diff=lfs merge=lfs -text
+terminalApp/src/main/assets/models/*.task filter=lfs diff=lfs merge=lfs -text
+terminalApp/src/main/assets/models/*.tflite filter=lfs diff=lfs merge=lfs -text
+terminalApp/src/main/assets/models/*.pb filter=lfs diff=lfs merge=lfs -text
+terminalApp/src/main/assets/models/*.bin filter=lfs diff=lfs merge=lfs -text
