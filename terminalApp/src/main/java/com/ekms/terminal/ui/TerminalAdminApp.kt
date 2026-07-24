@@ -89,6 +89,10 @@ import com.ekms.terminal.data.TerminalUserRole
 import com.ekms.terminal.hardware.CabinetHardwareController
 import com.ekms.terminal.hardware.CabinetHardwareState
 import com.ekms.terminal.hardware.EncryptedUidEnrollmentStore
+import com.ekms.terminal.hardware.FingerprintEnrollmentOutcome
+import com.ekms.terminal.hardware.FingerprintHardwareController
+import com.ekms.terminal.hardware.FingerprintHardwareState
+import com.ekms.terminal.hardware.FingerprintTemplateStore
 import com.ekms.terminal.hardware.PublicCardReaderController
 import com.ekms.terminal.hardware.TerminalNfcReaderController
 import com.ekms.terminal.hardware.TerminalNfcReaderState
@@ -206,6 +210,11 @@ fun TerminalAdminApp() {
     }
     val keyCardStore = remember(applicationContext) {
         EncryptedUidEnrollmentStore(applicationContext, "key")
+    }
+    val fingerprintTemplateStore = remember(applicationContext) { FingerprintTemplateStore(applicationContext) }
+    var fingerprintHardwareState by remember { mutableStateOf(FingerprintHardwareState()) }
+    val fingerprintHardwareController = remember {
+        FingerprintHardwareController { nextState -> fingerprintHardwareState = nextState }
     }
     var capturedFob by remember { mutableStateOf<CapturedFob?>(null) }
     var notice by remember { mutableStateOf<String?>(null) }
@@ -520,6 +529,44 @@ fun TerminalAdminApp() {
         }
     }
 
+    fun reportFingerprintEnrollment(userId: String, enrollmentReference: String) {
+        if (!apiClient.isAuthenticated) return
+        scope.launch {
+            try {
+                val terminalId = runCatching { syncCoordinator.resolveTerminalId() }.getOrNull()
+                apiClient.completeCredentialEnrollment(
+                    userId = userId,
+                    request = CompleteCredentialEnrollmentRequest(
+                        credentialKind = CredentialKind.FINGERPRINT,
+                        enrollmentReference = enrollmentReference,
+                        terminalId = terminalId,
+                        note = "Fingerprint enrolled on Terminal",
+                    ),
+                )
+                notice = "Fingerprint enrollment synced to Personnel Management."
+            } catch (error: Throwable) {
+                notice = "Fingerprint saved on terminal, but web sync failed: ${error.message ?: "Unknown error"}"
+            }
+        }
+    }
+
+    fun reportFingerprintRevoke(userId: String) {
+        if (!apiClient.isAuthenticated) return
+        scope.launch {
+            try {
+                apiClient.revokeCredentialEnrollment(
+                    userId = userId,
+                    request = RevokeCredentialEnrollmentRequest(
+                        credentialKind = CredentialKind.FINGERPRINT,
+                        note = "Fingerprint revoked on Terminal",
+                    ),
+                )
+            } catch (error: Throwable) {
+                notice = "Fingerprint revoked on terminal, but web sync failed: ${error.message ?: "Unknown error"}"
+            }
+        }
+    }
+
     fun signOut() {
         hardwareController.disconnect()
         apiClient.clearSession()
@@ -621,6 +668,9 @@ fun TerminalAdminApp() {
 
     DisposableEffect(hardwareController) {
         onDispose { hardwareController.close() }
+    }
+    DisposableEffect(fingerprintHardwareController) {
+        onDispose { fingerprintHardwareController.close() }
     }
 
     // Section 10.3-10.4: the reader monitor starts automatically once idle at
@@ -736,6 +786,7 @@ fun TerminalAdminApp() {
                             onEnrollUser = { openAdmin(SuperAdminRoute.ENROLL_USER) },
                             onEnrollKey = { openAdmin(SuperAdminRoute.ENROLL_KEY) },
                             onOpenCardEnrollment = { openAdmin(SuperAdminRoute.CARD_ENROLLMENT) },
+                            onOpenFingerprintEnrollment = { openAdmin(SuperAdminRoute.FINGERPRINT_ENROLLMENT) },
                             onOpenAccessGrants = { openAdmin(SuperAdminRoute.ACCESS_GRANTS) },
                             onOpenKeyRetrieval = { openAdmin(SuperAdminRoute.KEY_RETRIEVAL) },
                             onOpenAdminMenu = { openAdmin(SuperAdminRoute.ADMIN_MENU) },
@@ -904,6 +955,45 @@ fun TerminalAdminApp() {
                             summary
                         },
                         onRevokeKeyCard = keyCardStore::revoke,
+                    )
+                }
+
+                SuperAdminRoute.FINGERPRINT_ENROLLMENT -> {
+                    LaunchedEffect(serverLinked) {
+                        if (serverLinked) refreshServerPersonnel()
+                    }
+                    FingerprintEnrollmentScreen(
+                        padding = padding,
+                        users = personnelForScreens,
+                        notice = notice,
+                        hardwareState = fingerprintHardwareState,
+                        onBack = { route = SuperAdminRoute.DASHBOARD },
+                        existingEnrollment = fingerprintTemplateStore::enrollmentFor,
+                        onEnroll = { userId, onProgress, onOutcome ->
+                            fingerprintHardwareController.enrollFingerprint(
+                                onProgress = onProgress,
+                                onOutcome = { outcome ->
+                                    if (outcome is FingerprintEnrollmentOutcome.Success) {
+                                        val summary = fingerprintTemplateStore.save(
+                                            userId,
+                                            outcome.templateId,
+                                            System.currentTimeMillis(),
+                                        )
+                                        reportFingerprintEnrollment(userId, summary.enrollmentReference)
+                                    }
+                                    onOutcome(outcome)
+                                },
+                            )
+                        },
+                        onRevoke = { userId, templateId, onOutcome ->
+                            fingerprintHardwareController.deleteTemplate(templateId) { success, message ->
+                                if (success) {
+                                    fingerprintTemplateStore.revoke(userId)
+                                    reportFingerprintRevoke(userId)
+                                }
+                                onOutcome(success, message)
+                            }
+                        },
                     )
                 }
 
@@ -1153,6 +1243,7 @@ private fun SuperAdminDashboardScreen(
     onEnrollUser: () -> Unit,
     onEnrollKey: () -> Unit,
     onOpenCardEnrollment: () -> Unit,
+    onOpenFingerprintEnrollment: () -> Unit,
     onOpenAccessGrants: () -> Unit,
     onOpenKeyRetrieval: () -> Unit,
     onOpenAdminMenu: () -> Unit,
@@ -1205,6 +1296,17 @@ private fun SuperAdminDashboardScreen(
         ) {
             SoftNavTile(label = "Personnel Management", onClick = onEnrollUser, modifier = Modifier.weight(1f))
             SoftNavTile(label = "Key enrollment", onClick = onEnrollKey, modifier = Modifier.weight(1f))
+        }
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            SoftNavTile(
+                label = "Fingerprint enrollment",
+                onClick = onOpenFingerprintEnrollment,
+                modifier = Modifier.weight(1f),
+            )
+            Box(modifier = Modifier.weight(1f))
         }
         Row(
             modifier = Modifier.fillMaxWidth(),
@@ -2469,6 +2571,7 @@ private enum class SuperAdminRoute {
     ENROLL_USER,
     ENROLL_KEY,
     CARD_ENROLLMENT,
+    FINGERPRINT_ENROLLMENT,
     ACCESS_GRANTS,
     KEY_RETRIEVAL,
     ADMIN_MENU,
