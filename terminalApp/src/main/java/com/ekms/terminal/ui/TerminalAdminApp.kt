@@ -93,6 +93,7 @@ import com.ekms.terminal.hardware.FingerprintEnrollmentOutcome
 import com.ekms.terminal.hardware.FingerprintHardwareController
 import com.ekms.terminal.hardware.FingerprintHardwareState
 import com.ekms.terminal.hardware.FingerprintTemplateStore
+import com.ekms.terminal.hardware.face.FaceProfileStore
 import com.ekms.terminal.hardware.PublicCardReaderController
 import com.ekms.terminal.hardware.TerminalNfcReaderController
 import com.ekms.terminal.hardware.TerminalNfcReaderState
@@ -216,6 +217,7 @@ fun TerminalAdminApp() {
     val fingerprintHardwareController = remember {
         FingerprintHardwareController { nextState -> fingerprintHardwareState = nextState }
     }
+    val faceProfileStore = remember(applicationContext) { FaceProfileStore(applicationContext) }
     var capturedFob by remember { mutableStateOf<CapturedFob?>(null) }
     var notice by remember { mutableStateOf<String?>(null) }
     var pendingPhysicalAction by remember { mutableStateOf<PendingPhysicalAction?>(null) }
@@ -567,6 +569,44 @@ fun TerminalAdminApp() {
         }
     }
 
+    fun reportFaceEnrollment(userId: String, enrollmentReference: String) {
+        if (!apiClient.isAuthenticated) return
+        scope.launch {
+            try {
+                val terminalId = runCatching { syncCoordinator.resolveTerminalId() }.getOrNull()
+                apiClient.completeCredentialEnrollment(
+                    userId = userId,
+                    request = CompleteCredentialEnrollmentRequest(
+                        credentialKind = CredentialKind.FACE_RECOGNITION,
+                        enrollmentReference = enrollmentReference,
+                        terminalId = terminalId,
+                        note = "Face enrolled on Terminal",
+                    ),
+                )
+                notice = "Face enrollment synced to Personnel Management."
+            } catch (error: Throwable) {
+                notice = "Face saved on terminal, but web sync failed: ${error.message ?: "Unknown error"}"
+            }
+        }
+    }
+
+    fun reportFaceRevoke(userId: String) {
+        if (!apiClient.isAuthenticated) return
+        scope.launch {
+            try {
+                apiClient.revokeCredentialEnrollment(
+                    userId = userId,
+                    request = RevokeCredentialEnrollmentRequest(
+                        credentialKind = CredentialKind.FACE_RECOGNITION,
+                        note = "Face revoked on Terminal",
+                    ),
+                )
+            } catch (error: Throwable) {
+                notice = "Face revoked on terminal, but web sync failed: ${error.message ?: "Unknown error"}"
+            }
+        }
+    }
+
     fun signOut() {
         hardwareController.disconnect()
         apiClient.clearSession()
@@ -787,6 +827,7 @@ fun TerminalAdminApp() {
                             onEnrollKey = { openAdmin(SuperAdminRoute.ENROLL_KEY) },
                             onOpenCardEnrollment = { openAdmin(SuperAdminRoute.CARD_ENROLLMENT) },
                             onOpenFingerprintEnrollment = { openAdmin(SuperAdminRoute.FINGERPRINT_ENROLLMENT) },
+                            onOpenFaceEnrollment = { openAdmin(SuperAdminRoute.FACE_ENROLLMENT) },
                             onOpenAccessGrants = { openAdmin(SuperAdminRoute.ACCESS_GRANTS) },
                             onOpenKeyRetrieval = { openAdmin(SuperAdminRoute.KEY_RETRIEVAL) },
                             onOpenAdminMenu = { openAdmin(SuperAdminRoute.ADMIN_MENU) },
@@ -993,6 +1034,26 @@ fun TerminalAdminApp() {
                                 }
                                 onOutcome(success, message)
                             }
+                        },
+                    )
+                }
+
+                SuperAdminRoute.FACE_ENROLLMENT -> {
+                    LaunchedEffect(serverLinked) {
+                        if (serverLinked) refreshServerPersonnel()
+                    }
+                    FaceEnrollmentScreen(
+                        padding = padding,
+                        users = personnelForScreens,
+                        notice = notice,
+                        faceProfileStore = faceProfileStore,
+                        onBack = { route = SuperAdminRoute.DASHBOARD },
+                        onEnrollmentSaved = { userId, profile ->
+                            reportFaceEnrollment(userId, profile.enrollmentReference)
+                        },
+                        onRevoke = { userId ->
+                            faceProfileStore.delete(userId)
+                            reportFaceRevoke(userId)
                         },
                     )
                 }
@@ -1244,6 +1305,7 @@ private fun SuperAdminDashboardScreen(
     onEnrollKey: () -> Unit,
     onOpenCardEnrollment: () -> Unit,
     onOpenFingerprintEnrollment: () -> Unit,
+    onOpenFaceEnrollment: () -> Unit,
     onOpenAccessGrants: () -> Unit,
     onOpenKeyRetrieval: () -> Unit,
     onOpenAdminMenu: () -> Unit,
@@ -1306,7 +1368,11 @@ private fun SuperAdminDashboardScreen(
                 onClick = onOpenFingerprintEnrollment,
                 modifier = Modifier.weight(1f),
             )
-            Box(modifier = Modifier.weight(1f))
+            SoftNavTile(
+                label = "Face enrollment",
+                onClick = onOpenFaceEnrollment,
+                modifier = Modifier.weight(1f),
+            )
         }
         Row(
             modifier = Modifier.fillMaxWidth(),
@@ -2572,6 +2638,7 @@ private enum class SuperAdminRoute {
     ENROLL_KEY,
     CARD_ENROLLMENT,
     FINGERPRINT_ENROLLMENT,
+    FACE_ENROLLMENT,
     ACCESS_GRANTS,
     KEY_RETRIEVAL,
     ADMIN_MENU,
