@@ -27,6 +27,8 @@ object ApiPaths {
     const val SUPER_ADMIN_DASHBOARD = "/v1/admin/dashboard"
     const val ADMIN_USERS = "/v1/admin/users"
     const val ADMIN_USER_CREDENTIALS = "/v1/admin/users/{userId}/credentials"
+    const val ADMIN_USER_CREDENTIALS_COMPLETE = "/v1/admin/users/{userId}/credentials/complete"
+    const val ADMIN_USER_CREDENTIALS_REVOKE = "/v1/admin/users/{userId}/credentials/revoke"
     const val ADMIN_SITES = "/v1/admin/sites"
     const val ADMIN_TERMINALS = "/v1/admin/terminals"
     const val ADMIN_KEYS = "/v1/admin/keys"
@@ -213,12 +215,30 @@ data class RequestCredentialEnrollmentRequest(
 )
 
 @Serializable
+data class CompleteCredentialEnrollmentRequest(
+    val credentialKind: CredentialKind,
+    /** Opaque reference only (e.g. cardref_…) — never a raw NFC UID. */
+    val enrollmentReference: String,
+    val terminalId: String? = null,
+    val expectedRevision: Long? = null,
+    val note: String? = null,
+)
+
+@Serializable
+data class RevokeCredentialEnrollmentRequest(
+    val credentialKind: CredentialKind,
+    val expectedRevision: Long? = null,
+    val note: String? = null,
+)
+
+@Serializable
 data class CredentialStatusDto(
     val id: String,
     val userId: String,
     val credentialKind: CredentialKind,
     val enrollmentStatus: String,
     val terminalId: String? = null,
+    val enrollmentReference: String? = null,
     val note: String? = null,
     val revision: Long,
 )

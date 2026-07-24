@@ -1,4 +1,5 @@
 import type {
+  CredentialStatusDto,
   KeyDto,
   ListResponse,
   LoginResponse,
@@ -178,6 +179,28 @@ export const api = {
     request<UserDto>('POST', '/v1/admin/users', payload, { idempotent: true }),
   deleteUser: (id: string) =>
     request<UserDto>('DELETE', `/v1/admin/users/${id}`, undefined, { idempotent: true }),
+
+  listUserCredentials: (userId: string) =>
+    request<ListResponse<CredentialStatusDto>>(
+      'GET',
+      `/v1/admin/users/${userId}/credentials`,
+    ).then((r) => r.items ?? []),
+
+  requestCredentialEnrollment: (
+    userId: string,
+    payload: {
+      credentialKind: string
+      terminalId?: string | null
+      note?: string
+      expectedRevision?: number
+    },
+  ) =>
+    request<CredentialStatusDto>(
+      'POST',
+      `/v1/admin/users/${userId}/credentials`,
+      payload,
+      { idempotent: true },
+    ),
 
   listKeys: () =>
     request<ListResponse<KeyDto>>('GET', '/v1/admin/keys').then((r) => r.items),

@@ -19,6 +19,8 @@ services:
       - ./sql/001_init.sql:/docker-entrypoint-initdb.d/001_init.sql:ro
       - ./sql/002_phase2.sql:/docker-entrypoint-initdb.d/002_phase2.sql:ro
       - ./sql/003_phase4.sql:/docker-entrypoint-initdb.d/003_phase4.sql:ro
+      - ./sql/004_unit_hierarchy.sql:/docker-entrypoint-initdb.d/004_unit_hierarchy.sql:ro
+      - ./sql/005_credential_enrollment_reference.sql:/docker-entrypoint-initdb.d/005_credential_enrollment_reference.sql:ro
     healthcheck:
       test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-uroot", "-p${MYSQL_ROOT_PASSWORD}"]
       interval: 5s

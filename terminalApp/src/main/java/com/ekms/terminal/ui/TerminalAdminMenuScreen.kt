@@ -23,7 +23,7 @@ import androidx.compose.ui.unit.dp
 import com.ekms.shared.protocol.KeyCabinetLink.Companion.MAX_KEY_NODE_ADDRESS
 import com.ekms.terminal.data.TerminalCabinetSettings
 import com.ekms.terminal.hardware.readEthernetMacAddress
-import com.ekms.terminal.ui.theme.DataReadoutTextStyle
+import com.ekms.terminal.ui.theme.readout
 
 /**
  * Smart Key Cabinet User Manual V2.1, Section 4 — Admin Menu.
@@ -163,7 +163,7 @@ fun TerminalAdminMenuScreen(
                 verticalArrangement = Arrangement.spacedBy(4.dp),
             ) {
                 Text("Ethernet MAC address", fontWeight = FontWeight.SemiBold)
-                Text(macAddress, style = MaterialTheme.typography.bodyMedium.merge(DataReadoutTextStyle))
+                Text(macAddress, style = MaterialTheme.typography.bodyMedium.readout())
             }
         }
         AdminMenuToggle(

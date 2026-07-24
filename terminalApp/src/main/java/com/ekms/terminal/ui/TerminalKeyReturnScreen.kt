@@ -200,85 +200,36 @@ fun TerminalKeyReturnScreen(
             is ReturnStage.WaitingForDoorClose -> StatusTone.ATTENTION
             is ReturnStage.Failed, ReturnStage.Abandoned -> StatusTone.ALARM
         }
-        StatusRingCard(
+        SoftWaitPanel(
             tone = tone,
+            title = when (val currentStage = stage) {
+                ReturnStage.OpeningDoor -> "Opening door…"
+                ReturnStage.WaitingForInsertion -> "Insert the key"
+                is ReturnStage.WaitingForDoorClose -> "Close the door"
+                is ReturnStage.Failed -> "Key return problem"
+                ReturnStage.Abandoned -> "Key return cancelled"
+            },
+            message = when (val currentStage = stage) {
+                ReturnStage.OpeningDoor, ReturnStage.WaitingForInsertion ->
+                    if (key != null) "Insert ${key.displayName} now." else "Insert the key now."
+                is ReturnStage.WaitingForDoorClose ->
+                    if (currentStage.warningExpired) "Please close the door." else "Close the door to finish."
+                is ReturnStage.Failed -> currentStage.message
+                ReturnStage.Abandoned -> "No key was inserted in time. The slot has been secured."
+            },
+            showProgress = when (val current = stage) {
+                ReturnStage.OpeningDoor -> true
+                is ReturnStage.WaitingForDoorClose -> !current.warningExpired
+                else -> false
+            },
+            assistText = when (val current = stage) {
+                ReturnStage.WaitingForInsertion -> "Door open"
+                is ReturnStage.WaitingForDoorClose -> if (current.warningExpired) "Please close the door" else null
+                else -> null
+            },
+            assistAttention = true,
             modifier = Modifier.widthIn(max = 640.dp),
-            contentPadding = 24.dp,
-        ) {
-            Column(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.spacedBy(16.dp),
-            ) {
-                when (val currentStage = stage) {
-                    ReturnStage.OpeningDoor -> {
-                        Text(
-                            text = if (slot != null) "Opening node ${slot.nodeAddress}" else "Door open",
-                            style = MaterialTheme.typography.headlineMedium,
-                            fontWeight = FontWeight.Bold,
-                            textAlign = TextAlign.Center,
-                        )
-                        Text(
-                            text = if (key != null) "Insert ${key.displayName} now." else "Insert the key now.",
-                            style = MaterialTheme.typography.titleMedium,
-                            textAlign = TextAlign.Center,
-                        )
-                    }
-
-                    ReturnStage.WaitingForInsertion -> {
-                        Text(
-                            text = if (slot != null) "Node ${slot.nodeAddress} door open" else "Door open",
-                            style = MaterialTheme.typography.headlineMedium,
-                            fontWeight = FontWeight.Bold,
-                            textAlign = TextAlign.Center,
-                        )
-                        Text(
-                            text = if (key != null) "Insert ${key.displayName} now." else "Insert the key now.",
-                            style = MaterialTheme.typography.titleMedium,
-                            textAlign = TextAlign.Center,
-                        )
-                    }
-
-                    is ReturnStage.WaitingForDoorClose -> {
-                        Text(
-                            text = "Key inserted",
-                            style = MaterialTheme.typography.headlineMedium,
-                            fontWeight = FontWeight.Bold,
-                            textAlign = TextAlign.Center,
-                        )
-                        Text(
-                            text = if (currentStage.warningExpired) "Please close the door." else "Close the door to finish.",
-                            style = MaterialTheme.typography.titleMedium,
-                            textAlign = TextAlign.Center,
-                        )
-                    }
-
-                    is ReturnStage.Failed -> {
-                        Text(
-                            text = "Key return problem",
-                            style = MaterialTheme.typography.headlineMedium,
-                            fontWeight = FontWeight.Bold,
-                            textAlign = TextAlign.Center,
-                        )
-                        Text(currentStage.message, style = MaterialTheme.typography.titleMedium, textAlign = TextAlign.Center)
-                    }
-
-                    ReturnStage.Abandoned -> {
-                        Text(
-                            text = "Key return cancelled",
-                            style = MaterialTheme.typography.headlineMedium,
-                            fontWeight = FontWeight.Bold,
-                            textAlign = TextAlign.Center,
-                        )
-                        Text(
-                            text = "No key was inserted in time. The slot has been secured.",
-                            style = MaterialTheme.typography.titleMedium,
-                            textAlign = TextAlign.Center,
-                        )
-                    }
-                }
-            }
-        }
+        )
     }
 }
 

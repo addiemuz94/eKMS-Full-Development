@@ -1,14 +1,21 @@
 package com.ekms.terminal.ui
 
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
@@ -28,17 +35,27 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.platform.LocalContext
+import android.provider.Settings
+import com.ekms.shared.api.CompleteCredentialEnrollmentRequest
+import com.ekms.shared.api.CreateAdminUserRequest
+import com.ekms.shared.api.RevokeCredentialEnrollmentRequest
+import com.ekms.shared.api.UserDto
 import com.ekms.shared.domain.AuditEventType
 import com.ekms.shared.domain.CardUidMatch
 import com.ekms.shared.domain.CardUidResolver
+import com.ekms.shared.domain.CredentialKind
 import com.ekms.shared.domain.KeySlot
 import com.ekms.shared.domain.KeySlotDemoData
 import com.ekms.shared.domain.LifecycleMetadata
@@ -46,6 +63,7 @@ import com.ekms.shared.domain.ManagedKey
 import com.ekms.shared.domain.ManagedTerminalOption
 import com.ekms.shared.domain.RecordType
 import com.ekms.shared.domain.Terminal
+import com.ekms.shared.domain.UserRole
 import com.ekms.shared.protocol.KeyCabinetLink.Companion.MAX_KEY_NODE_ADDRESS
 import com.ekms.terminal.data.AuthOutcome
 import com.ekms.terminal.data.StoreResult
@@ -53,6 +71,7 @@ import com.ekms.terminal.data.TerminalAccessGrant
 import com.ekms.terminal.data.TerminalAdminSnapshot
 import com.ekms.terminal.data.TerminalAdminStore
 import com.ekms.terminal.data.TerminalApiClient
+import com.ekms.terminal.data.TerminalApiException
 import com.ekms.terminal.data.TerminalKey
 import com.ekms.terminal.data.TerminalSession
 import com.ekms.terminal.data.TerminalServerCache
@@ -67,13 +86,12 @@ import com.ekms.terminal.hardware.PublicCardReaderController
 import com.ekms.terminal.hardware.TerminalNfcReaderController
 import com.ekms.terminal.hardware.TerminalNfcReaderState
 import com.ekms.terminal.hardware.UidEnrollmentResult
-import com.ekms.terminal.ui.theme.DataReadoutTextStyle
 import com.ekms.terminal.ui.theme.EkmsTerminalTheme
 import com.ekms.terminal.ui.theme.StatusTone
+import com.ekms.terminal.ui.theme.readout
 import java.security.MessageDigest
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
-import android.provider.Settings
 
 /**
  * eKMS Terminal bootstrap and live hardware-control milestone.
@@ -147,6 +165,14 @@ fun TerminalAdminApp() {
     var takeFlow by remember { mutableStateOf<TakeFlow?>(null) }
     var returnFlow by remember { mutableStateOf<ReturnFlow?>(null) }
     var passwordChangeReturnRoute by remember { mutableStateOf(SuperAdminRoute.DASHBOARD) }
+    var serverPersonnel by remember { mutableStateOf(store.cachedPersonnel()) }
+    var assignedUnitId by remember { mutableStateOf<String?>(null) }
+    val serverLinked = session?.serverAuthenticated == true && apiClient.isAuthenticated
+    val personnelForScreens = if (serverLinked && serverPersonnel.isNotEmpty()) {
+        serverPersonnel
+    } else {
+        snapshot.users
+    }
 
     // Key Take Flow (CLAUDE.md "Terminal App UX Baseline (Production)" §1):
     // the availability check below (no slot -> not selectable) is the same
@@ -320,9 +346,9 @@ fun TerminalAdminApp() {
                     }
 
                     is CardUidMatch.Ambiguous ->
-                        notice = "This card is enrolled to both a person and a key. Re-enroll it before use."
+                        notice = "This card is enrolled to both personnel and a key. Re-enroll it before use."
 
-                    CardUidMatch.NoMatch -> notice = "Unrecognized card. It is not enrolled to a person or a key."
+                    CardUidMatch.NoMatch -> notice = "Unrecognized card. It is not enrolled to personnel or a key."
                 }
             },
         )
@@ -369,6 +395,64 @@ fun TerminalAdminApp() {
         }
     }
 
+    fun refreshServerPersonnel() {
+        if (!apiClient.isAuthenticated) return
+        scope.launch {
+            try {
+                val siteId = try {
+                    val terminalId = syncCoordinator.resolveTerminalId()
+                    apiClient.getTerminal(terminalId).siteId.also { assignedUnitId = it }
+                } catch (_: Exception) {
+                    assignedUnitId
+                }
+                val users = apiClient.listUsers(siteId)
+                val mapped = users.map { it.toTerminalUser() }
+                store.replaceCachedPersonnel(mapped)
+                serverPersonnel = mapped
+            } catch (error: Throwable) {
+                notice = "Could not load personnel from server: ${error.message ?: "Unknown error"}"
+            }
+        }
+    }
+
+    fun reportPersonnelCardEnrollment(userId: String, enrollmentReference: String) {
+        if (!apiClient.isAuthenticated) return
+        scope.launch {
+            try {
+                val terminalId = runCatching { syncCoordinator.resolveTerminalId() }.getOrNull()
+                apiClient.completeCredentialEnrollment(
+                    userId = userId,
+                    request = CompleteCredentialEnrollmentRequest(
+                        credentialKind = CredentialKind.NFC_CARD,
+                        enrollmentReference = enrollmentReference,
+                        terminalId = terminalId,
+                        note = "Card enrollment on Terminal",
+                    ),
+                )
+                notice = "Card enrollment synced to Personnel Management."
+            } catch (error: Throwable) {
+                notice = "Card saved on terminal, but web sync failed: ${error.message ?: "Unknown error"}"
+            }
+        }
+    }
+
+    fun reportPersonnelCardRevoke(userId: String) {
+        if (!apiClient.isAuthenticated) return
+        scope.launch {
+            try {
+                apiClient.revokeCredentialEnrollment(
+                    userId = userId,
+                    request = RevokeCredentialEnrollmentRequest(
+                        credentialKind = CredentialKind.NFC_CARD,
+                        note = "Card revoked on Terminal",
+                    ),
+                )
+            } catch (error: Throwable) {
+                notice = "Card revoked on terminal, but web sync failed: ${error.message ?: "Unknown error"}"
+            }
+        }
+    }
+
     fun signOut() {
         hardwareController.disconnect()
         apiClient.clearSession()
@@ -383,6 +467,7 @@ fun TerminalAdminApp() {
             is AuthOutcome.Server -> {
                 session = outcome.session
                 notice = "Signed in to ${apiClient.baseUrl}."
+                refreshServerPersonnel()
                 route = when {
                     outcome.session.requiresPasswordChange -> SuperAdminRoute.CHANGE_PASSWORD
                     outcome.session.isSuperAdmin -> SuperAdminRoute.DASHBOARD
@@ -555,7 +640,7 @@ fun TerminalAdminApp() {
                                 is StoreResult.Success -> {
                                     refreshSnapshot()
                                     session = session?.copy(requiresPasswordChange = false)
-                                    notice = "Super Admin password changed. You can now enroll users and keys."
+                                    notice = "Super Admin password changed. You can now manage personnel and keys."
                                     route = passwordChangeReturnRoute
                                 }
 
@@ -593,31 +678,76 @@ fun TerminalAdminApp() {
                     }
                 }
 
-                SuperAdminRoute.ENROLL_USER -> EnrollUserScreen(
-                    padding = padding,
-                    users = snapshot.users,
-                    notice = notice,
-                    onBack = { route = SuperAdminRoute.DASHBOARD },
-                    onSave = { displayName, username, password, role ->
-                        when (val result = store.createUser(displayName, username, password, role)) {
-                            is StoreResult.Success -> {
-                                enqueueChange(
-                                    RecordType.USER,
-                                    result.value.id,
-                                    """{"displayName":"${result.value.displayName}","username":"${result.value.username}","role":"${result.value.role.name}"}""",
-                                )
-                                refreshSnapshot()
-                                notice = result.value.displayName + " was enrolled as " + result.value.role.label + "."
-                                true
-                            }
+                SuperAdminRoute.ENROLL_USER -> {
+                    LaunchedEffect(serverLinked) {
+                        if (serverLinked) refreshServerPersonnel()
+                    }
+                    EnrollUserScreen(
+                        padding = padding,
+                        users = personnelForScreens,
+                        serverLinked = serverLinked,
+                        assignedUnitId = assignedUnitId,
+                        notice = notice,
+                        onBack = { route = SuperAdminRoute.DASHBOARD },
+                        onSave = { displayName, identifier, password, role ->
+                            if (serverLinked) {
+                                try {
+                                    val userRole = role.toUserRole()
+                                    val siteIds = when {
+                                        userRole == UserRole.SUPER_ADMIN -> emptySet()
+                                        !assignedUnitId.isNullOrBlank() -> setOf(assignedUnitId!!)
+                                        else -> emptySet()
+                                    }
+                                    if (userRole != UserRole.SUPER_ADMIN && siteIds.isEmpty()) {
+                                        notice = "Set Key Cabinet ID to a backend terminal UUID so this unit can be assigned."
+                                        false
+                                    } else {
+                                        val created = apiClient.createUser(
+                                            CreateAdminUserRequest(
+                                                displayName = displayName.trim(),
+                                                email = identifier.trim(),
+                                                role = userRole,
+                                                assignedSiteIds = siteIds,
+                                                password = password.takeIf { it.length >= 8 },
+                                            ),
+                                        )
+                                        store.replaceCachedPersonnel(
+                                            (serverPersonnel.filterNot { it.id == created.id } + created.toTerminalUser())
+                                                .sortedBy { it.displayName.lowercase() },
+                                        )
+                                        serverPersonnel = store.cachedPersonnel()
+                                        notice = "${created.displayName} was added to Personnel Management."
+                                        true
+                                    }
+                                } catch (error: TerminalApiException) {
+                                    notice = error.message
+                                    false
+                                } catch (error: Throwable) {
+                                    notice = error.message ?: "Failed to add personnel"
+                                    false
+                                }
+                            } else {
+                                when (val result = store.createUser(displayName, identifier, password, role)) {
+                                    is StoreResult.Success -> {
+                                        enqueueChange(
+                                            RecordType.USER,
+                                            result.value.id,
+                                            """{"displayName":"${result.value.displayName}","username":"${result.value.username}","role":"${result.value.role.name}"}""",
+                                        )
+                                        refreshSnapshot()
+                                        notice = result.value.displayName + " was enrolled as " + result.value.role.label + " (local only — not synced)."
+                                        true
+                                    }
 
-                            is StoreResult.Error -> {
-                                notice = result.message
-                                false
+                                    is StoreResult.Error -> {
+                                        notice = result.message
+                                        false
+                                    }
+                                }
                             }
-                        }
-                    },
-                )
+                        },
+                    )
+                }
 
                 SuperAdminRoute.ENROLL_KEY -> EnrollKeyScreen(
                     padding = padding,
@@ -651,33 +781,48 @@ fun TerminalAdminApp() {
                     onStopMonitoring = hardwareController::stopMonitoring,
                 )
 
-                SuperAdminRoute.CARD_ENROLLMENT -> CardEnrollmentScreen(
-                    padding = padding,
-                    users = snapshot.users,
-                    keys = snapshot.keys,
-                    notice = notice,
-                    onBack = { route = SuperAdminRoute.DASHBOARD },
-                    onEnrollPersonnelCard = { userId, rawUid ->
-                        if (keyCardStore.isEnrolled(rawUid)) {
-                            UidEnrollmentResult.AlreadyAssigned
-                        } else {
-                            personnelCardStore.enroll(userId, rawUid, System.currentTimeMillis())
-                        }
-                    },
-                    onEnrollKeyCard = { keyId, rawUid ->
-                        if (personnelCardStore.isEnrolled(rawUid)) {
-                            UidEnrollmentResult.AlreadyAssigned
-                        } else {
-                            keyCardStore.enroll(keyId, rawUid, System.currentTimeMillis())
-                        }
-                    },
-                    onRevokePersonnelCard = personnelCardStore::revoke,
-                    onRevokeKeyCard = keyCardStore::revoke,
-                )
+                SuperAdminRoute.CARD_ENROLLMENT -> {
+                    LaunchedEffect(serverLinked) {
+                        if (serverLinked) refreshServerPersonnel()
+                    }
+                    CardEnrollmentScreen(
+                        padding = padding,
+                        users = personnelForScreens,
+                        keys = snapshot.keys,
+                        notice = notice,
+                        onBack = { route = SuperAdminRoute.DASHBOARD },
+                        onEnrollPersonnelCard = { userId, rawUid ->
+                            if (keyCardStore.isEnrolled(rawUid)) {
+                                UidEnrollmentResult.AlreadyAssigned
+                            } else {
+                                val result = personnelCardStore.enroll(userId, rawUid, System.currentTimeMillis())
+                                if (result is UidEnrollmentResult.Saved) {
+                                    reportPersonnelCardEnrollment(userId, result.summary.enrollmentReference)
+                                }
+                                result
+                            }
+                        },
+                        onEnrollKeyCard = { keyId, rawUid ->
+                            if (personnelCardStore.isEnrolled(rawUid)) {
+                                UidEnrollmentResult.AlreadyAssigned
+                            } else {
+                                keyCardStore.enroll(keyId, rawUid, System.currentTimeMillis())
+                            }
+                        },
+                        onRevokePersonnelCard = { userId ->
+                            val summary = personnelCardStore.revoke(userId)
+                            if (summary != null) reportPersonnelCardRevoke(userId)
+                            summary
+                        },
+                        onRevokeKeyCard = keyCardStore::revoke,
+                    )
+                }
 
                 SuperAdminRoute.ACCESS_GRANTS -> AccessGrantsScreen(
                     padding = padding,
-                    users = snapshot.users.filterNot { it.isPreset },
+                    users = personnelForScreens.filterNot {
+                        it.isPreset || it.role == TerminalUserRole.SUPER_ADMIN
+                    },
                     keys = snapshot.keys,
                     grants = snapshot.accessGrants,
                     notice = notice,
@@ -894,7 +1039,7 @@ private fun ChangePasswordScreen(
     TerminalPage(padding) {
         HeaderCard(
             title = "Change preset password",
-            description = "This is required once before the Super Admin can enroll users, keys or send cabinet commands.",
+            description = "This is required once before the Super Admin can manage personnel, keys or send cabinet commands.",
         )
         notice?.let { message -> SuperAdminNoticeCard(message) }
         PasswordField("Current password", currentPassword) { currentPassword = it }
@@ -926,46 +1071,69 @@ private fun SuperAdminDashboardScreen(
     onSignOut: () -> Unit,
 ) {
     TerminalPage(padding) {
-        HeaderCard(
-            title = "Super Admin dashboard",
-            description = "You are the only pre-provisioned account. Enroll users and keys from here, then use the protected hardware controls for actual cabinet actions.",
-        )
-        notice?.let { message -> SuperAdminNoticeCard(message) }
-        DashboardMetric("Users", snapshot.users.size.toString(), "1 preset Super Admin · " + (snapshot.users.size - 1) + " enrolled")
-        DashboardMetric("Keys", snapshot.keys.size.toString(), "All keys must be enrolled from a verified cabinet node")
-        DashboardMetric("Access grants", snapshot.accessGrants.size.toString(), "Exact user-to-key bindings")
-        StatusRingCard(tone = if (hardwareState.connected) StatusTone.NORMAL else StatusTone.INACTIVE) {
-            Text("Cabinet", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
-            Text(
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = "Super Admin",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.primary,
+                    fontWeight = FontWeight.Medium,
+                )
+                Text(
+                    text = "What do you need?",
+                    style = MaterialTheme.typography.headlineSmall,
+                    fontWeight = FontWeight.SemiBold,
+                )
+            }
+            SoftAssistChip(
                 text = if (hardwareState.connected) "Connected" else "Disconnected",
-                style = MaterialTheme.typography.bodyLarge,
+                success = hardwareState.connected,
+                attention = !hardwareState.connected,
             )
-            Text(hardwareState.message, style = MaterialTheme.typography.bodySmall)
         }
-        Button(onClick = onEnrollUser, modifier = Modifier.fillMaxWidth()) {
-            Text("Enroll new user")
+        notice?.let { message -> SuperAdminNoticeCard(message) }
+
+        SoftHeroAction(
+            title = "Take keys",
+            subtitle = "Open the cabinet grid",
+            onClick = onOpenKeyRetrieval,
+        )
+
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            SoftNavTile(label = "Card enrollment", onClick = onOpenCardEnrollment, modifier = Modifier.weight(1f))
+            SoftNavTile(label = "Permission Settings", onClick = onOpenAccessGrants, modifier = Modifier.weight(1f))
         }
-        Button(onClick = onEnrollKey, modifier = Modifier.fillMaxWidth()) {
-            Text("Enroll new key")
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            SoftNavTile(label = "Personnel Management", onClick = onEnrollUser, modifier = Modifier.weight(1f))
+            SoftNavTile(label = "Key enrollment", onClick = onEnrollKey, modifier = Modifier.weight(1f))
         }
-        Button(onClick = onOpenCardEnrollment, modifier = Modifier.fillMaxWidth()) {
-            Text("Card enrolment")
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            SoftNavTile(label = "Admin Menu", onClick = onOpenAdminMenu, modifier = Modifier.weight(1f))
+            SoftNavTile(label = "Hardware", onClick = onOpenHardware, modifier = Modifier.weight(1f))
         }
-        Button(onClick = onOpenAccessGrants, modifier = Modifier.fillMaxWidth()) {
-            Text("Manage access grants")
+
+        SoftCard(contentPadding = 14.dp) {
+            Text(
+                text = "${snapshot.users.size} personnel · ${snapshot.keys.size} keys · ${snapshot.accessGrants.size} grants",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
         }
-        Button(onClick = onOpenKeyRetrieval, modifier = Modifier.fillMaxWidth()) {
-            Text("Take keys")
-        }
-        OutlinedButton(onClick = onOpenAdminMenu, modifier = Modifier.fillMaxWidth()) {
-            Text("Admin Menu")
-        }
-        OutlinedButton(onClick = onOpenHardware, modifier = Modifier.fillMaxWidth()) {
-            Text("Cabinet hardware control")
-        }
-        TextButton(onClick = onSignOut, modifier = Modifier.fillMaxWidth()) {
-            Text("Sign out")
-        }
+
+        SoftTextButton(text = "Sign out", onClick = onSignOut)
     }
 }
 
@@ -989,29 +1157,29 @@ private fun AccessGrantsScreen(
     TerminalPage(padding) {
         BackButton(onBack)
         HeaderCard(
-            title = "Access grants",
-            description = "Bind only the exact keys an enrolled user may take. A grant here is separate from the user's own record, matching the shared AccessGrant model used by the Website.",
+            title = "Permission Settings",
+            description = "Bind only the exact keys enrolled personnel may take. A grant here is separate from the personnel record, matching Permission Settings on the web portal.",
         )
         notice?.let { message -> SuperAdminNoticeCard(message) }
 
         if (users.isEmpty()) {
-            Text("Enroll a Technician or Vendor user before creating an access grant.")
+            Text("Add Technician or Vendor personnel before creating a permission.")
             return@TerminalPage
         }
 
-        Text("Selected user", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+        Text("Selected personnel", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
         OutlinedButton(
             onClick = { selectedUserId = nextUserId(selectedUserId, users) },
             modifier = Modifier.fillMaxWidth(),
         ) {
-            Text((selectedUser?.let { it.displayName + " · " + it.role.label } ?: "Select a user") + " · change")
+            Text((selectedUser?.let { it.displayName + " · " + it.role.label } ?: "Select personnel") + " · change")
         }
 
         Text("Unauthorized keys", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
         if (keys.isEmpty()) {
             Text("No key has been enrolled yet.")
         } else if (availableKeys.isEmpty()) {
-            Text("Every enrolled key is already granted to this user.")
+            Text("Every enrolled key is already granted to this personnel.")
         }
         availableKeys.forEach { key ->
             Card(modifier = Modifier.fillMaxWidth()) {
@@ -1030,7 +1198,7 @@ private fun AccessGrantsScreen(
 
         Text("Authorized keys", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
         if (userGrants.isEmpty()) {
-            Text("No exact key permission is currently assigned to this user.")
+            Text("No exact key permission is currently assigned to this personnel.")
         }
         userGrants.forEach { grant ->
             val key = keys.firstOrNull { it.id == grant.keyId }
@@ -1066,43 +1234,99 @@ private fun Terminal.toManagedTerminalOption(): ManagedTerminalOption = ManagedT
     configuredSlotCount = configuredSlotCount,
 )
 
+private fun UserDto.toTerminalUser(): TerminalUser {
+    val mappedRole = when (role) {
+        UserRole.SUPER_ADMIN -> TerminalUserRole.SUPER_ADMIN
+        UserRole.TECHNICIAN -> TerminalUserRole.TECHNICIAN
+        UserRole.VENDOR -> TerminalUserRole.VENDOR
+    }
+    return TerminalUser(
+        id = id,
+        displayName = displayName,
+        username = email,
+        role = mappedRole,
+        isPreset = false,
+        createdAtEpochMillis = 0L,
+    )
+}
+
+private fun TerminalUserRole.toUserRole(): UserRole = when (this) {
+    TerminalUserRole.SUPER_ADMIN -> UserRole.SUPER_ADMIN
+    TerminalUserRole.TECHNICIAN -> UserRole.TECHNICIAN
+    TerminalUserRole.VENDOR -> UserRole.VENDOR
+}
+
 @Composable
 private fun EnrollUserScreen(
     padding: PaddingValues,
     users: List<TerminalUser>,
+    serverLinked: Boolean,
+    assignedUnitId: String?,
     notice: String?,
     onBack: () -> Unit,
-    onSave: (String, String, String, TerminalUserRole) -> Boolean,
+    onSave: suspend (String, String, String, TerminalUserRole) -> Boolean,
 ) {
+    val scope = rememberCoroutineScope()
     var displayName by remember { mutableStateOf("") }
-    var username by remember { mutableStateOf("") }
+    var identifier by remember { mutableStateOf("") }
     var temporaryPassword by remember { mutableStateOf("") }
     var role by remember { mutableStateOf(TerminalUserRole.TECHNICIAN) }
+    var saving by remember { mutableStateOf(false) }
 
     TerminalPage(padding) {
         BackButton(onBack)
         HeaderCard(
-            title = "Enroll user",
-            description = "Only the Super Admin can create accounts. No other account is preset. " +
-                    "Credential enrollment (NFC, fingerprint, Digital Key and Face) is attached to these user records in the next access-control step.",
+            title = "Personnel Management",
+            description = if (serverLinked) {
+                "Add personnel for this unit. Records match Personnel Management on the web portal. Use Card enrollment to bind an NFC card."
+            } else {
+                "Local bootstrap only — sign in with a server account to sync with Personnel Management on the web portal."
+            },
         )
+        if (serverLinked) {
+            SoftAssistChip(
+                text = if (assignedUnitId.isNullOrBlank()) {
+                    "Server linked · set Key Cabinet ID for unit assignment"
+                } else {
+                    "Server linked · assigned unit ready"
+                },
+                success = !assignedUnitId.isNullOrBlank(),
+                attention = assignedUnitId.isNullOrBlank(),
+            )
+        } else {
+            SoftAssistChip(
+                text = "Local only — not synced to web",
+                attention = true,
+            )
+        }
         notice?.let { message -> SuperAdminNoticeCard(message) }
         OutlinedTextField(
             value = displayName,
             onValueChange = { displayName = it },
             modifier = Modifier.fillMaxWidth(),
-            label = { Text("Full name") },
+            label = { Text("Display name") },
             singleLine = true,
         )
         OutlinedTextField(
-            value = username,
-            onValueChange = { username = it },
+            value = identifier,
+            onValueChange = { identifier = it },
             modifier = Modifier.fillMaxWidth(),
-            label = { Text("Username") },
-            supportingText = { Text("Use letters, numbers, dot, underscore or hyphen.") },
+            label = { Text(if (serverLinked) "Email" else "Username") },
+            supportingText = {
+                Text(
+                    if (serverLinked) {
+                        "Same email used on the web portal."
+                    } else {
+                        "Use letters, numbers, dot, underscore or hyphen."
+                    },
+                )
+            },
             singleLine = true,
         )
-        PasswordField("Temporary password", temporaryPassword) { temporaryPassword = it }
+        PasswordField(
+            if (serverLinked) "Initial password (min 8)" else "Temporary password",
+            temporaryPassword,
+        ) { temporaryPassword = it }
         Text("Role", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
         OutlinedButton(
             onClick = {
@@ -1113,31 +1337,40 @@ private fun EnrollUserScreen(
                 }
             },
             modifier = Modifier.fillMaxWidth(),
+            enabled = !saving,
         ) {
             Text("Selected: " + role.label + " · change")
         }
         Button(
             onClick = {
-                if (onSave(displayName, username, temporaryPassword, role)) {
-                    displayName = ""
-                    username = ""
-                    temporaryPassword = ""
-                    role = TerminalUserRole.TECHNICIAN
+                saving = true
+                scope.launch {
+                    val ok = onSave(displayName, identifier, temporaryPassword, role)
+                    if (ok) {
+                        displayName = ""
+                        identifier = ""
+                        temporaryPassword = ""
+                        role = TerminalUserRole.TECHNICIAN
+                    }
+                    saving = false
                 }
             },
             modifier = Modifier.fillMaxWidth(),
-            enabled = displayName.isNotBlank() && username.isNotBlank() && temporaryPassword.length >= 8,
+            enabled = !saving &&
+                displayName.isNotBlank() &&
+                identifier.isNotBlank() &&
+                temporaryPassword.length >= 8,
         ) {
-            Text("Create user")
+            Text(if (saving) "Saving…" else "Add personnel")
         }
 
-        Text("Enrolled accounts", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+        Text("Personnel", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
         users.forEach { user ->
             Card(modifier = Modifier.fillMaxWidth()) {
                 Box(modifier = Modifier.padding(16.dp)) {
                     Text(
                         user.displayName + "\n" + user.username + " · " + user.role.label +
-                                (if (user.isPreset) "\nPreset account" else ""),
+                                (if (user.isPreset) "\nBuilt-in Super Admin" else ""),
                     )
                 }
             }
@@ -1518,6 +1751,7 @@ private fun HardwareControlScreen(
     onEngage: (Int) -> Unit,
     onRelease: (Int) -> Unit,
 ) {
+    var page by rememberSaveable { mutableStateOf(HardwarePage.STATUS) }
     var portPath by remember { mutableStateOf(hardwareState.portPath) }
     var baudRateText by remember { mutableStateOf(hardwareState.baudRate.toString()) }
     var boxAddressText by remember { mutableStateOf(hardwareState.boxAddress.toString()) }
@@ -1531,140 +1765,220 @@ private fun HardwareControlScreen(
 
     TerminalPage(padding) {
         BackButton(onBack)
-        HeaderCard(
-            title = "Cabinet hardware control",
-            description = "Android Terminal-only live serial control. Commands run one at a time on the confirmed cabinet bus. Door eject and electromagnet actions always require a second confirmation.",
+        Text(
+            text = "Cabinet hardware",
+            style = MaterialTheme.typography.headlineSmall,
+            fontWeight = FontWeight.SemiBold,
+        )
+        Text(
+            text = "Status shows connection health. Controls send live cabinet commands.",
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
         notice?.let { message -> SuperAdminNoticeCard(message) }
-        HardwareStatusCard(hardwareState)
 
-        if (!hardwareState.connected) {
-            OutlinedTextField(
-                value = portPath,
-                onValueChange = { portPath = it },
-                modifier = Modifier.fillMaxWidth(),
-                label = { Text("Cabinet serial port") },
-                singleLine = true,
-            )
-            OutlinedTextField(
-                value = baudRateText,
-                onValueChange = { baudRateText = it.filter { character -> character.isDigit() } },
-                modifier = Modifier.fillMaxWidth(),
-                label = { Text("Baud rate") },
-                singleLine = true,
-            )
-            OutlinedTextField(
-                value = boxAddressText,
-                onValueChange = { boxAddressText = it.filter { character -> character.isDigit() } },
-                modifier = Modifier.fillMaxWidth(),
-                label = { Text("Box Address (1–255)") },
-                singleLine = true,
-            )
-            Button(
-                onClick = {
-                    onConnect(portPath.trim(), requireNotNull(baudRate), requireNotNull(boxAddress))
-                },
-                modifier = Modifier.fillMaxWidth(),
-                enabled = validConnection && !hardwareState.busy,
-            ) {
-                Text("Connect cabinet")
-            }
-        } else {
-            OutlinedButton(
-                onClick = onDisconnect,
-                modifier = Modifier.fillMaxWidth(),
-                enabled = !hardwareState.busy,
-            ) {
-                Text("Disconnect cabinet")
-            }
-            Button(
-                onClick = onCheckDoor,
-                modifier = Modifier.fillMaxWidth(),
-                enabled = !hardwareState.busy,
-            ) {
-                Text("Check door status (0x22)")
-            }
-            OutlinedButton(
-                onClick = onOpenDoor,
-                modifier = Modifier.fillMaxWidth(),
-                enabled = !hardwareState.busy,
-            ) {
-                Text("Eject cabinet door (0x23)")
+        HardwarePageSegment(
+            statusSelected = page == HardwarePage.STATUS,
+            onStatus = { page = HardwarePage.STATUS },
+            onControls = { page = HardwarePage.CONTROLS },
+        )
+
+        when (page) {
+            HardwarePage.STATUS -> {
+                HardwareStatusPage(
+                    hardwareState = hardwareState,
+                    portPath = portPath,
+                    onPortPathChange = { portPath = it },
+                    baudRateText = baudRateText,
+                    onBaudRateChange = { baudRateText = it },
+                    boxAddressText = boxAddressText,
+                    onBoxAddressChange = { boxAddressText = it },
+                    canConnect = validConnection && !hardwareState.busy,
+                    onConnect = {
+                        onConnect(portPath.trim(), requireNotNull(baudRate), requireNotNull(boxAddress))
+                    },
+                    onDisconnect = onDisconnect,
+                )
             }
 
-            Text("Selected raw node", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
-            OutlinedTextField(
-                value = nodeAddressText,
-                onValueChange = { nodeAddressText = it.filter { character -> character.isDigit() } },
-                modifier = Modifier.fillMaxWidth(),
-                label = { Text("Raw Node Address (0–$MAX_KEY_NODE_ADDRESS)") },
-                supportingText = {
-                    Text(
-                        "Use the configured protocol address exactly. Door commands always send node 0 internally.",
+            HardwarePage.CONTROLS -> {
+                SoftAssistChip(
+                    text = if (hardwareState.connected) "Connected" else "Disconnected — open Status to connect",
+                    success = hardwareState.connected,
+                    attention = !hardwareState.connected,
+                )
+                if (hardwareState.busy) {
+                    CircularProgressIndicator(modifier = Modifier.size(28.dp), strokeWidth = 3.dp)
+                }
+                Text(
+                    text = hardwareState.message,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+
+                if (!hardwareState.connected) {
+                    SoftCard(contentPadding = 16.dp) {
+                        Text(
+                            text = "Connect the cabinet on the Status page before sending commands.",
+                            style = MaterialTheme.typography.bodyMedium,
+                        )
+                        Spacer(modifier = Modifier.height(10.dp))
+                        SoftPrimaryButton(
+                            text = "Go to Status",
+                            onClick = { page = HardwarePage.STATUS },
+                        )
+                    }
+                } else {
+                    OutlinedButton(
+                        onClick = onDisconnect,
+                        modifier = Modifier.fillMaxWidth(),
+                        enabled = !hardwareState.busy,
+                    ) {
+                        Text("Disconnect cabinet")
+                    }
+                    Button(
+                        onClick = onCheckDoor,
+                        modifier = Modifier.fillMaxWidth(),
+                        enabled = !hardwareState.busy,
+                    ) {
+                        Text("Check door status (0x22)")
+                    }
+                    OutlinedButton(
+                        onClick = onOpenDoor,
+                        modifier = Modifier.fillMaxWidth(),
+                        enabled = !hardwareState.busy,
+                    ) {
+                        Text("Eject cabinet door (0x23)")
+                    }
+
+                    Text("Selected raw node", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+                    OutlinedTextField(
+                        value = nodeAddressText,
+                        onValueChange = { nodeAddressText = it.filter { character -> character.isDigit() } },
+                        modifier = Modifier.fillMaxWidth(),
+                        label = { Text("Raw Node Address (0–$MAX_KEY_NODE_ADDRESS)") },
+                        supportingText = {
+                            Text(
+                                "Use the configured protocol address exactly. Door commands always send node 0 internally.",
+                            )
+                        },
+                        singleLine = true,
+                        isError = nodeAddressText.isNotBlank() && !validNode,
                     )
-                },
-                singleLine = true,
-                isError = nodeAddressText.isNotBlank() && !validNode,
-            )
-            if (validNode) {
-                Button(
-                    onClick = { onNodeStatus(requireNotNull(nodeAddress)) },
-                    modifier = Modifier.fillMaxWidth(),
-                    enabled = !hardwareState.busy,
-                ) {
-                    Text("Read node state (0x17)")
-                }
-                OutlinedButton(
-                    onClick = { onReadFob(requireNotNull(nodeAddress)) },
-                    modifier = Modifier.fillMaxWidth(),
-                    enabled = !hardwareState.busy,
-                ) {
-                    Text("Read fob at node (0x15)")
-                }
-                OutlinedButton(
-                    onClick = { onBlueLight(requireNotNull(nodeAddress), true) },
-                    modifier = Modifier.fillMaxWidth(),
-                    enabled = !hardwareState.busy,
-                ) {
-                    Text("Blue light ON (0x11)")
-                }
-                OutlinedButton(
-                    onClick = { onBlueLight(requireNotNull(nodeAddress), false) },
-                    modifier = Modifier.fillMaxWidth(),
-                    enabled = !hardwareState.busy,
-                ) {
-                    Text("Blue light OFF (0x12)")
-                }
-                OutlinedButton(
-                    onClick = { onRedLight(requireNotNull(nodeAddress), true) },
-                    modifier = Modifier.fillMaxWidth(),
-                    enabled = !hardwareState.busy,
-                ) {
-                    Text("Red light ON (0x19)")
-                }
-                OutlinedButton(
-                    onClick = { onRedLight(requireNotNull(nodeAddress), false) },
-                    modifier = Modifier.fillMaxWidth(),
-                    enabled = !hardwareState.busy,
-                ) {
-                    Text("Red light OFF (0x1A)")
-                }
-                OutlinedButton(
-                    onClick = { onEngage(requireNotNull(nodeAddress)) },
-                    modifier = Modifier.fillMaxWidth(),
-                    enabled = !hardwareState.busy,
-                ) {
-                    Text("Engage electromagnet (0x13)")
-                }
-                OutlinedButton(
-                    onClick = { onRelease(requireNotNull(nodeAddress)) },
-                    modifier = Modifier.fillMaxWidth(),
-                    enabled = !hardwareState.busy,
-                ) {
-                    Text("Release electromagnet (0x14)")
+                    if (validNode) {
+                        Button(
+                            onClick = { onNodeStatus(requireNotNull(nodeAddress)) },
+                            modifier = Modifier.fillMaxWidth(),
+                            enabled = !hardwareState.busy,
+                        ) {
+                            Text("Read node state (0x17)")
+                        }
+                        OutlinedButton(
+                            onClick = { onReadFob(requireNotNull(nodeAddress)) },
+                            modifier = Modifier.fillMaxWidth(),
+                            enabled = !hardwareState.busy,
+                        ) {
+                            Text("Read fob at node (0x15)")
+                        }
+                        OutlinedButton(
+                            onClick = { onBlueLight(requireNotNull(nodeAddress), true) },
+                            modifier = Modifier.fillMaxWidth(),
+                            enabled = !hardwareState.busy,
+                        ) {
+                            Text("Blue light ON (0x11)")
+                        }
+                        OutlinedButton(
+                            onClick = { onBlueLight(requireNotNull(nodeAddress), false) },
+                            modifier = Modifier.fillMaxWidth(),
+                            enabled = !hardwareState.busy,
+                        ) {
+                            Text("Blue light OFF (0x12)")
+                        }
+                        OutlinedButton(
+                            onClick = { onRedLight(requireNotNull(nodeAddress), true) },
+                            modifier = Modifier.fillMaxWidth(),
+                            enabled = !hardwareState.busy,
+                        ) {
+                            Text("Red light ON (0x19)")
+                        }
+                        OutlinedButton(
+                            onClick = { onRedLight(requireNotNull(nodeAddress), false) },
+                            modifier = Modifier.fillMaxWidth(),
+                            enabled = !hardwareState.busy,
+                        ) {
+                            Text("Red light OFF (0x1A)")
+                        }
+                        OutlinedButton(
+                            onClick = { onEngage(requireNotNull(nodeAddress)) },
+                            modifier = Modifier.fillMaxWidth(),
+                            enabled = !hardwareState.busy,
+                        ) {
+                            Text("Engage electromagnet (0x13)")
+                        }
+                        OutlinedButton(
+                            onClick = { onRelease(requireNotNull(nodeAddress)) },
+                            modifier = Modifier.fillMaxWidth(),
+                            enabled = !hardwareState.busy,
+                        ) {
+                            Text("Release electromagnet (0x14)")
+                        }
+                    }
                 }
             }
         }
+    }
+}
+
+private enum class HardwarePage {
+    STATUS,
+    CONTROLS,
+}
+
+@Composable
+private fun HardwarePageSegment(
+    statusSelected: Boolean,
+    onStatus: () -> Unit,
+    onControls: () -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(24.dp))
+            .background(MaterialTheme.colorScheme.surfaceContainer)
+            .padding(4.dp),
+        horizontalArrangement = Arrangement.spacedBy(4.dp),
+    ) {
+        HardwareSegmentOption("Status", statusSelected, onStatus, Modifier.weight(1f))
+        HardwareSegmentOption("Controls", !statusSelected, onControls, Modifier.weight(1f))
+    }
+}
+
+@Composable
+private fun HardwareSegmentOption(
+    label: String,
+    selected: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Box(
+        modifier = modifier
+            .clip(RoundedCornerShape(20.dp))
+            .background(if (selected) MaterialTheme.colorScheme.surface else Color.Transparent)
+            .clickable(onClick = onClick)
+            .padding(vertical = 10.dp),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(
+            text = label,
+            style = MaterialTheme.typography.labelLarge,
+            fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Medium,
+            color = if (selected) {
+                MaterialTheme.colorScheme.onSurface
+            } else {
+                MaterialTheme.colorScheme.onSurfaceVariant
+            },
+            textAlign = TextAlign.Center,
+        )
     }
 }
 
@@ -1784,14 +2098,14 @@ private fun HardwareStatusCard(state: CabinetHardwareState) {
         )
         Text(
             text = "Port: " + state.portPath + " @ " + state.baudRate + " · Box " + state.boxAddress,
-            style = MaterialTheme.typography.bodySmall.merge(DataReadoutTextStyle),
+            style = MaterialTheme.typography.bodySmall.readout(),
         )
         if (state.keyReturnMonitoring) {
             Text("Key return monitor: active", style = MaterialTheme.typography.bodySmall)
         }
         Text(state.message, style = MaterialTheme.typography.bodySmall)
-        state.doorStatus?.let { Text(it, style = MaterialTheme.typography.bodySmall.merge(DataReadoutTextStyle)) }
-        state.nodeStatus?.let { Text(it, style = MaterialTheme.typography.bodySmall.merge(DataReadoutTextStyle)) }
+        state.doorStatus?.let { Text(it, style = MaterialTheme.typography.bodySmall.readout()) }
+        state.nodeStatus?.let { Text(it, style = MaterialTheme.typography.bodySmall.readout()) }
     }
     if (state.busy) {
         CircularProgressIndicator()

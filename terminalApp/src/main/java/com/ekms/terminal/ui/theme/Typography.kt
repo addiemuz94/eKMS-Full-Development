@@ -8,27 +8,15 @@ import androidx.compose.ui.text.font.FontWeight
 import com.ekms.terminal.R
 
 /**
- * Cavotec theme fonts (visual theme rework — CLAUDE.md "Terminal App UX
- * Baseline (Production)"). Two distinct voices, by design:
- * - Inter for UI text — labels, buttons, body copy, everything
- *   conversational. This is [MaterialTheme.typography]'s default, so it
- *   applies everywhere automatically without each screen opting in.
- * - IBM Plex Mono for data readouts — node addresses, timestamps, key
- *   IDs, the cabinet ID/MAC display — giving hardware/technical values a
- *   distinct visual voice from the surrounding UI text. This is opt-in:
- *   apply [DataReadoutTextStyle] explicitly on the specific `Text()` call
- *   showing the raw value, not the whole screen.
+ * Terminal type: Outfit for UI, IBM Plex Mono for hardware/technical readouts.
  *
- * Only Regular and Medium weights are bundled for each family (see
- * res/font/) — Bold/SemiBold requests fall back to Android's synthetic
- * (faux) bold, which is correct but not a true bold face. Add
- * inter_semibold.ttf/inter_bold.ttf/plex_mono_semibold.ttf if real bold
- * weights are supplied later; no code change needed beyond adding those
- * [Font] entries below.
+ * Apply [DataReadoutTextStyle] (or [TextStyle.readout]) only on the value itself —
+ * node addresses, MAC, cabinet ID, timestamps — not whole screens.
  */
-val InterFontFamily = FontFamily(
-    Font(R.font.inter_regular, FontWeight.Normal),
-    Font(R.font.inter_medium, FontWeight.Medium),
+val OutfitFontFamily = FontFamily(
+    Font(R.font.outfit_regular, FontWeight.Normal),
+    Font(R.font.outfit_medium, FontWeight.Medium),
+    Font(R.font.outfit_semibold, FontWeight.SemiBold),
 )
 
 val PlexMonoFontFamily = FontFamily(
@@ -36,28 +24,34 @@ val PlexMonoFontFamily = FontFamily(
     Font(R.font.plex_mono_medium, FontWeight.Medium),
 )
 
-private val defaultTypography = Typography()
+private val base = Typography()
+
+private fun TextStyle.outfit(weight: FontWeight? = null): TextStyle =
+    copy(fontFamily = OutfitFontFamily, fontWeight = weight ?: fontWeight)
 
 val EkmsTypography = Typography(
-    displayLarge = defaultTypography.displayLarge.copy(fontFamily = InterFontFamily),
-    displayMedium = defaultTypography.displayMedium.copy(fontFamily = InterFontFamily),
-    displaySmall = defaultTypography.displaySmall.copy(fontFamily = InterFontFamily),
-    headlineLarge = defaultTypography.headlineLarge.copy(fontFamily = InterFontFamily),
-    headlineMedium = defaultTypography.headlineMedium.copy(fontFamily = InterFontFamily),
-    headlineSmall = defaultTypography.headlineSmall.copy(fontFamily = InterFontFamily),
-    titleLarge = defaultTypography.titleLarge.copy(fontFamily = InterFontFamily),
-    titleMedium = defaultTypography.titleMedium.copy(fontFamily = InterFontFamily, fontWeight = FontWeight.Medium),
-    titleSmall = defaultTypography.titleSmall.copy(fontFamily = InterFontFamily, fontWeight = FontWeight.Medium),
-    bodyLarge = defaultTypography.bodyLarge.copy(fontFamily = InterFontFamily),
-    bodyMedium = defaultTypography.bodyMedium.copy(fontFamily = InterFontFamily),
-    bodySmall = defaultTypography.bodySmall.copy(fontFamily = InterFontFamily),
-    labelLarge = defaultTypography.labelLarge.copy(fontFamily = InterFontFamily, fontWeight = FontWeight.Medium),
-    labelMedium = defaultTypography.labelMedium.copy(fontFamily = InterFontFamily, fontWeight = FontWeight.Medium),
-    labelSmall = defaultTypography.labelSmall.copy(fontFamily = InterFontFamily, fontWeight = FontWeight.Medium),
+    displayLarge = base.displayLarge.outfit(),
+    displayMedium = base.displayMedium.outfit(),
+    displaySmall = base.displaySmall.outfit(),
+    headlineLarge = base.headlineLarge.outfit(),
+    headlineMedium = base.headlineMedium.outfit(),
+    headlineSmall = base.headlineSmall.outfit(),
+    titleLarge = base.titleLarge.outfit(),
+    titleMedium = base.titleMedium.outfit(FontWeight.Medium),
+    titleSmall = base.titleSmall.outfit(FontWeight.Medium),
+    bodyLarge = base.bodyLarge.outfit(),
+    bodyMedium = base.bodyMedium.outfit(),
+    bodySmall = base.bodySmall.outfit(),
+    labelLarge = base.labelLarge.outfit(FontWeight.Medium),
+    labelMedium = base.labelMedium.outfit(FontWeight.Medium),
+    labelSmall = base.labelSmall.outfit(FontWeight.Medium),
 )
 
-/** Apply explicitly to a `Text()` showing a raw hardware/technical value — see class doc. */
+/** Mono style for a raw hardware/technical value. */
 val DataReadoutTextStyle = TextStyle(
     fontFamily = PlexMonoFontFamily,
     fontWeight = FontWeight.Medium,
 )
+
+/** Merge mono readout onto an existing Material text style. */
+fun TextStyle.readout(): TextStyle = merge(DataReadoutTextStyle)

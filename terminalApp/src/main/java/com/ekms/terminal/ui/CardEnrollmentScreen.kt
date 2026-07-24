@@ -120,7 +120,7 @@ fun CardEnrollmentScreen(
     TerminalPage(padding) {
         BackButton(onBack = onBack, enabled = !scanning)
         HeaderCard(
-            title = "Card enrolment",
+            title = "Card enrollment",
             description = "Scan a personnel card or a key card once to store its raw UID against the selected record. The same physical reader is used for both — this is the only place that decides which one a card belongs to.",
         )
         notice?.let { message -> SuperAdminNoticeCard(message) }
@@ -147,14 +147,14 @@ fun CardEnrollmentScreen(
             CardEnrollmentCategory.PERSONNEL -> {
                 Text("Personnel record", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
                 if (users.isEmpty()) {
-                    Text("Enroll a user before enrolling a personnel card.")
+                    Text("Add personnel before enrolling a personnel card.")
                 } else {
                     OutlinedButton(
                         onClick = { selectedUserId = nextUserId(selectedUserId, users) },
                         modifier = Modifier.fillMaxWidth(),
                         enabled = !scanning,
                     ) {
-                        Text((selectedUser?.let { it.displayName + " · " + it.role.label } ?: "Select a user") + " · change")
+                        Text((selectedUser?.let { it.displayName + " · " + it.role.label } ?: "Select personnel") + " · change")
                     }
                 }
             }

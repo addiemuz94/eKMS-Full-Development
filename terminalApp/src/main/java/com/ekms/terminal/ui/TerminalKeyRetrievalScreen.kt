@@ -1,6 +1,9 @@
 package com.ekms.terminal.ui
 
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -14,11 +17,11 @@ import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
@@ -28,39 +31,21 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import com.ekms.shared.domain.KeySlot
 import com.ekms.shared.domain.ManagedKey
 import com.ekms.shared.domain.ManagedTerminalOption
 import com.ekms.terminal.hardware.VideoRecordingController
-import com.ekms.terminal.ui.theme.DataReadoutTextStyle
 import com.ekms.terminal.ui.theme.StatusTone
+import com.ekms.terminal.ui.theme.readout
 
 /**
- * Smart Key Cabinet User Manual V2.1, Section 2 — Key retrieval.
- *
- * One retrieval process, however the caller reached it: an ordinary user is
- * routed here directly after login, an administrator reaches the same
- * screen through the management menu. Layout Display and List Display are
- * only two ways to browse the same key set — both call [onTakeKey] the
- * moment a key is selected, with no dialog or confirmation step in between.
- * There is no recording notice or any other banner on this screen: when
- * [videoRecordingEnabled] is true (the Admin Menu's "Key retrieval video"
- * toggle), a recording session starts and stops with this screen silently —
- * see [VideoRecordingController] for why start()/stop() are still no-ops.
- *
- * Keys and slots come from the shared ManagedKey/KeySlot model so this
- * screen and the Website eventually read the same backend-synced data;
- * no terminal-only key/slot type is introduced here.
- *
- * Selecting an available key hands off to the Key Take Flow (CLAUDE.md
- * "Terminal App UX Baseline (Production)" §1, `TerminalKeyTakeScreen`) —
- * a dedicated full-screen takeover, the same pattern Section 3's return
- * flow already uses, so this grid is never visible again until that flow
- * ends. There is therefore no in-grid "pending/releasing" state to track
- * here; a key already marked in [takenKeyIds] is the only reason a cell
- * is disabled.
+ * Smart Key Cabinet User Manual V2.1, Section 2 — Key retrieval (soft M3).
+ * Layout / List labels and take-on-select behaviour unchanged.
  */
 @Composable
 fun TerminalKeyRetrievalScreen(
@@ -78,6 +63,13 @@ fun TerminalKeyRetrievalScreen(
     val keyById = remember(keys) { keys.associateBy { it.id } }
     val slotsByNode = remember(slots) { slots.associateBy { it.nodeAddress } }
     val videoRecorder = remember { VideoRecordingController() }
+
+    val availableCount = remember(slots, keyById, takenKeyIds) {
+        slots.count { slot ->
+            val key = slot.managedKeyId?.let { keyById[it] }
+            key != null && key.id !in takenKeyIds
+        }
+    }
 
     DisposableEffect(videoRecordingEnabled) {
         if (videoRecordingEnabled) {
@@ -101,21 +93,29 @@ fun TerminalKeyRetrievalScreen(
                 .padding(horizontal = horizontalPadding, vertical = 20.dp),
             verticalArrangement = Arrangement.spacedBy(14.dp),
         ) {
-            OutlinedButton(onClick = onBack) { Text(backLabel) }
-            Text("Take a key", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
+            TextButton(onClick = onBack) { Text(backLabel) }
+            Text(
+                text = "Take a key",
+                style = MaterialTheme.typography.headlineSmall,
+                fontWeight = FontWeight.SemiBold,
+            )
 
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                DisplayModeButton(
-                    label = "Layout Display",
-                    selected = displayMode == KeyDisplayMode.LAYOUT,
-                    onClick = { displayMode = KeyDisplayMode.LAYOUT },
-                )
-                DisplayModeButton(
-                    label = "List Display",
-                    selected = displayMode == KeyDisplayMode.LIST,
-                    onClick = { displayMode = KeyDisplayMode.LIST },
-                )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                SoftStat("Available", availableCount.toString(), Modifier.weight(1f))
+                SoftStat("Taken", takenKeyIds.size.toString(), Modifier.weight(1f))
+                SoftStat("Slots", terminal.configuredSlotCount.toString(), Modifier.weight(1f))
             }
+
+            SoftSegmented(
+                leftLabel = "Layout Display",
+                rightLabel = "List Display",
+                leftSelected = displayMode == KeyDisplayMode.LAYOUT,
+                onLeft = { displayMode = KeyDisplayMode.LAYOUT },
+                onRight = { displayMode = KeyDisplayMode.LIST },
+            )
 
             when (displayMode) {
                 KeyDisplayMode.LAYOUT -> KeyLayoutGrid(
@@ -137,17 +137,67 @@ fun TerminalKeyRetrievalScreen(
     }
 }
 
-private enum class KeyDisplayMode {
-    LAYOUT,
-    LIST,
+private enum class KeyDisplayMode { LAYOUT, LIST }
+
+@Composable
+private fun SoftStat(label: String, value: String, modifier: Modifier = Modifier) {
+    SoftCard(modifier = modifier, contentPadding = 12.dp) {
+        Text(value, style = MaterialTheme.typography.titleLarge.readout(), fontWeight = FontWeight.Medium)
+        Text(
+            text = label,
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
 }
 
 @Composable
-private fun DisplayModeButton(label: String, selected: Boolean, onClick: () -> Unit) {
-    if (selected) {
-        Button(onClick = onClick) { Text(label) }
-    } else {
-        OutlinedButton(onClick = onClick) { Text(label) }
+private fun SoftSegmented(
+    leftLabel: String,
+    rightLabel: String,
+    leftSelected: Boolean,
+    onLeft: () -> Unit,
+    onRight: () -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(24.dp))
+            .background(MaterialTheme.colorScheme.surfaceContainer)
+            .padding(4.dp),
+        horizontalArrangement = Arrangement.spacedBy(4.dp),
+    ) {
+        SoftSegmentOption(leftLabel, leftSelected, onLeft, Modifier.weight(1f))
+        SoftSegmentOption(rightLabel, !leftSelected, onRight, Modifier.weight(1f))
+    }
+}
+
+@Composable
+private fun SoftSegmentOption(
+    label: String,
+    selected: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Box(
+        modifier = modifier
+            .clip(RoundedCornerShape(20.dp))
+            .background(if (selected) MaterialTheme.colorScheme.surface else Color.Transparent)
+            .clickable(onClick = onClick)
+            .padding(vertical = 10.dp),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(
+            text = label,
+            style = MaterialTheme.typography.labelLarge,
+            fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Medium,
+            color = if (selected) {
+                MaterialTheme.colorScheme.onSurface
+            } else {
+                MaterialTheme.colorScheme.onSurfaceVariant
+            },
+            textAlign = TextAlign.Center,
+        )
     }
 }
 
@@ -160,12 +210,12 @@ private fun KeyLayoutGrid(
     onTakeKey: (ManagedKey) -> Unit,
 ) {
     LazyVerticalGrid(
-        columns = GridCells.Adaptive(minSize = 96.dp),
+        columns = GridCells.Adaptive(minSize = 110.dp),
         modifier = Modifier
             .fillMaxWidth()
             .heightIn(min = 200.dp, max = 640.dp),
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
-        verticalArrangement = Arrangement.spacedBy(8.dp),
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
         items((1..terminal.configuredSlotCount).toList()) { nodeAddress ->
             val key = slotsByNode[nodeAddress]?.managedKeyId?.let { keyById[it] }
@@ -189,17 +239,30 @@ private fun KeyNodeCell(
     val selectable = key != null && !taken
     StatusRingCard(
         tone = if (selectable) StatusTone.NORMAL else StatusTone.INACTIVE,
-        onClick = if (selectable) { { onTakeKey(key!!) } } else null,
-        contentPadding = 10.dp,
+        onClick = if (selectable) {
+            { onTakeKey(key!!) }
+        } else {
+            null
+        },
+        contentPadding = 12.dp,
     ) {
+        if (selectable) {
+            Text(
+                text = "Free",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.primary,
+                fontWeight = FontWeight.SemiBold,
+            )
+        }
         Text(
-            text = "Node $nodeAddress",
-            style = MaterialTheme.typography.labelSmall.merge(DataReadoutTextStyle),
+            text = "%02d".format(nodeAddress),
+            style = MaterialTheme.typography.headlineSmall.readout(),
+            fontWeight = FontWeight.Medium,
         )
         Text(
             text = key?.displayName ?: "Empty",
             style = MaterialTheme.typography.bodySmall,
-            fontWeight = FontWeight.SemiBold,
+            fontWeight = FontWeight.Medium,
             maxLines = 2,
         )
         if (taken) {
@@ -216,7 +279,9 @@ private fun KeyRetrievalList(
     onTakeKey: (ManagedKey) -> Unit,
 ) {
     val rows = slots
-        .mapNotNull { slot -> slot.managedKeyId?.let { keyId -> keyById[keyId] }?.let { key -> slot.nodeAddress to key } }
+        .mapNotNull { slot ->
+            slot.managedKeyId?.let { keyId -> keyById[keyId] }?.let { key -> slot.nodeAddress to key }
+        }
         .sortedBy { (nodeAddress, _) -> nodeAddress }
 
     if (rows.isEmpty()) {
@@ -227,13 +292,16 @@ private fun KeyRetrievalList(
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         rows.forEach { (nodeAddress, key) ->
             val taken = key.id in takenKeyIds
-            val selectable = !taken
             StatusRingCard(
-                tone = if (selectable) StatusTone.NORMAL else StatusTone.INACTIVE,
-                onClick = if (selectable) { { onTakeKey(key) } } else null,
+                tone = if (!taken) StatusTone.NORMAL else StatusTone.INACTIVE,
+                onClick = if (!taken) {
+                    { onTakeKey(key) }
+                } else {
+                    null
+                },
             ) {
                 Text(
-                    text = "Node $nodeAddress · ${key.displayName}",
+                    text = "Node %02d · %s".format(nodeAddress, key.displayName),
                     fontWeight = FontWeight.SemiBold,
                 )
                 Text(

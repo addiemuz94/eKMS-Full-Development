@@ -184,81 +184,36 @@ fun TerminalKeyTakeScreen(
             is TakeStage.WaitingForDoorClose -> StatusTone.ATTENTION
             is TakeStage.Failed, TakeStage.Abandoned -> StatusTone.ALARM
         }
-        StatusRingCard(
+        SoftWaitPanel(
             tone = tone,
+            title = when (val currentStage = stage) {
+                TakeStage.OpeningDoor -> "Opening door…"
+                TakeStage.WaitingForRemoval -> "Remove the key"
+                is TakeStage.WaitingForDoorClose -> "Close the door"
+                is TakeStage.Failed -> "Key take problem"
+                TakeStage.Abandoned -> "Key take cancelled"
+            },
+            message = when (val currentStage = stage) {
+                TakeStage.OpeningDoor -> "Unlocking node ${slot.nodeAddress} · ${key.displayName}"
+                TakeStage.WaitingForRemoval -> "Take ${key.displayName} now."
+                is TakeStage.WaitingForDoorClose ->
+                    if (currentStage.warningExpired) "Please close the door." else "Close the door to finish."
+                is TakeStage.Failed -> currentStage.message
+                TakeStage.Abandoned -> "The key was not taken in time. The slot has been re-secured."
+            },
+            showProgress = when (val current = stage) {
+                TakeStage.OpeningDoor -> true
+                is TakeStage.WaitingForDoorClose -> !current.warningExpired
+                else -> false
+            },
+            assistText = when (val current = stage) {
+                TakeStage.WaitingForRemoval -> "Door open"
+                is TakeStage.WaitingForDoorClose -> if (current.warningExpired) "Please close the door" else null
+                else -> null
+            },
+            assistAttention = true,
             modifier = Modifier.widthIn(max = 640.dp),
-            contentPadding = 24.dp,
-        ) {
-            Column(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.spacedBy(16.dp),
-            ) {
-                when (val currentStage = stage) {
-                    TakeStage.OpeningDoor -> {
-                        Text(
-                            text = "Opening node ${slot.nodeAddress}",
-                            style = MaterialTheme.typography.headlineMedium,
-                            fontWeight = FontWeight.Bold,
-                            textAlign = TextAlign.Center,
-                        )
-                        Text("Ejecting the door…", style = MaterialTheme.typography.titleMedium, textAlign = TextAlign.Center)
-                    }
-
-                    TakeStage.WaitingForRemoval -> {
-                        Text(
-                            text = "Node ${slot.nodeAddress} door open",
-                            style = MaterialTheme.typography.headlineMedium,
-                            fontWeight = FontWeight.Bold,
-                            textAlign = TextAlign.Center,
-                        )
-                        Text(
-                            text = "Take ${key.displayName} now.",
-                            style = MaterialTheme.typography.titleMedium,
-                            textAlign = TextAlign.Center,
-                        )
-                    }
-
-                    is TakeStage.WaitingForDoorClose -> {
-                        Text(
-                            text = "Key removed",
-                            style = MaterialTheme.typography.headlineMedium,
-                            fontWeight = FontWeight.Bold,
-                            textAlign = TextAlign.Center,
-                        )
-                        Text(
-                            text = if (currentStage.warningExpired) "Please close the door." else "Close the door to finish.",
-                            style = MaterialTheme.typography.titleMedium,
-                            textAlign = TextAlign.Center,
-                        )
-                    }
-
-                    is TakeStage.Failed -> {
-                        Text(
-                            text = "Key take problem",
-                            style = MaterialTheme.typography.headlineMedium,
-                            fontWeight = FontWeight.Bold,
-                            textAlign = TextAlign.Center,
-                        )
-                        Text(currentStage.message, style = MaterialTheme.typography.titleMedium, textAlign = TextAlign.Center)
-                    }
-
-                    TakeStage.Abandoned -> {
-                        Text(
-                            text = "Key take cancelled",
-                            style = MaterialTheme.typography.headlineMedium,
-                            fontWeight = FontWeight.Bold,
-                            textAlign = TextAlign.Center,
-                        )
-                        Text(
-                            text = "The key was not taken in time. The slot has been re-secured.",
-                            style = MaterialTheme.typography.titleMedium,
-                            textAlign = TextAlign.Center,
-                        )
-                    }
-                }
-            }
-        }
+        )
     }
 }
 

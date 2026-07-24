@@ -4,14 +4,22 @@ import android.content.Context
 import android.content.SharedPreferences
 import com.ekms.shared.api.ApiPaths
 import com.ekms.shared.api.AuthClientType
+import com.ekms.shared.api.CompleteCredentialEnrollmentRequest
+import com.ekms.shared.api.CreateAdminUserRequest
+import com.ekms.shared.api.CredentialStatusDto
+import com.ekms.shared.api.CredentialStatusListResponse
 import com.ekms.shared.api.LoginRequest
 import com.ekms.shared.api.LoginResponse
 import com.ekms.shared.api.RefreshTokenRequest
+import com.ekms.shared.api.RevokeCredentialEnrollmentRequest
 import com.ekms.shared.api.TerminalBootstrapRequest
 import com.ekms.shared.api.TerminalBootstrapResponse
+import com.ekms.shared.api.TerminalDto
 import com.ekms.shared.api.TerminalSyncAckResponse
 import com.ekms.shared.api.TerminalSyncPushRequest
 import com.ekms.shared.api.TerminalSyncPushResponse
+import com.ekms.shared.api.UserDto
+import com.ekms.shared.api.UserListResponse
 import com.ekms.shared.domain.AuditEvent
 import com.ekms.shared.sync.OfflineChange
 import io.ktor.client.HttpClient
@@ -199,6 +207,91 @@ class TerminalApiClient(context: Context) {
                 method = HttpMethod.Post,
                 path = ApiPaths.TERMINAL_DATA_DOWNLOAD,
                 body = """{"terminalId":"$terminalId"}""",
+                authenticated = true,
+                idempotent = true,
+            ),
+        )
+    }
+
+    suspend fun listUsers(siteId: String? = null): List<UserDto> {
+        ensureBaseUrl()
+        val query = if (siteId.isNullOrBlank()) "" else "?siteId=$siteId"
+        return decode<UserListResponse>(
+            send(
+                method = HttpMethod.Get,
+                path = "${ApiPaths.ADMIN_USERS}$query",
+                body = null,
+                authenticated = true,
+                idempotent = false,
+            ),
+        ).items
+    }
+
+    suspend fun createUser(request: CreateAdminUserRequest): UserDto {
+        ensureBaseUrl()
+        return decode(
+            send(
+                method = HttpMethod.Post,
+                path = ApiPaths.ADMIN_USERS,
+                body = json.encodeToString(request),
+                authenticated = true,
+                idempotent = true,
+            ),
+        )
+    }
+
+    suspend fun getTerminal(terminalId: String): TerminalDto {
+        ensureBaseUrl()
+        return decode(
+            send(
+                method = HttpMethod.Get,
+                path = "${ApiPaths.ADMIN_TERMINALS}/$terminalId",
+                body = null,
+                authenticated = true,
+                idempotent = false,
+            ),
+        )
+    }
+
+    suspend fun listUserCredentials(userId: String): List<CredentialStatusDto> {
+        ensureBaseUrl()
+        return decode<CredentialStatusListResponse>(
+            send(
+                method = HttpMethod.Get,
+                path = ApiPaths.ADMIN_USER_CREDENTIALS.replace("{userId}", userId),
+                body = null,
+                authenticated = true,
+                idempotent = false,
+            ),
+        ).items
+    }
+
+    suspend fun completeCredentialEnrollment(
+        userId: String,
+        request: CompleteCredentialEnrollmentRequest,
+    ): CredentialStatusDto {
+        ensureBaseUrl()
+        return decode(
+            send(
+                method = HttpMethod.Post,
+                path = ApiPaths.ADMIN_USER_CREDENTIALS_COMPLETE.replace("{userId}", userId),
+                body = json.encodeToString(request),
+                authenticated = true,
+                idempotent = true,
+            ),
+        )
+    }
+
+    suspend fun revokeCredentialEnrollment(
+        userId: String,
+        request: RevokeCredentialEnrollmentRequest,
+    ): CredentialStatusDto {
+        ensureBaseUrl()
+        return decode(
+            send(
+                method = HttpMethod.Post,
+                path = ApiPaths.ADMIN_USER_CREDENTIALS_REVOKE.replace("{userId}", userId),
+                body = json.encodeToString(request),
                 authenticated = true,
                 idempotent = true,
             ),

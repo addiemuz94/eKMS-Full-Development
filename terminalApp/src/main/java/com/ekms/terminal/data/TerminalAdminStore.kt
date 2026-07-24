@@ -38,6 +38,7 @@ class TerminalAdminStore(context: Context) {
         private const val KEY_SUPER_ADMIN_HASH = "super_admin_hash"
         private const val KEY_FORCE_PASSWORD_CHANGE = "force_password_change"
         private const val KEY_USERS = "managed_users"
+        private const val KEY_CACHED_PERSONNEL = "cached_server_personnel"
         private const val KEY_KEYS = "managed_keys"
         private const val KEY_ACCESS_GRANTS = "managed_access_grants"
         private const val KEY_CABINET_SETTINGS = "cabinet_settings"
@@ -152,7 +153,8 @@ class TerminalAdminStore(context: Context) {
         }
 
         val user = readUsers().firstOrNull { it.id == userId }
-            ?: return StoreResult.Error("This card's enrolled account no longer exists.")
+            ?: readCachedPersonnel().firstOrNull { it.id == userId }
+            ?: return StoreResult.Error("This card's enrolled personnel record no longer exists.")
 
         return StoreResult.Success(
             TerminalSession(
@@ -163,6 +165,68 @@ class TerminalAdminStore(context: Context) {
                 requiresPasswordChange = false,
             ),
         )
+    }
+
+    /**
+     * Caches server [UserDto]-shaped personnel so NFC card login can resolve
+     * backend UUIDs without a password hash. Replaces the previous cache wholesale.
+     */
+    @Synchronized
+    fun replaceCachedPersonnel(people: List<TerminalUser>) {
+        val array = JSONArray()
+        people.forEach { person ->
+            array.put(
+                JSONObject()
+                    .put("id", person.id)
+                    .put("displayName", person.displayName)
+                    .put("username", person.username)
+                    .put("role", person.role.name)
+                    .put("createdAtEpochMillis", person.createdAtEpochMillis),
+            )
+        }
+        preferences.edit().putString(KEY_CACHED_PERSONNEL, array.toString()).apply()
+    }
+
+    @Synchronized
+    fun cachedPersonnel(): List<TerminalUser> = readCachedPersonnel()
+
+    /**
+     * Personnel available for Card enrollment / Permission Settings when
+     * online: server cache first; otherwise local bootstrap accounts.
+     */
+    @Synchronized
+    fun personnelForEnrollment(preferServerCache: Boolean): List<TerminalUser> {
+        val cached = readCachedPersonnel()
+        if (preferServerCache && cached.isNotEmpty()) {
+            return cached.filterNot { it.role == TerminalUserRole.SUPER_ADMIN && it.id == "super_admin" }
+                .ifEmpty { cached }
+        }
+        return snapshot().users
+    }
+
+    private fun readCachedPersonnel(): List<TerminalUser> {
+        val raw = preferences.getString(KEY_CACHED_PERSONNEL, null) ?: return emptyList()
+        return runCatching {
+            val array = JSONArray(raw)
+            buildList {
+                for (index in 0 until array.length()) {
+                    val item = array.getJSONObject(index)
+                    val role = runCatching {
+                        TerminalUserRole.valueOf(item.getString("role"))
+                    }.getOrDefault(TerminalUserRole.TECHNICIAN)
+                    add(
+                        TerminalUser(
+                            id = item.getString("id"),
+                            displayName = item.getString("displayName"),
+                            username = item.getString("username"),
+                            role = role,
+                            isPreset = false,
+                            createdAtEpochMillis = item.optLong("createdAtEpochMillis", 0L),
+                        ),
+                    )
+                }
+            }
+        }.getOrDefault(emptyList())
     }
 
     @Synchronized
@@ -296,8 +360,10 @@ class TerminalAdminStore(context: Context) {
      */
     @Synchronized
     fun grantAccess(userId: String, keyId: String): StoreResult<TerminalAccessGrant> {
-        if (readUsers().none { it.id == userId }) {
-            return StoreResult.Error("Select an enrolled user before granting a key.")
+        val knownUser = readUsers().any { it.id == userId } ||
+            readCachedPersonnel().any { it.id == userId }
+        if (!knownUser) {
+            return StoreResult.Error("Select enrolled personnel before granting a key.")
         }
         if (readKeys().none { it.id == keyId }) {
             return StoreResult.Error("Select an enrolled key before granting access.")
@@ -305,7 +371,7 @@ class TerminalAdminStore(context: Context) {
 
         val existingGrants = readAccessGrants()
         if (existingGrants.any { it.userId == userId && it.keyId == keyId }) {
-            return StoreResult.Error("That exact key is already granted to this user.")
+            return StoreResult.Error("That exact key is already granted to this personnel.")
         }
 
         val grant = TerminalAccessGrant(

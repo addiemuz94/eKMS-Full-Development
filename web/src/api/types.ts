@@ -29,6 +29,17 @@ export type UserDto = {
   revision: number
 }
 
+export type CredentialStatusDto = {
+  id: string
+  userId: string
+  credentialKind: string
+  enrollmentStatus: string
+  terminalId?: string | null
+  enrollmentReference?: string | null
+  note?: string | null
+  revision: number
+}
+
 export type KeyDto = {
   id: string
   siteId: string

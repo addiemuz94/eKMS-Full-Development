@@ -1,10 +1,27 @@
-import { useEffect, useState, type FormEvent } from 'react'
+import { useCallback, useEffect, useState, type FormEvent } from 'react'
 import { api, ApiError } from '../api/client'
-import type { SiteDto, UserDto } from '../api/types'
+import type { CredentialStatusDto, SiteDto, TerminalDto, UserDto } from '../api/types'
+
+function nfcStatusLabel(status: string | undefined): string {
+  switch (status) {
+    case 'ACTIVE':
+      return 'Active'
+    case 'PENDING_TERMINAL_ENROLLMENT':
+      return 'Pending terminal'
+    case 'NOT_ASSIGNED':
+      return 'Not assigned'
+    default:
+      return status ? status.replaceAll('_', ' ').toLowerCase() : 'Not assigned'
+  }
+}
 
 export function PersonnelPage() {
   const [people, setPeople] = useState<UserDto[]>([])
   const [sites, setSites] = useState<SiteDto[]>([])
+  const [terminals, setTerminals] = useState<TerminalDto[]>([])
+  const [cardStatusByUser, setCardStatusByUser] = useState<Record<string, CredentialStatusDto | null>>(
+    {},
+  )
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   const [open, setOpen] = useState(false)
@@ -14,24 +31,53 @@ export function PersonnelPage() {
   const [siteId, setSiteId] = useState('')
   const [password, setPassword] = useState('')
 
-  async function reload() {
+  const loadCardStatuses = useCallback(async (userRows: UserDto[]) => {
+    const entries = await Promise.all(
+      userRows.map(async (person) => {
+        try {
+          const creds = await api.listUserCredentials(person.id)
+          const nfc = creds.find((c) => c.credentialKind === 'NFC_CARD') ?? null
+          return [person.id, nfc] as const
+        } catch {
+          return [person.id, null] as const
+        }
+      }),
+    )
+    setCardStatusByUser(Object.fromEntries(entries))
+  }, [])
+
+  const reload = useCallback(async () => {
     setBusy(true)
     setError(null)
     try {
-      const [userRows, siteRows] = await Promise.all([api.listUsers(), api.listSites()])
+      const [userRows, siteRows, terminalRows] = await Promise.all([
+        api.listUsers(),
+        api.listSites(),
+        api.listTerminals(),
+      ])
       setPeople(userRows)
       setSites(siteRows)
-      if (!siteId && siteRows[0]) setSiteId(siteRows[0].id)
+      setTerminals(terminalRows)
+      setSiteId((current) => current || siteRows[0]?.id || '')
+      await loadCardStatuses(userRows)
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'Failed to load personnel')
     } finally {
       setBusy(false)
     }
-  }
+  }, [loadCardStatuses])
 
   useEffect(() => {
     void reload()
-  }, [])
+  }, [reload])
+
+  useEffect(() => {
+    const onFocus = () => {
+      void reload()
+    }
+    window.addEventListener('focus', onFocus)
+    return () => window.removeEventListener('focus', onFocus)
+  }, [reload])
 
   function siteLabel(ids?: string[]) {
     if (!ids?.length) return '—'
@@ -56,7 +102,27 @@ export function PersonnelPage() {
       setPassword('')
       await reload()
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : 'Failed to create user')
+      setError(err instanceof ApiError ? err.message : 'Failed to create personnel')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function requestNfcEnrollment(person: UserDto) {
+    setBusy(true)
+    setError(null)
+    try {
+      const unitId = person.assignedSiteIds?.[0]
+      const terminalId =
+        terminals.find((t) => t.siteId === unitId)?.id ?? terminals[0]?.id ?? null
+      await api.requestCredentialEnrollment(person.id, {
+        credentialKind: 'NFC_CARD',
+        terminalId,
+        note: 'Requested from Website',
+      })
+      await reload()
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'Failed to request card enrollment')
     } finally {
       setBusy(false)
     }
@@ -67,7 +133,10 @@ export function PersonnelPage() {
       <div className="page-header">
         <div>
           <h1>Personnel Management</h1>
-          <p className="muted">Create and review personnel accounts assigned to units.</p>
+          <p className="muted">
+            Create and review personnel accounts assigned to units. Card enrollment is completed on
+            the terminal.
+          </p>
         </div>
         <button className="btn" type="button" onClick={() => setOpen(true)}>
           Add personnel
@@ -86,38 +155,55 @@ export function PersonnelPage() {
                 <th>Role</th>
                 <th>Status</th>
                 <th>Units</th>
+                <th>Card enrollment</th>
                 <th className="col-actions">Actions</th>
               </tr>
             </thead>
             <tbody>
-              {people.map((person) => (
-                <tr key={person.id}>
-                  <td className="cell-title">{person.displayName}</td>
-                  <td>{person.email}</td>
-                  <td>
-                    <span className="badge">{person.role}</span>
-                  </td>
-                  <td>{person.accountStatus || 'ACTIVE'}</td>
-                  <td>{siteLabel(person.assignedSiteIds)}</td>
-                  <td className="col-actions">
-                    {person.role !== 'SUPER_ADMIN' && (
-                      <button
-                        className="btn linkish"
-                        type="button"
-                        onClick={() =>
-                          void (async () => {
-                            if (!confirm('Move user to Recycle Bin?')) return
-                            await api.deleteUser(person.id)
-                            await reload()
-                          })()
-                        }
-                      >
-                        Recycle
-                      </button>
-                    )}
-                  </td>
-                </tr>
-              ))}
+              {people.map((person) => {
+                const card = cardStatusByUser[person.id]
+                return (
+                  <tr key={person.id}>
+                    <td className="cell-title">{person.displayName}</td>
+                    <td>{person.email}</td>
+                    <td>
+                      <span className="badge">{person.role}</span>
+                    </td>
+                    <td>{person.accountStatus || 'ACTIVE'}</td>
+                    <td>{siteLabel(person.assignedSiteIds)}</td>
+                    <td>
+                      <span className="badge">{nfcStatusLabel(card?.enrollmentStatus)}</span>
+                    </td>
+                    <td className="col-actions">
+                      {person.role !== 'SUPER_ADMIN' && (
+                        <>
+                          <button
+                            className="btn linkish"
+                            type="button"
+                            disabled={busy || card?.enrollmentStatus === 'ACTIVE'}
+                            onClick={() => void requestNfcEnrollment(person)}
+                          >
+                            Request NFC enrollment
+                          </button>
+                          <button
+                            className="btn linkish"
+                            type="button"
+                            onClick={() =>
+                              void (async () => {
+                                if (!confirm('Move personnel to Recycle Bin?')) return
+                                await api.deleteUser(person.id)
+                                await reload()
+                              })()
+                            }
+                          >
+                            Recycle
+                          </button>
+                        </>
+                      )}
+                    </td>
+                  </tr>
+                )
+              })}
             </tbody>
           </table>
         </div>
@@ -129,7 +215,9 @@ export function PersonnelPage() {
         <div className="dialog-backdrop" onClick={() => setOpen(false)}>
           <form className="dialog" onClick={(e) => e.stopPropagation()} onSubmit={onCreate}>
             <h2>Add personnel</h2>
-            <p className="dialog-copy">Create a new operator or admin account for the web and terminal ecosystem.</p>
+            <p className="dialog-copy">
+              Create a new operator or admin account for the web and terminal ecosystem.
+            </p>
             <div className="field">
               <label>Display name</label>
               <input value={displayName} onChange={(e) => setDisplayName(e.target.value)} required />
