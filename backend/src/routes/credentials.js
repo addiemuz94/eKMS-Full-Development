@@ -27,6 +27,12 @@ function mapCred(row) {
   };
 }
 
+/** TERMINAL_DEVICE-scoped tokens have no real user behind them — never attribute an audit
+ * record's actorUserId to a terminal's own id. See requireSuperAdminOrAllowedTerminalDevice. */
+function actorUserIdFor(req) {
+  return req.auth?.role === 'TERMINAL_DEVICE' ? null : req.auth.sub;
+}
+
 async function requireActiveUser(userId, res) {
   const [users] = await pool.execute(
     `SELECT id FROM users WHERE id = :id AND lifecycle_state = 'ACTIVE' LIMIT 1`,
@@ -122,7 +128,7 @@ router.post('/', async (req, res) => {
 
   await writeAudit({
     eventType: 'USER_CREDENTIAL_ENROLLMENT_REQUESTED',
-    actorUserId: req.auth.sub,
+    actorUserId: actorUserIdFor(req),
     terminalId: parsed.data.terminalId ?? null,
     entityType: 'CREDENTIAL',
     entityId: id,
@@ -214,7 +220,7 @@ router.post('/complete', async (req, res) => {
 
   await writeAudit({
     eventType: 'USER_CREDENTIAL_ENROLLED',
-    actorUserId: req.auth.sub,
+    actorUserId: actorUserIdFor(req),
     terminalId: parsed.data.terminalId ?? null,
     entityType: 'CREDENTIAL',
     entityId: id,
@@ -270,7 +276,7 @@ router.post('/revoke', async (req, res) => {
 
   await writeAudit({
     eventType: 'USER_CREDENTIAL_REVOKED',
-    actorUserId: req.auth.sub,
+    actorUserId: actorUserIdFor(req),
     terminalId: null,
     entityType: 'CREDENTIAL',
     entityId: existing[0].id,

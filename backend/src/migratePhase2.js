@@ -49,6 +49,7 @@ async function migrate() {
   await applySqlFile('003_phase4.sql');
   await applySqlFile('004_unit_hierarchy.sql', { ignoreDuplicates: true });
   await applySqlFile('005_credential_enrollment_reference.sql', { ignoreDuplicates: true });
+  await applySqlFile('006_registration_and_pairing.sql', { ignoreDuplicates: true });
   process.exit(0);
 }
 

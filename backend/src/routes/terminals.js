@@ -10,8 +10,12 @@ import {
   nowMs,
   writeAudit,
 } from '../util.js';
+import { issuePairingCode, revokeTerminalSessions } from './pairing.js';
 
 const router = Router();
+
+// docs/Key Cabinet Communication Protocol.md §7.1: key node addresses range 1-127.
+const nodeCountSchema = z.number().int().min(1).max(127);
 
 function mapTerminal(row) {
   return {
@@ -24,6 +28,12 @@ function mapTerminal(row) {
     cabinetSerialPort: row.cabinet_serial_port,
     cabinetBaudRate: row.cabinet_baud_rate == null ? null : Number(row.cabinet_baud_rate),
     connectionState: row.connection_state,
+    vendorDeviceId: row.vendor_device_id,
+    nodeRows: row.node_rows == null ? null : Number(row.node_rows),
+    nodesPerRow: row.nodes_per_row == null ? null : Number(row.nodes_per_row),
+    latitude: row.latitude == null ? null : Number(row.latitude),
+    longitude: row.longitude == null ? null : Number(row.longitude),
+    paired: Boolean(row.paired),
     revision: Number(row.revision),
     lifecycle: lifecycleFromRow(row),
   };
@@ -57,9 +67,14 @@ router.post('/', async (req, res) => {
     name: z.string().min(1),
     boxAddress: z.number().int().positive(),
     serialNumber: z.string().nullable().optional(),
-    configuredSlotCount: z.number().int().nonnegative(),
+    configuredSlotCount: nodeCountSchema,
     cabinetSerialPort: z.string().nullable().optional(),
     cabinetBaudRate: z.number().int().nullable().optional(),
+    vendorDeviceId: z.string().max(255).nullable().optional(),
+    nodeRows: z.number().int().positive().nullable().optional(),
+    nodesPerRow: z.number().int().positive().nullable().optional(),
+    latitude: z.number().min(-90).max(90).nullable().optional(),
+    longitude: z.number().min(-180).max(180).nullable().optional(),
   });
   const parsed = schema.safeParse(req.body);
   if (!parsed.success) return badRequest(res, 'Invalid terminal payload');
@@ -75,11 +90,13 @@ router.post('/', async (req, res) => {
   await pool.execute(
     `INSERT INTO terminals
       (id, site_id, name, box_address, serial_number, configured_slot_count,
-       cabinet_serial_port, cabinet_baud_rate, connection_state, revision,
+       node_rows, nodes_per_row, cabinet_serial_port, cabinet_baud_rate,
+       latitude, longitude, connection_state, revision,
        lifecycle_state, created_at_epoch_ms, updated_at_epoch_ms)
      VALUES
       (:id, :siteId, :name, :boxAddress, :serialNumber, :configuredSlotCount,
-       :cabinetSerialPort, :cabinetBaudRate, 'UNKNOWN', 1,
+       :nodeRows, :nodesPerRow, :cabinetSerialPort, :cabinetBaudRate,
+       :latitude, :longitude, 'UNKNOWN', 1,
        'ACTIVE', :now, :now)`,
     {
       id,
@@ -88,11 +105,25 @@ router.post('/', async (req, res) => {
       boxAddress: parsed.data.boxAddress,
       serialNumber: parsed.data.serialNumber ?? null,
       configuredSlotCount: parsed.data.configuredSlotCount,
+      nodeRows: parsed.data.nodeRows ?? null,
+      nodesPerRow: parsed.data.nodesPerRow ?? null,
       cabinetSerialPort: parsed.data.cabinetSerialPort ?? null,
       cabinetBaudRate: parsed.data.cabinetBaudRate ?? null,
+      latitude: parsed.data.latitude ?? null,
+      longitude: parsed.data.longitude ?? null,
       now,
     },
   );
+  // vendor_device_id has its own column but no ADD-time value from the create schema above
+  // was wired into the INSERT — set it in one follow-up UPDATE alongside pairing-code issuance
+  // rather than growing the INSERT's column list further for a field that's commonly unknown
+  // at registration time and edited in afterward.
+  if (parsed.data.vendorDeviceId) {
+    await pool.execute(`UPDATE terminals SET vendor_device_id = :vendorDeviceId WHERE id = :id`, {
+      id,
+      vendorDeviceId: parsed.data.vendorDeviceId,
+    });
+  }
   await writeAudit({
     eventType: 'TERMINAL_CREATED',
     actorUserId: req.auth.sub,
@@ -101,8 +132,52 @@ router.post('/', async (req, res) => {
     entityType: 'TERMINAL',
     entityId: id,
   });
+
+  const pairing = await issuePairingCode(id);
+  await writeAudit({
+    eventType: 'TERMINAL_PAIRING_CODE_GENERATED',
+    actorUserId: req.auth.sub,
+    siteId: parsed.data.siteId,
+    terminalId: id,
+    entityType: 'TERMINAL',
+    entityId: id,
+  });
+
   const [rows] = await pool.execute(`SELECT * FROM terminals WHERE id = :id`, { id });
-  return res.status(201).json(mapTerminal(rows[0]));
+  return res.status(201).json({
+    terminal: mapTerminal(rows[0]),
+    pairingCode: pairing.code,
+    pairingCodeExpiresAtEpochMillis: pairing.expiresAtEpochMillis,
+  });
+});
+
+router.post('/:id/pairing-code', async (req, res) => {
+  const [existing] = await pool.execute(
+    `SELECT * FROM terminals WHERE id = :id AND lifecycle_state = 'ACTIVE' LIMIT 1`,
+    { id: req.params.id },
+  );
+  if (!existing[0]) return notFound(res, 'Terminal not found');
+
+  // Regenerating always revokes the terminal's current session — see the [CONFIRM]
+  // recommendation documented on RegeneratePairingCodeResponse in ApiContracts.kt: a lost
+  // device, factory reset, or re-pair should never leave the old session usable.
+  await revokeTerminalSessions(req.params.id);
+
+  const pairing = await issuePairingCode(req.params.id);
+  await writeAudit({
+    eventType: 'TERMINAL_PAIRING_CODE_GENERATED',
+    actorUserId: req.auth.sub,
+    siteId: existing[0].site_id,
+    terminalId: req.params.id,
+    entityType: 'TERMINAL',
+    entityId: req.params.id,
+  });
+
+  return res.json({
+    terminalId: req.params.id,
+    code: pairing.code,
+    expiresAtEpochMillis: pairing.expiresAtEpochMillis,
+  });
 });
 
 router.patch('/:id', async (req, res) => {
@@ -111,9 +186,14 @@ router.patch('/:id', async (req, res) => {
     name: z.string().min(1),
     boxAddress: z.number().int().positive(),
     serialNumber: z.string().nullable().optional(),
-    configuredSlotCount: z.number().int().nonnegative(),
+    configuredSlotCount: nodeCountSchema,
     cabinetSerialPort: z.string().nullable().optional(),
     cabinetBaudRate: z.number().int().nullable().optional(),
+    vendorDeviceId: z.string().max(255).nullable().optional(),
+    nodeRows: z.number().int().positive().nullable().optional(),
+    nodesPerRow: z.number().int().positive().nullable().optional(),
+    latitude: z.number().min(-90).max(90).nullable().optional(),
+    longitude: z.number().min(-180).max(180).nullable().optional(),
     expectedRevision: z.number().int().nonnegative(),
   });
   const parsed = schema.safeParse(req.body);
@@ -131,7 +211,10 @@ router.patch('/:id', async (req, res) => {
     `UPDATE terminals SET
       site_id = :siteId, name = :name, box_address = :boxAddress, serial_number = :serialNumber,
       configured_slot_count = :configuredSlotCount, cabinet_serial_port = :cabinetSerialPort,
-      cabinet_baud_rate = :cabinetBaudRate, revision = revision + 1, updated_at_epoch_ms = :now
+      cabinet_baud_rate = :cabinetBaudRate, vendor_device_id = :vendorDeviceId,
+      node_rows = :nodeRows, nodes_per_row = :nodesPerRow,
+      latitude = :latitude, longitude = :longitude,
+      revision = revision + 1, updated_at_epoch_ms = :now
      WHERE id = :id AND revision = :expectedRevision AND lifecycle_state = 'ACTIVE'`,
     {
       id: req.params.id,
@@ -139,6 +222,11 @@ router.patch('/:id', async (req, res) => {
       serialNumber: parsed.data.serialNumber ?? null,
       cabinetSerialPort: parsed.data.cabinetSerialPort ?? null,
       cabinetBaudRate: parsed.data.cabinetBaudRate ?? null,
+      vendorDeviceId: parsed.data.vendorDeviceId ?? null,
+      nodeRows: parsed.data.nodeRows ?? null,
+      nodesPerRow: parsed.data.nodesPerRow ?? null,
+      latitude: parsed.data.latitude ?? null,
+      longitude: parsed.data.longitude ?? null,
       now,
     },
   );

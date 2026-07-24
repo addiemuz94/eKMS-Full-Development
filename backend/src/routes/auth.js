@@ -5,9 +5,11 @@ import {
   hashToken,
   signAccessToken,
   signRefreshToken,
+  signTerminalAccessToken,
   verifyRefreshToken,
 } from '../middleware/auth.js';
 import { lifecycleFromRow, nowMs, writeAudit, badRequest } from '../util.js';
+import { mapTerminal } from './pairing.js';
 
 const loginSchema = z.object({
   identifier: z.string().min(1),
@@ -105,6 +107,43 @@ export async function login(req, res) {
   });
 }
 
+/**
+ * TERMINAL_DEVICE-scoped refresh — separate storage from the user-scoped `refresh_tokens`
+ * table (see terminal_refresh_tokens in backend/sql/006_registration_and_pairing.sql; that
+ * table exists specifically because refresh_tokens.user_id has a FK to users(id), so a
+ * terminal's id can never live there). Same JWT secret/algorithm as user refresh tokens —
+ * only the claim shape and the lookup table differ.
+ */
+async function refreshTerminalToken(refreshToken, payload, res) {
+  const tokenHash = hashToken(refreshToken);
+  const [tokens] = await pool.execute(
+    `SELECT * FROM terminal_refresh_tokens
+     WHERE token_hash = :tokenHash AND revoked = 0 AND expires_at_epoch_ms > :now
+     LIMIT 1`,
+    { tokenHash, now: nowMs() },
+  );
+  if (!tokens[0] || tokens[0].terminal_id !== payload.sub) {
+    return res.status(401).json({ error: 'UNAUTHORIZED', message: 'Refresh token revoked or expired' });
+  }
+
+  const [terminals] = await pool.execute(
+    `SELECT * FROM terminals WHERE id = :id AND lifecycle_state = 'ACTIVE' LIMIT 1`,
+    { id: payload.sub },
+  );
+  const terminal = terminals[0];
+  if (!terminal) {
+    return res.status(401).json({ error: 'UNAUTHORIZED', message: 'Terminal not available' });
+  }
+
+  const accessToken = signTerminalAccessToken(terminal);
+  return res.json({
+    accessToken,
+    refreshToken,
+    expiresAtEpochMillis: nowMs() + Number(process.env.JWT_ACCESS_TTL_SECONDS || 3600) * 1000,
+    terminal: mapTerminal(terminal),
+  });
+}
+
 export async function refresh(req, res) {
   const refreshToken = req.body?.refreshToken;
   if (!refreshToken) {
@@ -116,6 +155,10 @@ export async function refresh(req, res) {
     payload = verifyRefreshToken(refreshToken);
   } catch {
     return res.status(401).json({ error: 'UNAUTHORIZED', message: 'Invalid refresh token' });
+  }
+
+  if (payload.role === 'TERMINAL_DEVICE') {
+    return refreshTerminalToken(refreshToken, payload, res);
   }
 
   const tokenHash = hashToken(refreshToken);

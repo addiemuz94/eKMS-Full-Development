@@ -1,9 +1,10 @@
 import cors from 'cors';
 import dotenv from 'dotenv';
 import express from 'express';
-import { requireAuth, requireSuperAdmin } from './middleware/auth.js';
+import { requireAuth, requireSuperAdmin, requireSuperAdminOrAllowedTerminalDevice } from './middleware/auth.js';
 import { idempotency } from './middleware/idempotency.js';
 import { login, refresh } from './routes/auth.js';
+import { pairWithCode } from './routes/pairing.js';
 import sitesRouter from './routes/sites.js';
 import terminalsRouter from './routes/terminals.js';
 import usersRouter from './routes/users.js';
@@ -29,6 +30,12 @@ dotenv.config();
 
 const app = express();
 const port = Number(process.env.PORT || 3000);
+
+// Deployed behind Caddy (see backend/DEPLOY.md) — without this, req.ip is the proxy's own
+// address for every request, which would make pairing.js's per-IP rate limiter either
+// useless (never triggers) or, worse, a global lockout (every request looks like the same
+// "IP"). Trust the immediate proxy's X-Forwarded-For.
+app.set('trust proxy', true);
 
 const corsOrigins = (process.env.CORS_ORIGINS || '')
   .split(',')
@@ -64,9 +71,13 @@ app.get('/health', (_req, res) => {
 
 app.post('/v1/auth/login', login);
 app.post('/v1/auth/refresh', refresh);
+// Unauthenticated by necessity — a fresh, never-paired terminal has no token yet. See
+// TerminalPairWithCodeRequest's doc in shared/.../api/ApiContracts.kt for the full flow,
+// and pairing.js for the rate-limiting/lockout that makes this safe to expose.
+app.post('/v1/terminal/pair-with-code', pairWithCode);
 
 const admin = express.Router();
-admin.use(requireAuth, requireSuperAdmin, idempotency);
+admin.use(requireAuth, requireSuperAdminOrAllowedTerminalDevice, idempotency);
 admin.use('/users/:userId/credentials', credentialsRouter);
 admin.use('/sites', sitesRouter);
 admin.use('/terminals', terminalsRouter);

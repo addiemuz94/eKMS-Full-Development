@@ -24,6 +24,10 @@ import kotlinx.serialization.Serializable
 object ApiPaths {
     const val AUTH_LOGIN = "/v1/auth/login"
     const val AUTH_REFRESH = "/v1/auth/refresh"
+    /** Unauthenticated — the whole point is to hand a fresh terminal its first tokens. See TerminalPairWithCodeRequest. */
+    const val TERMINAL_PAIR_WITH_CODE = "/v1/terminal/pair-with-code"
+    /** Super Admin only. {id} is the backend terminal UUID. Returns RegeneratePairingCodeResponse (plaintext code shown once). */
+    const val ADMIN_TERMINAL_PAIRING_CODE = "/v1/admin/terminals/{id}/pairing-code"
     const val SUPER_ADMIN_DASHBOARD = "/v1/admin/dashboard"
     const val ADMIN_USERS = "/v1/admin/users"
     const val ADMIN_USER_CREDENTIALS = "/v1/admin/users/{userId}/credentials"
@@ -79,6 +83,7 @@ data class AuthUserProfile(
     val role: UserRole,
     val assignedSiteIds: Set<String> = emptySet(),
     val accountStatus: AccountStatus = AccountStatus.ACTIVE,
+    val staffId: String? = null,
     val revision: Long = 1,
 )
 
@@ -95,6 +100,62 @@ data class LoginResponse(
 @Serializable
 data class RefreshTokenRequest(
     val refreshToken: String,
+)
+
+/**
+ * One-time device pairing (Web Portal handoff — see CLAUDE.md "Web Portal — Pending UI Work
+ * (Registration Workflow)" for the full flow this backs).
+ *
+ * Replaces the old "Set server address -> Key Cabinet ID -> sign in with a Super Admin's own
+ * email/password" terminal setup path. A 6-digit numeric code is generated when a Super Admin
+ * registers a Key Cabinet on the web portal (`POST /v1/admin/terminals`) or explicitly
+ * regenerates one (`POST /v1/admin/terminals/{id}/pairing-code`); the terminal submits it here,
+ * unauthenticated, exactly once.
+ *
+ * Server-side invariants (see backend/src/routes/pairing.js):
+ * - Code expires 30 minutes after generation.
+ * - Single-use: consumed on first successful pairing, a second submission of the same code
+ *   always fails even if not yet expired.
+ * - Only the SHA-256 hash of the code is ever stored; the plaintext value exists only in the
+ *   one-time generation response (TerminalRegistrationResponse / RegeneratePairingCodeResponse).
+ * - Rate-limited per source IP address (see `pairing_attempts` table) — a 6-digit code is only
+ *   1,000,000 possible values, so brute-forcing this endpoint is a real risk, not theoretical.
+ */
+@Serializable
+data class TerminalPairWithCodeRequest(
+    val code: String,
+)
+
+/**
+ * Tokens are TERMINAL_DEVICE-scoped, not a human user's tokens — see the "Route enumeration"
+ * note on `requireSuperAdminOrAllowedTerminalDevice` in backend/src/middleware/auth.js for
+ * exactly which admin routes a terminal-scoped token may call. Shape deliberately
+ * mirrors [LoginResponse]'s token fields (accessToken/refreshToken/expiresAtEpochMillis) so
+ * terminalApp's existing token-storage code needs no structural change — only [terminal]
+ * replaces [LoginResponse.profile] as the thing being authenticated.
+ */
+@Serializable
+data class TerminalPairingResponse(
+    val accessToken: String,
+    val refreshToken: String,
+    val expiresAtEpochMillis: Long,
+    val terminal: TerminalDto,
+)
+
+/**
+ * Super Admin action on an existing terminal record — lost device, factory reset, or
+ * re-pairing to a different physical unit. Immediately revokes that terminal's current
+ * TERMINAL_DEVICE refresh token(s) (if any), so an old/lost device cannot keep syncing after
+ * a new code is issued. Does NOT affect a terminal still running the legacy manual-login
+ * pairing path (that path's tokens are ordinary Super Admin user tokens, tracked separately —
+ * see CLAUDE.md's terminal-pairing migration note).
+ */
+@Serializable
+data class RegeneratePairingCodeResponse(
+    val terminalId: String,
+    /** Plaintext 6-digit code — present only in this one response. Never retrievable again. */
+    val code: String,
+    val expiresAtEpochMillis: Long,
 )
 
 @Serializable
@@ -116,10 +177,19 @@ data class TerminalDto(
     val name: String,
     val boxAddress: Int,
     val serialNumber: String? = null,
+    /** Server-validated 1–127 (docs/Key Cabinet Communication Protocol.md §7.1). */
     val configuredSlotCount: Int = 0,
     val cabinetSerialPort: String? = null,
     val cabinetBaudRate: Int? = null,
     val connectionState: TerminalConnectionState = TerminalConnectionState.UNKNOWN,
+    /** Vendor-assigned physical device ID, distinct from [id] (backend UUID). See "Web Portal — Pending UI Work" in CLAUDE.md. */
+    val vendorDeviceId: String? = null,
+    val nodeRows: Int? = null,
+    val nodesPerRow: Int? = null,
+    val latitude: Double? = null,
+    val longitude: Double? = null,
+    /** True once this terminal has completed one-time-code pairing (see TerminalPairWithCodeRequest). */
+    val paired: Boolean = false,
     val revision: Long,
 )
 
@@ -131,6 +201,8 @@ data class UserDto(
     val role: UserRole,
     val assignedSiteIds: Set<String> = emptySet(),
     val accountStatus: AccountStatus = AccountStatus.ACTIVE,
+    /** External/employee identifier, distinct from [id]. */
+    val staffId: String? = null,
     val revision: Long,
 )
 
@@ -189,6 +261,8 @@ data class CreateAdminUserRequest(
     val role: UserRole,
     val assignedSiteIds: Set<String>,
     val password: String? = null,
+    /** External/employee identifier; optional, not required for account creation. */
+    val staffId: String? = null,
 )
 
 @Serializable
@@ -197,6 +271,7 @@ data class UpdateAdminUserRequest(
     val email: String,
     val role: UserRole,
     val assignedSiteIds: Set<String>,
+    val staffId: String? = null,
     val expectedRevision: Long,
 )
 
@@ -321,10 +396,30 @@ data class TerminalUpsertRequest(
     val name: String,
     val boxAddress: Int,
     val serialNumber: String? = null,
+    /** Server rejects anything outside 1–127 — see docs/Key Cabinet Communication Protocol.md §7.1. */
     val configuredSlotCount: Int,
     val cabinetSerialPort: String? = null,
     val cabinetBaudRate: Int? = null,
+    val vendorDeviceId: String? = null,
+    val nodeRows: Int? = null,
+    val nodesPerRow: Int? = null,
+    val latitude: Double? = null,
+    val longitude: Double? = null,
     val expectedRevision: Long? = null,
+)
+
+/**
+ * Response shape for `POST /v1/admin/terminals` (create/register) ONLY — a breaking change
+ * from the old bare-[TerminalDto] response, since registration now also mints a one-time
+ * pairing code that must be shown to the Super Admin immediately (never retrievable again
+ * after this response). `PATCH`/`GET`/list terminal endpoints still return plain [TerminalDto]
+ * — this wrapper exists only where a fresh code is actually being minted.
+ */
+@Serializable
+data class TerminalRegistrationResponse(
+    val terminal: TerminalDto,
+    val pairingCode: String,
+    val pairingCodeExpiresAtEpochMillis: Long,
 )
 
 @Serializable

@@ -30,9 +30,16 @@ function mapUser(row, siteIds) {
     role: row.role,
     assignedSiteIds: siteIds,
     accountStatus: row.account_status,
+    staffId: row.staff_id,
     revision: Number(row.revision),
     lifecycle: lifecycleFromRow(row),
   };
+}
+
+/** TERMINAL_DEVICE-scoped tokens have no real user behind them — never attribute an audit
+ * record's actorUserId to a terminal's own id. See requireSuperAdminOrAllowedTerminalDevice. */
+function actorUserIdFor(req) {
+  return req.auth?.role === 'TERMINAL_DEVICE' ? null : req.auth.sub;
 }
 
 async function replaceAssignments(conn, userId, siteIds) {
@@ -78,6 +85,7 @@ router.post('/', async (req, res) => {
     role: z.enum(['SUPER_ADMIN', 'TECHNICIAN', 'VENDOR']),
     assignedSiteIds: z.array(z.string().uuid()).default([]),
     password: z.string().min(8).optional(),
+    staffId: z.string().max(128).nullable().optional(),
   });
   const parsed = schema.safeParse(req.body);
   if (!parsed.success) return badRequest(res, 'Invalid user payload');
@@ -96,16 +104,17 @@ router.post('/', async (req, res) => {
     await conn.beginTransaction();
     await conn.execute(
       `INSERT INTO users
-        (id, display_name, email, password_hash, role, account_status, revision,
+        (id, display_name, email, password_hash, role, account_status, staff_id, revision,
          lifecycle_state, created_at_epoch_ms, updated_at_epoch_ms)
        VALUES
-        (:id, :displayName, :email, :passwordHash, :role, 'ACTIVE', 1, 'ACTIVE', :now, :now)`,
+        (:id, :displayName, :email, :passwordHash, :role, 'ACTIVE', :staffId, 1, 'ACTIVE', :now, :now)`,
       {
         id,
         displayName: parsed.data.displayName,
         email: parsed.data.email,
         passwordHash,
         role: parsed.data.role,
+        staffId: parsed.data.staffId ?? null,
         now,
       },
     );
@@ -123,7 +132,7 @@ router.post('/', async (req, res) => {
 
   await writeAudit({
     eventType: 'USER_ACCOUNT_STATUS_CHANGED',
-    actorUserId: req.auth.sub,
+    actorUserId: actorUserIdFor(req),
     entityType: 'USER',
     entityId: id,
     detail: 'USER_CREATED',
@@ -138,6 +147,7 @@ router.patch('/:id', async (req, res) => {
     email: z.string().email(),
     role: z.enum(['SUPER_ADMIN', 'TECHNICIAN', 'VENDOR']),
     assignedSiteIds: z.array(z.string().uuid()).default([]),
+    staffId: z.string().max(128).nullable().optional(),
     expectedRevision: z.number().int().nonnegative(),
   });
   const parsed = schema.safeParse(req.body);
@@ -159,7 +169,7 @@ router.patch('/:id', async (req, res) => {
     await conn.beginTransaction();
     const [result] = await conn.execute(
       `UPDATE users
-       SET display_name = :displayName, email = :email, role = :role,
+       SET display_name = :displayName, email = :email, role = :role, staff_id = :staffId,
            revision = revision + 1, updated_at_epoch_ms = :now
        WHERE id = :id AND revision = :expectedRevision AND lifecycle_state = 'ACTIVE'`,
       {
@@ -167,6 +177,7 @@ router.patch('/:id', async (req, res) => {
         displayName: parsed.data.displayName,
         email: parsed.data.email,
         role: parsed.data.role,
+        staffId: parsed.data.staffId ?? null,
         expectedRevision: parsed.data.expectedRevision,
         now,
       },

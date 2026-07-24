@@ -46,6 +46,8 @@ data class AdminUser(
     val assignedSiteIds: Set<String> = emptySet(),
     /** Disabled users remain visible to Super Admins but cannot authenticate. */
     val accountStatus: AccountStatus = AccountStatus.ACTIVE,
+    /** External/employee identifier, distinct from [id] (the internal UUID). Optional, not unique-enforced across every legacy record. */
+    val staffId: String? = null,
     val lifecycle: LifecycleMetadata,
 )
 
@@ -68,12 +70,27 @@ data class Terminal(
     val boxAddress: Int,
     val serialNumber: String? = null,
     val lifecycle: LifecycleMetadata,
-    /** Maximum configured key-node count for this cabinet. Valid node addresses are 1–127. */
+    /** Maximum configured key-node count for this cabinet. Valid node addresses are 1–127 (docs/Key Cabinet Communication Protocol.md §7.1) — enforced server-side. */
     val configuredSlotCount: Int = 0,
     /** Android Terminal-only serial details; Web and Mobile may display but never open this port. */
     val cabinetSerialPort: String? = null,
     val cabinetBaudRate: Int? = null,
     val connectionState: TerminalConnectionState = TerminalConnectionState.UNKNOWN,
+    /**
+     * The physical device's own vendor-assigned unique ID code (printed/burned into the
+     * hardware), distinct from [id] (the backend's internal UUID primary key). Optional —
+     * not every registered cabinet will have this recorded yet.
+     */
+    val vendorDeviceId: String? = null,
+    /** Structured node layout for the registration/UI grid — how many physical rows of key nodes this cabinet has. Null if not yet recorded. */
+    val nodeRows: Int? = null,
+    /** Nodes per row, paired with [nodeRows] — mirrors the vendor's own "Key node setting" layout concept rather than free text. */
+    val nodesPerRow: Int? = null,
+    /** Physical cabinet location, independent of (and more precise than) the owning [Site]'s address/city/province fields. */
+    val latitude: Double? = null,
+    val longitude: Double? = null,
+    /** True once this terminal has completed the one-time pairing-code handshake (see PairingCode docs in ApiContracts.kt). Never true for terminals still on the legacy manual-login pairing path. */
+    val paired: Boolean = false,
 )
 
 /** Configuration/status information only; never a command to operate cabinet hardware. */
@@ -193,4 +210,10 @@ enum class AuditEventType {
     KEY_SLOT_UPDATED,
     ACCESS_GRANT_CREATED,
     ACCESS_GRANT_UPDATED,
+    /** A pairing code was generated or regenerated for a terminal record (Super Admin action). */
+    TERMINAL_PAIRING_CODE_GENERATED,
+    /** A terminal successfully paired using its one-time code and received TERMINAL_DEVICE-scoped tokens. */
+    TERMINAL_PAIRED,
+    /** A pairing attempt was rejected: wrong code, expired code, already-consumed code, or rate-limited. */
+    TERMINAL_PAIRING_FAILED,
 }

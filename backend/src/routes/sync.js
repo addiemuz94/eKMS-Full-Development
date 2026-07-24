@@ -6,6 +6,14 @@ import { badRequest, lifecycleFromRow, newId, notFound, nowMs, writeAudit } from
 const bootstrapRouter = Router();
 const conflictsRouter = Router();
 
+/** TERMINAL_DEVICE-scoped tokens have no real user behind them — never attribute an audit
+ * record's actorUserId to a terminal's own id. See requireSuperAdminOrAllowedTerminalDevice.
+ * (`conflictsRouter` is admin-only and unreachable by terminal tokens, so this only matters
+ * for `bootstrapRouter`'s routes.) */
+function actorUserIdFor(req) {
+  return req.auth?.role === 'TERMINAL_DEVICE' ? null : req.auth?.sub || null;
+}
+
 function mapUser(row, siteIds) {
   return {
     id: row.id,
@@ -486,7 +494,7 @@ bootstrapRouter.post('/push', async (req, res) => {
 
   await writeAudit({
     eventType: conflicts.length > 0 ? 'CONFLICT_CREATED' : 'TERMINAL_UPDATED',
-    actorUserId: req.auth?.sub || null,
+    actorUserId: actorUserIdFor(req),
     terminalId: parsed.data.terminalId,
     siteId: terminal.site_id,
     entityType: 'TERMINAL',
