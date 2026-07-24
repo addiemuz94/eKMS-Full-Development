@@ -8,7 +8,6 @@ import org.json.JSONObject
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.security.KeyStore
-import java.security.SecureRandom
 import java.util.UUID
 import javax.crypto.Cipher
 import javax.crypto.KeyGenerator
@@ -46,14 +45,12 @@ class FaceProfileStore(context: Context) {
         private const val PROFILE_IDS_KEY = "profile_ids"
         private const val KEY_ALIAS = "ekms_face_profile_key_v1"
         private const val GCM_TAG_LENGTH_BITS = 128
-        private const val IV_SIZE_BYTES = 12
         private const val FLOAT_SIZE_BYTES = 4
         private const val SCHEMA_VERSION = "face-profile-v1"
     }
 
     private val applicationContext = context.applicationContext
     private val preferences = applicationContext.getSharedPreferences(PREFERENCES_NAME, Context.MODE_PRIVATE)
-    private val secureRandom = SecureRandom()
 
     fun save(
         profileId: String,
@@ -65,9 +62,7 @@ class FaceProfileStore(context: Context) {
         require(embedding.isNotEmpty()) { "Face embedding must not be empty." }
         require(sampleCount > 0) { "Sample count must be positive." }
 
-        val iv = ByteArray(IV_SIZE_BYTES)
-        secureRandom.nextBytes(iv)
-        val encryptedEmbedding = encrypt(plaintext = floatsToBytes(embedding), iv = iv, profileId = profileId)
+        val (iv, encryptedEmbedding) = encrypt(plaintext = floatsToBytes(embedding), profileId = profileId)
         val enrollmentReference = "faceref_${UUID.randomUUID()}"
 
         val existingIds = profileIds().toMutableSet()
@@ -128,11 +123,24 @@ class FaceProfileStore(context: Context) {
 
     private fun profileIds(): Set<String> = preferences.getStringSet(PROFILE_IDS_KEY, emptySet())?.toSet().orEmpty()
 
-    private fun encrypt(plaintext: ByteArray, iv: ByteArray, profileId: String): ByteArray {
+    /**
+     * Returns the (IV, ciphertext) pair. Deliberately does NOT accept a caller-supplied IV —
+     * an AndroidKeyStore AES/GCM key built with the (default) `setRandomizedEncryptionRequired(true)`
+     * rejects `Cipher.init(ENCRYPT_MODE, key, GCMParameterSpec(...))` outright
+     * (`InvalidAlgorithmParameterException: Caller-provided IV not permitted`) — only decrypt may
+     * specify the IV explicitly (it must, to know which one was used). Confirmed live on real
+     * hardware: the tester's original pattern (pre-generate an IV, pass it to `cipher.init` for
+     * ENCRYPT_MODE) built and ran fine everywhere except an actual AndroidKeyStore-backed device,
+     * where it fails every time — a real gap FakeSerialTransport-style/compile-only verification
+     * could never have caught. The Keystore-generated IV is read back via [Cipher.getIV] after
+     * `init`, before [Cipher.doFinal] is called.
+     */
+    private fun encrypt(plaintext: ByteArray, profileId: String): Pair<ByteArray, ByteArray> {
         val cipher = Cipher.getInstance("AES/GCM/NoPadding")
-        cipher.init(Cipher.ENCRYPT_MODE, getOrCreateSecretKey(), GCMParameterSpec(GCM_TAG_LENGTH_BITS, iv))
+        cipher.init(Cipher.ENCRYPT_MODE, getOrCreateSecretKey())
         cipher.updateAAD(associatedData(profileId))
-        return cipher.doFinal(plaintext)
+        val ciphertext = cipher.doFinal(plaintext)
+        return cipher.iv to ciphertext
     }
 
     private fun decrypt(ciphertext: ByteArray, iv: ByteArray, profileId: String): ByteArray {

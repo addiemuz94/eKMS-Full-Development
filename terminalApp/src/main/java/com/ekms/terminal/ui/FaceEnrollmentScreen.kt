@@ -111,6 +111,16 @@ fun FaceEnrollmentScreen(
 
     LaunchedEffect(textureView, hasCameraPermission) {
         if (!hasCameraPermission) return@LaunchedEffect
+        // AndroidView can attach the TextureView and have its SurfaceTexture become available
+        // before this effect runs (LaunchedEffect only starts after initial composition commits) -
+        // onSurfaceTextureAvailable only fires once, at first availability, so a listener attached
+        // after that point would otherwise never see it and the camera would never open. Handle an
+        // already-available surface directly instead of only relying on the callback.
+        val existingSurfaceTexture = textureView.surfaceTexture
+        if (textureView.isAvailable && existingSurfaceTexture != null) {
+            existingSurfaceTexture.setDefaultBufferSize(FRAME_WIDTH, FRAME_HEIGHT)
+            controller.attachSurface(cameraManager, Surface(existingSurfaceTexture))
+        }
         textureView.surfaceTextureListener = object : TextureView.SurfaceTextureListener {
             override fun onSurfaceTextureAvailable(surface: SurfaceTexture, width: Int, height: Int) {
                 surface.setDefaultBufferSize(FRAME_WIDTH, FRAME_HEIGHT)
@@ -164,7 +174,7 @@ fun FaceEnrollmentScreen(
         BackButton(onBack = { controller.cancel(); onBack() }, enabled = !busy)
         HeaderCard(
             title = "Face enrollment",
-            description = "Select a person, then complete the liveness check (blink + a random " +
+            description = "Select a person, then complete the liveness check (a random " +
                 "head turn) before the camera captures five samples. Only an encrypted numeric " +
                 "template is stored — no photo or video is ever saved.",
         )

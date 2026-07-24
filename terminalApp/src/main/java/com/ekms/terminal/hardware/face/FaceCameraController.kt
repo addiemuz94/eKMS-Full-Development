@@ -27,11 +27,13 @@ import java.util.concurrent.atomic.AtomicBoolean
  * screen's `TextureView` rather than owning its own transport end-to-end, so this controller
  * exposes [attachSurface]/[detachSurface] instead of a single `connect()`.
  *
- * **RGB-only active liveness for v1** (blink + head-turn challenge) — the user's explicit,
- * confirmed decision after reviewing the RGB-vs-RGB+IR tradeoff (see CLAUDE.md's face-enrollment
- * note). This is a real, not hypothetical, weaker anti-spoof tier than the vendor manual's
- * RGB+IR spec (section 4.8.3/4.8.4, not available in this repo) — planned as a future upgrade,
- * not presented as equivalent to it.
+ * **RGB-only active liveness for v1** (single-gesture random head-turn challenge) — the user's
+ * explicit, confirmed decision after reviewing the RGB-vs-RGB+IR tradeoff (see CLAUDE.md's
+ * face-enrollment note). This is a real, not hypothetical, weaker anti-spoof tier than the vendor
+ * manual's RGB+IR spec (section 4.8.3/4.8.4, not available in this repo) — planned as a future
+ * upgrade, not presented as equivalent to it. Originally a blink+head-turn sequence; the blink
+ * gate was removed after live hardware testing showed it unreliable against the frame-pump's
+ * polling interval — see [ActiveHeadTurnLivenessChallenge]'s class doc for the full reasoning.
  *
  * Scope: enrollment only. No verification/login matching is wired here — [FaceVerificationSession]
  * from the tester was deliberately not ported, same "enrollment only" scope Part B's fingerprint
@@ -61,7 +63,7 @@ class FaceCameraController(
     private val executor: ExecutorService = Executors.newSingleThreadExecutor()
     private val mainHandler = Handler(Looper.getMainLooper())
     private val embeddingExtractor = SFaceEmbeddingExtractor()
-    private val livenessChallenge = ActiveBlinkLivenessChallenge()
+    private val livenessChallenge = ActiveHeadTurnLivenessChallenge()
 
     private var faceEngine: OpenCvFaceEngine? = null
     private var landmarker: MediaPipeFaceLandmarkerEngine? = null
@@ -277,23 +279,19 @@ class FaceCameraController(
         val summary = engine.inspect(bitmap)
         val nowMillis = System.currentTimeMillis()
 
-        val update = if (summary.hasExactlyOneFace &&
-            summary.leftEyeBlinkScore != null &&
-            summary.rightEyeBlinkScore != null &&
-            summary.headTurnScore != null
-        ) {
-            livenessChallenge.consume(summary.leftEyeBlinkScore, summary.rightEyeBlinkScore, summary.headTurnScore, nowMillis)
+        val update = if (summary.hasExactlyOneFace && summary.headTurnScore != null) {
+            livenessChallenge.consume(summary.headTurnScore, nowMillis)
         } else {
-            livenessChallenge.consume(null, null, null, nowMillis)
+            livenessChallenge.consume(null, nowMillis)
         }
 
         when (update.state) {
-            ActiveBlinkLivenessChallenge.State.PASSED -> {
+            ActiveHeadTurnLivenessChallenge.State.PASSED -> {
                 lastLivenessPassedAtMillis = nowMillis
                 phase = FaceEnrollmentPhase.Enrolling(capturedSamples = 0, requiredSamples = FaceTemplateEnrollmentSession.DEFAULT_REQUIRED_SAMPLES, message = "Liveness passed. Hold one clear face still.")
             }
 
-            ActiveBlinkLivenessChallenge.State.FAILED -> {
+            ActiveHeadTurnLivenessChallenge.State.FAILED -> {
                 phase = FaceEnrollmentPhase.Failed(update.message)
             }
 
