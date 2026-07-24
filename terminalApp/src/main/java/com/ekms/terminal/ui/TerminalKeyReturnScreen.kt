@@ -19,6 +19,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -93,8 +94,9 @@ fun TerminalKeyReturnScreen(
     onEvent: (ReturnFlowOutcome) -> Unit,
     onCompleted: () -> Unit,
 ) {
+    val context = LocalContext.current
     val videoRecorder = remember { VideoRecordingController() }
-    val audio = remember { AudioFeedbackController() }
+    val audio = remember { AudioFeedbackController(context) }
     var stage by remember { mutableStateOf<ReturnStage>(ReturnStage.OpeningDoor) }
     var beeping by remember { mutableStateOf(false) }
     var beepLoud by remember { mutableStateOf(false) }
@@ -102,6 +104,10 @@ fun TerminalKeyReturnScreen(
     DisposableEffect(videoRecordingEnabled) {
         if (videoRecordingEnabled) videoRecorder.start("key_return")
         onDispose { videoRecorder.stop() }
+    }
+
+    DisposableEffect(audio) {
+        onDispose { audio.release() }
     }
 
     LaunchedEffect(key, slot) {
