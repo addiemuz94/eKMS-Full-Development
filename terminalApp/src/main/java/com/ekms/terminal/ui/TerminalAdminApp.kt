@@ -768,7 +768,7 @@ fun TerminalAdminApp() {
                                         hypothesisId = "B",
                                         location = "TerminalAdminApp.kt:onSave",
                                         message = "server createUser api error",
-                                        dataJson = """{"code":${error.statusCode},"msg":"${(error.message ?: "").replace("\"", "'").take(120)}"}""",
+                                        dataJson = """{"code":${error.status},"msg":"${(error.message ?: "").replace("\"", "'").take(120)}"}""",
                                     )
                                     // #endregion
                                     notice = error.message
