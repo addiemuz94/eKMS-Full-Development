@@ -1,10 +1,85 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+Guidance for agents working in this repository. **Read Directory + Production + Terminal API before changing sync/backend assumptions.**
+
+## Directory
+
+| Jump to | What it covers |
+|---|---|
+| [Project](#project) | What eKMS is; live URLs; agent scope |
+| [Production is already live](#production-is-already-live--do-not-reinvent-the-backend) | VPS / `kms-cvt.com` — backend already running |
+| [Terminal → live API](#terminal--live-api-how-terminalapp-reaches-the-portal-backend) | How terminalApp configures and calls `/v1` so data shows on the web portal |
+| [Toolchain](#toolchain-do-not-drift-from-this-baseline) | JDK / Gradle / Kotlin pins |
+| [Common commands](#common-commands) | Gradle + `web/` npm |
+| [Module architecture](#module-architecture) | shared / terminal / mobile / web / backend |
+| [Architectural boundaries](#non-negotiable-architectural-boundaries) | Hardware, no raw UIDs, revision-safe PATCH, soft-delete, … |
+| [Where things live](#where-things-live) | Important paths |
+| [Working in docs](#working-in-docs) | Handover doc rules |
+| [Terminal App UX Baseline](#terminal-app-ux-baseline-production--baseline--defined-enhancements) | Manual + documented enhancements |
+| [NFC UID Resolution Rule](#nfc-uid-resolution-rule-permanent) | Personnel vs key card lookup |
+| [Web/Mobile UX Consistency](#webmobile-app-ux-consistency) | Portal/mobile vs terminal |
+| [Project Status](#project-status) | **Start at “status truth”** if Completed bullets disagree |
+| [Known issues](#known-issues--not-yet-resolved) | Open work only |
+| [Next steps](#next-steps-in-order) | Priority order |
+| [Reference](#reference) | Vendor protocol / manual |
 
 ## Project
 
-eKMS is a Kotlin Multiplatform key-management system: an Android Terminal (physical key cabinet controller), an Android mobile Super Admin companion app, and a Super Admin web portal, all sharing domain models/policies/API contracts through a `shared` module. A real backend now exists (`backend/`, Express.js + MySQL, REST API at `/v1`) — terminalApp has real offline-first sync wiring against it (`TerminalApiClient`/`TerminalSyncCoordinator`/`TerminalSyncOutbox`), and the web portal is real-backend-connected for some workflow areas but still hardcoded/in-memory for others (see `docs/WEB_PORTAL_WORKFLOW_HANDOVER.md` and the per-area breakdown that should live in Project Status). `mobileApp` remains 100% local in-memory demo data with zero network code.
+eKMS is a Kotlin Multiplatform key-management system: an Android Terminal (physical key cabinet controller), an Android mobile Super Admin companion app, and a Super Admin web portal, all sharing domain models/policies/API contracts through a `shared` module. A real backend now exists (`backend/`, Express.js + MySQL, REST API at `/v1`) — terminalApp has real offline-first sync wiring against it (`TerminalApiClient`/`TerminalSyncCoordinator`/`TerminalSyncOutbox`), and the live Super Admin portal is the React app in `web/` (real-backend-connected for list/create/update/delete across the main admin areas — see Project Status). Some older areas (e.g. appointment-permissions client stubs) and full vendor-manual UX audit remain incomplete. `mobileApp` remains 100% local in-memory demo data with zero network code.
+
+### Production is already live — do not reinvent the backend
+
+**The API and Super Admin portal are already deployed on a VPS and reachable on the public internet.** Agents must not assume “there is no backend,” invent a new deploy, or treat local-only Node as a requirement to use the API.
+
+| URL | What |
+|---|---|
+| `https://kms-cvt.com/` | Live React portal (`web/` build served from the VPS) |
+| `https://kms-cvt.com/v1/...` | Live Express API |
+| `https://kms-cvt.com/health` | Health check |
+| Terminal Admin Menu → server address | `https://kms-cvt.com` (no trailing slash; **not** an `api.` subdomain) |
+
+Deploy/ops details live in `backend/DEPLOY.md` (Docker Compose prod, Caddy, Cloudflare DNS for `kms-cvt.com`). **Default agent scope:** work on `shared/`, `terminalApp/`, `web/`, and docs. Touch `backend/` only when the user explicitly asks for an API/schema/deploy change — and even then prefer updating the existing VPS deploy over standing up a parallel stack. A laptop without Node/Docker can still verify against production (browser → portal, terminal → `https://kms-cvt.com`); “no local Node” only means you cannot run `npm run build` / local Vite in that environment, **not** that the backend is unavailable.
+
+### Terminal → live API (how terminalApp reaches the portal backend)
+
+The terminal does **not** talk to the React UI. It talks to the **same backend** the portal uses (`https://kms-cvt.com/v1/...`). When the terminal creates personnel or completes card enrollment, the portal’s Personnel page sees it after refresh because both share MySQL on the VPS.
+
+**Wire-up on the device (Admin Menu):**
+
+1. Sign in locally if needed (first Super Admin bootstrap), open **Admin Menu**.
+2. **Set server address** → `https://kms-cvt.com` (no trailing slash).
+3. **Key Cabinet ID** → UUID of this cabinet’s terminal row from portal **Terminal Settings** (same id used in sync paths).
+4. Sign out, then sign in with a **portal** Super Admin email/password so `TerminalApiClient` stores JWT access/refresh tokens.
+5. Use **Bootstrap** / **Download** / **Push** (Admin Menu) for snapshot sync; Personnel Management / Card enrollment call admin credential APIs directly when server-linked.
+
+**Client code:** `terminalApp/.../data/TerminalApiClient.kt` builds requests as `{baseUrl}{ApiPaths.*}`. Canonical path strings live in `shared/.../api/ApiContracts.kt` (`object ApiPaths`). Auth header: `Authorization: Bearer <accessToken>` on every route except login/refresh. Login sends `clientType: TERMINAL`.
+
+**Endpoints terminalApp actually calls today** (base = `https://kms-cvt.com`):
+
+| Purpose | Method | Path | Auth |
+|---|---|---|---|
+| Sign in (store tokens) | `POST` | `/v1/auth/login` | No |
+| Refresh tokens | `POST` | `/v1/auth/refresh` | No (body refresh token) |
+| First-link / bootstrap snapshot | `POST` | `/v1/terminal/sync/bootstrap` | Yes |
+| Push offline outbox | `POST` | `/v1/terminal/sync/push` | Yes |
+| Read sync ack / revisions | `GET` (via client) | `/v1/terminal/sync/read` | Yes |
+| Download server snapshot | `GET` (via client) | `/v1/terminal/sync/download` | Yes |
+| List units (sites) for Add Personnel | `GET` | `/v1/admin/sites` | Yes |
+| Resolve this cabinet’s unit | `GET` | `/v1/admin/terminals/{terminalId}` | Yes |
+| List / create personnel | `GET` / `POST` | `/v1/admin/users` | Yes |
+| List credential enrollment status | `GET` | `/v1/admin/users/{userId}/credentials` | Yes |
+| Complete card enrollment (opaque ref only — never raw UID) | `POST` | `/v1/admin/users/{userId}/credentials/complete` | Yes |
+| Revoke card enrollment | `POST` | `/v1/admin/users/{userId}/credentials/revoke` | Yes |
+
+**What shows on the web portal after terminal actions:**
+
+| Terminal action | Portal place to check |
+|---|---|
+| Add personnel (server-linked) | **Personnel Management** — new user row |
+| Card enroll / revoke | **Personnel Management** — card enrollment column / status |
+| Bootstrap / Download / Push | **Data Synchronization** (+ underlying users/keys/slots/grants lists) |
+
+Full admin/report path catalog (portal-only and unused by terminal yet) is still in `ApiPaths` and `docs/API_HANDOVER_SUPER_ADMIN V4.md`. Do not invent a second base URL or `api.kms-cvt.com`.
 
 **Web portal note:** the Super Admin web portal is being migrated from the Kotlin/Wasm Compose `webApp` module to a React+Vite app at `web/`. `webApp` is now excluded from the Gradle build (`settings.gradle.kts` has `include(":webApp")` commented out — "Kotlin/Wasm webApp is frozen") and should be treated as a reference/legacy implementation, not a build target. New Super Admin portal work happens in `web/`.
 
@@ -49,7 +124,7 @@ Open the project in Android Studio at the repo root (not a module subfolder) wit
 | `mobileApp` | Android only | Super Admin companion app (thin UI layer today, no hardware access, no network code — still 100% local demo data). |
 | `webApp` | Kotlin/Wasm + Compose | **Frozen/legacy.** Excluded from `settings.gradle.kts` (`include(":webApp")` commented out). Was the Super Admin web portal following the supplier's Web manual workflow sections; superseded by `web/`. Kept in the tree as reference, not currently buildable as part of the Gradle build. |
 | `web` | React + Vite (TypeScript) | The current Super Admin web portal, replacing `webApp`. Calls the real backend directly over `/v1` (see `web/src/api/client.ts`). Not part of the Gradle build; builds via `npm`/Vite — see `web/README.md`. |
-| `backend` | Node.js (Express + MySQL) | The real REST API, mounted at `/v1` (`backend/src/index.js`): `auth`, `admin` (sites/terminals/users/keys/key-slots/access-grants/recycle-bin/sync-conflicts/event-definitions/schedules/personnel-groups/key-groups/multi-authentication-rules/appointment-reasons/appointments/appointment-permissions), `audit`, `reports`, `terminal/sync`. See `backend/DEPLOY.md`. |
+| `backend` | Node.js (Express + MySQL) | **Already running in production** on the VPS behind `https://kms-cvt.com/v1` (see “Production is already live” above and `backend/DEPLOY.md`). Source of truth for routes is this repo’s `backend/`; day-to-day agent work usually does **not** need to start or redeploy it unless the user asks. REST at `/v1`: `auth`, `admin` (sites/terminals/users/keys/key-slots/access-grants/recycle-bin/sync-conflicts/event-definitions/schedules/personnel-groups/key-groups/multi-authentication-rules/appointment-reasons/appointments/appointment-permissions), `audit`, `reports`, `terminal/sync`. |
 | `docs` | — | Backend/API handover documents; treat `docs/WEB_PORTAL_WORKFLOW_HANDOVER.md` and the `API_HANDOVER_SUPER_ADMIN` series as the living spec for the backend/portal contract. `docs/Backend_Integration_Handover.md` predates the real backend's existence and is now stale in places (still says "there is no backend today") — read it for the schema-fragmentation and NFC-UID background, which are still accurate, but don't trust its "not implemented" claims about the backend itself without checking `backend/` first. |
 
 ### Non-negotiable architectural boundaries
@@ -244,6 +319,20 @@ terminalApp consume the same source of truth rather than reimplementing it.
 
 ## Project Status
 
+### How to read this file (status truth — read this first)
+
+Project Status below is an **append-only session diary**. Older bullets were often left in place when later work superseded them. **If two bullets disagree, trust the newest Completed bullet and the sections in this "status truth" block — not an earlier Phase note that still says "NOT fixed".**
+
+| Topic | Conflicting claims that used to confuse agents | Current truth (as of commit documenting PATCH + door-eject cleanup) |
+|---|---|---|
+| **Door eject on key take** | Phase 10 says `releaseKeyForPickup` never calls `ejectDoor()` and is still deferred. Later text says the bug is already fixed / method deleted. | Production take path is **`beginKeyTake`** (blue light → unlock → **ejectDoor** → confirm open). `releaseKeyForPickup` is **deleted dead code**. Door-eject on take is **implemented in code** but **not yet hardware-verified** on F7G18P. |
+| **Key-card swipe → return** | Phase 10 says real enrolled keys never resolve a node (`matchedKey` always null). Later Known issues says fixed via `managedKeyAndSlotFor()`. | **Fixed** during Key Return Flow. Phase 10 "NOT fixed" text is historical only. |
+| **Web PATCH / in-place edit** | Early spot-check and older boundary notes said `web/` has create+delete only, no update. Later Completed says PATCH wired for ~10 resources. Intro used to say portal still "hardcoded/in-memory for others." One authoring note said "no Node" as if the API were unreachable. | **Code exists** in `web/src/api/client.ts` + edit UIs for Units/Terminals/Personnel/Keys/Permissions/Events/Schedules/Groups/Multi-Auth. Production API is **already at `https://kms-cvt.com/v1`** — verification is “rebuild/redeploy `web/` and click Edit,” not “stand up a backend.” A machine without local Node cannot `npm run build` there; it can still hit the live portal. Treat as **implemented, end-to-end edit verify pending**. Frozen `webApp` still has no edit UI (irrelevant — do not build it). |
+| **Personnel on web** | Next steps said "rebuild Personnel management properly on web/". | Core list/create/delete/update + card-enrollment status already exist on `web/` Personnel page. Remaining work is UX/audit polish and standing-alert features — **not** a greenfield rebuild. |
+| **Theme / fonts (terminal)** | Cavotec rewrite paragraph mentions Inter and older hex tokens, then says a later pull changed Outfit / hex. | Trust **`terminalApp/.../ui/theme/Color.kt` and `Typography.kt`** in the tree, not hex values quoted in older diary paragraphs. |
+
+**Agent rule:** When deciding whether a bug is open, check **Known issues / not yet resolved** and **Next steps** first. Only use older Completed Phase notes for history. Do not re-open struck-through or superseded items.
+
 ### Completed
 - Step 1-3: shared policy/sync/Recycle Bin foundation, Super Admin Users &
   Credentials, Sites & Terminals UI with cabinet-config validation
@@ -390,35 +479,23 @@ terminalApp consume the same source of truth rather than reimplementing it.
     to a fictional demo key, never a real enrolled one. Fixed by changing
     `CardEnrollmentScreen`'s `keys` param from `List<ManagedKey>` to
     `List<TerminalKey>` and passing `snapshot.keys`.
-  - **Bug found, NOT fixed (deferred — real design work, not a
-    one-liner):** `TerminalAdminApp`'s public-reader `CardUidMatch.Key`
-    branch looks up the matched key in `retrievalKeys` (demo `ManagedKey`
-    fixtures) using a real `TerminalKey.id` — two different ID
-    spaces/types that can never match. `matchedKey` is therefore always
-    null for a real enrolled key, so `TerminalKeyReturnScreen`'s
-    documented null-`slot` fallback ("no node to address... falls back to
-    the screen's original fixed-delay completion") fires every time:
-    confirmed live — tapping a real enrolled key fob at login correctly
-    resolved as `CardUidMatch.Key` and showed "insert the key," but sent
-    zero physical commands. This is the same "two incompatible key
-    schemas" gap the backend handover doc already flags
-    (`ManagedKey`+`KeySlot`, shared/demo, vs `TerminalKey`,
-    terminal-local) — the swipe-to-return production path is non-
-    functional for any real key until this is bridged.
-  - **Bug found, NOT fixed (deferred — needs a real design pass, same as
-    above):** `CabinetHardwareController.releaseKeyForPickup` (the
-    production key-retrieval path) only calls `engageElectromagnet` +
-    `testMicroSwitch` — it never calls `ejectDoor()`. Confirmed live: the
-    electromagnet unlocked correctly, but the door never physically
-    opened, so the key was unreachable. `beginKeyReturn` does not have
-    this bug (it already calls `ejectDoor()`). Manually sending 0x23 from
-    the admin console immediately fixed it, confirming the fix is just
-    adding the missing call — but the door-eject/electromagnet-engage
-    ordering and any UX implications are being left for a dedicated pass
-    rather than patched ad hoc.
-  - Both deferred bugs and both fixed bugs are logged in this session's
-    memory (`phase10_retrieval_door_eject_bug.md`,
-    `phase10_card_uid_bugs.md`) for continuity across conversations.
+  - **Bug found in Phase 10, FIXED later (do not reopen):** `TerminalAdminApp`'s
+    public-reader `CardUidMatch.Key` branch originally looked up the matched key
+    in demo `retrievalKeys` (`ManagedKey` fixtures) using a real `TerminalKey.id`
+    — two incompatible ID spaces, so `matchedKey` was always null and return
+    never drove hardware. **Superseded:** Key Return Flow added
+    `managedKeyAndSlotFor()` to bridge a real `TerminalKey` into a synthetic
+    `ManagedKey`/`KeySlot` at that call site. See status-truth table above.
+  - **Bug found in Phase 10, SUPERSEDED (do not patch `releaseKeyForPickup`):**
+    At the time, `CabinetHardwareController.releaseKeyForPickup` unlocked without
+    `ejectDoor()`. **Current truth:** production retrieval no longer uses that
+    method — it goes through Key Take Flow → `beginKeyTake` (includes
+    `ejectDoor()`). Dead `releaseKeyForPickup` was deleted later. Hardware
+    verification of `beginKeyTake` is still outstanding (Next steps).
+  - Both Phase-10 fixed bugs (CardEnrollmentScreen stale closure; demo-key list)
+    and the two items above (later resolved/superseded) are logged in session
+    memory (`phase10_retrieval_door_eject_bug.md`, `phase10_card_uid_bugs.md`)
+    for history — those memory files may still describe the pre-fix state.
 
 - **Key Take Flow (production enhancement, not in the supplier manual)**:
   implements CLAUDE.md's "Terminal App UX Baseline (Production)" §1 —
@@ -544,7 +621,7 @@ terminalApp consume the same source of truth rather than reimplementing it.
   - **Discovered `webApp` is now frozen and excluded from the Gradle build** (`settings.gradle.kts` commit `54d67ae`, same commit that added `web/`): "Website portal is now React in `/web`... Kotlin/Wasm webApp is frozen." `web/README.md` confirms: "Super Admin portal replacing the Kotlin/Wasm `webApp` module." This was not previously reflected anywhere in this file — see the Module architecture table and Project intro, now updated.
   - Confirmed current backend integration scope directly from code: `terminalApp` has real offline-first sync (`TerminalApiClient`/`TerminalSyncCoordinator`/`TerminalSyncOutbox`/`TerminalServerCache`); `web/`'s `src/api/client.ts` calls the real backend directly (no offline queue); `mobileApp` has zero network code anywhere (grepped, zero matches) — still 100% local demo data.
   - **Super Admin portal audit — ran against the frozen `webApp` first (full 13-section detail below), then spot-checked against `web/` and found `web/` has already moved well past what the `webApp` audit would suggest — do not treat the `webApp` findings as a proxy for `web/`'s current state.** `webApp` findings: Login, Data Synchronization, and (partially) Report/Operation Logs were genuinely wired to the real backend; Unit/Terminal/Personnel/Key/Permission Settings had list/create/soft-delete but **no in-place edit UI at all** (`ApiClient.updateSite/updateTerminal/updateUser/updateKey/updateKeySlot/updateAccessGrant` all defined against working backend `PATCH` routes but zero call sites); Event Setup, Schedule Settings, Multi-Authentication Management, and Appointment Authorization were **entirely hardcoded/in-memory demo data**, despite the backend already having full mounted routers for all of them (`backend/src/routes/phase4.js`). `webApp`'s `WebPortalModels.kt` also has several fully dead symbols from an earlier local-mutation design (`store.recycleBin`/`PortalDeletedRecord`/`restore()`/`purge()`, `archivedLifecycle()`/`restoredLifecycle()`/`purgedLifecycle()`, `DEMO_CREATED_AT`) — moot now that the module is frozen.
-    **`web/` spot-check (not a full re-audit — worth doing properly as a follow-up):** `web/src/api/client.ts` already has real, backend-calling `list`/`create`/`delete` methods for every area `webApp` was missing — event definitions, schedules, personnel/key groups, multi-auth rules, appointments + reasons + permissions, key-operations report, system/equipment logs — and confirmed these are actually called from real pages (`SimpleResources.tsx`, `MultiAuthPage.tsx`, `AppointmentsPage.tsx`, `LogsPages.tsx`), not just defined-but-unused. One gap did carry over identically at the time — **`web/src/api/client.ts` had zero `update`/PATCH methods for any resource** — same "create + delete, no edit" shape as `webApp` had. (Since fixed — see PATCH/update rollout below.) Personnel/Key-Records export-button completeness and dead-symbol cleanup were not re-checked against `web/`.
+    **`web/` spot-check (historical — superseded by PATCH rollout below):** at the time of this audit, `web/src/api/client.ts` already had real `list`/`create`/`delete` for every area `webApp` was missing, but **no `update`/PATCH**. That gap was later closed — see Completed “PATCH/update support” and the status-truth table. Do not treat this bullet as current state.
 
 - **Cavotec terminalApp visual theme rework** (color/typography/spacing refresh only — screen structure, flow order, and button placement were left exactly as-is per the request). Added `terminalApp/.../ui/theme/{Color.kt,Typography.kt,Theme.kt}` (`EkmsColors`/`LocalEkmsColors` for the two brand tokens with no Material3 slot — Success/Warning — plus every M3 `ColorScheme` slot exhaustively specified via alpha-compositing to prevent the default Material purple from bleeding through unset slots) and a reusable `StatusRingCard` composable, applied consistently across every hardware/lifecycle status indicator (login swipe panel, key retrieval grid, admin dashboard, hardware status card) rather than just the key grid. Verified live on real hardware via ADB screenshots for blue/grey/amber tones; the red/alarm tone was never caught in three attempts against live hardware timing and was explicitly deferred by the user ("move on for now, will polish this later") — still not confirmed as of this writing. **Note:** an external pull later iterated further on this same theme (see below) — the font and exact hex tokens described in the original request no longer match what's in the tree; treat `Color.kt`/`Typography.kt` as the current source of truth over this paragraph's specifics.
 
@@ -557,61 +634,30 @@ terminalApp consume the same source of truth rather than reimplementing it.
 - **Fix: `releaseKeyForPickup`'s door-eject bug turned out to already be fixed — the stale reference was the actual bug.** CLAUDE.md previously described `releaseKeyForPickup` as "the production key-retrieval path" that never called `ejectDoor()` (confirmed on hardware in Phase 10). Tracing the live wiring before patching anything: `TerminalKeyRetrievalScreen`'s key-tap already goes through `onTakeKey` → `TerminalAdminApp.takeKey()` → `TerminalKeyTakeScreen` → `hardwareController::beginKeyTake` (built during the Key Take Flow work, later in the same original session, before this pass) — and `beginKeyTake` already does `blueLightOn → engageElectromagnet → ejectDoor() → checkDoorStatus` correctly. `releaseKeyForPickup` had **zero call sites anywhere** — it became dead code the moment Key Take Flow shipped, but nobody deleted it or corrected this file's description of it. Deleted the method (confirmed dead, not patched-but-unused) and its now-dangling KDoc cross-reference on `beginKeyTake`. `:terminalApp:build` passes clean. **This does NOT mean the door-eject sequence is hardware-verified** — `beginKeyTake`/`pollForKeyRemoval`/`waitForDoorCloseAfterTake` have still only been compile/assemble-verified, never run on a real F7G18P; that remains the first item in Next Steps.
 
 - **PATCH/update support added across `web/`** (closes the boundary #4 gap flagged above). Verified backend PATCH correctness first rather than assuming from route presence: 11 resources have real, double-guarded `expectedRevision` enforcement (sites/terminals/users/keys/key-slots/access-grants individually, plus event-definitions/schedules/personnel-groups/key-groups/multi-authentication-rules/appointment-reasons via a shared `softDeleteRouter` factory in `phase4.js`). Added `update*` methods to `web/src/api/client.ts` for every resource with a real route (explicit for sites/terminals/users/keys/access-grants, a generic `updatePath()` helper — mirroring the existing `createPath`/`deletePath` — for the six `softDeleteRouter`-backed resources). Gave `ResourcePage.tsx` (the shared component behind Events/Schedules/User Groups/Key Groups/Appointment Reasons) a generic `update` prop — one change covers all five. Wired individual edit dialogs into `UnitsPage`/`TerminalsPage`/`PersonnelPage`/`KeysPage`/`PermissionsPage`/`MultiAuthPage`. Every edit path reads `expectedRevision` off the already-loaded row (no extra fetch — every backend `mapRow` already returns `revision`) and, on a `409`, shows an explicit "changed by someone else, reloading" message and reloads fresh data rather than retrying or force-overwriting. Appointments intentionally got no new edit UI (backend has no generic field-edit route by design — only review/permissions-patch, both already revision-safe); Key Slots has a working backend PATCH but no `web/` page to attach it to. Found and fixed one more `/v1/debug/agent-log` call site missed above (`PersonnelPage.tsx`). Found, did not fix (pre-existing, unrelated, dead code): `client.ts`'s `listAppointmentPermissions`/`createAppointmentPermission`/`deleteAppointmentPermission` call a backend router that only actually implements `PATCH /:id` — harmless today since no page calls them.
-  **Not verified in this environment — genuinely outstanding, not just a caveat:** this dev environment has no Node.js installed at all, so none of `tsc -b`, `vite build`, `npm run dev`, or a real edit-flow round-trip against the backend could be run. The change was verified by careful manual read-through against `web/tsconfig.app.json`'s strict `noUnusedLocals`/`noUnusedParameters` settings, not by compiling. **Run `cd web && npm run build` and manually test at least one edit (Units is simplest) against the real backend before trusting this is production-ready.**
+  **Authoring caveat (do not misread as “no backend”):** the machine that wrote the PATCH UI had no local Node, so it could not run `tsc`/`vite build` there. Production API/portal were already live at `https://kms-cvt.com`. Remaining gap is rebuild/redeploy `web/` and click through an edit on the live site — not inventing or starting a backend.
 
 ### Known issues / not yet resolved
-- `web/` (the live Super Admin portal) has not had a full section-by-section audit against the vendor manual — only a spot-check of its API client (see Project Status). It already covers real backend `list`/`create`/`delete`/`update` for every area `webApp` was missing (events, schedules, groups, multi-auth, appointments, reports/logs), but no page-level UI/UX audit or shared-type-equivalent check has been done.
-- **The new PATCH/update rollout across `web/` has not been compiled or run** — the dev environment it was built in has no Node.js installed at all, so `tsc -b`/`vite build`/`npm run dev` could not be executed, and no edit flow has been tested against the real backend. Verified only by careful manual read-through against `web/tsconfig.app.json`'s strict `noUnusedLocals`/`noUnusedParameters` settings. Run `cd web && npm run build` and manually test at least one edit (Units is simplest) before trusting this.
-- `client.ts`'s `listAppointmentPermissions`/`createAppointmentPermission`/`deleteAppointmentPermission` call a backend router (`appointmentPermissionsRouter`) that only actually implements `PATCH /:id` — no `GET`/`POST`/`DELETE` exist there. Harmless today since `AppointmentPermissionsPage.tsx` doesn't call any of them (it just re-renders `AppointmentsPage`), but it's dead/broken API surface, same pattern as the `webApp` audit found elsewhere.
-- Personnel management in webApp (frozen/legacy) was a shallow free-text form
-  (no role picker, no email/site validation) since the old
-  UserManagementPolicy-based flow was deleted — moot for webApp now that it's frozen; `web/`'s `PersonnelPage.tsx` needs the same check.
-- Orphaned scaffold TerminalWorkflowModels.kt/TerminalWorkflowScreens.kt in
-  terminalApp — audited, found to NOT correctly match the manual (extra
-  confirmation steps, recording notice banners violating "never
-  user-facing", wrong terminology). Moved to reference-only, not merged:
-  see `terminalApp/reference/*.reference.kt.bak` (includes
-  `FobEnrollmentScreen.reference.kt.bak`, archived alongside it since it
-  depended on the same types) and `terminalApp/reference/README.md` for why.
-- Phase 10 also found and fixed two bugs in `CardEnrollmentScreen` in the
-  same session (stale-closure enrollment misdirection; wired to demo key
-  fixtures instead of real keys) — see the Completed section above and
-  `phase10_card_uid_bugs.md` for detail; these are resolved, not
-  outstanding.
-- ~~The key-card swipe-to-return trigger cannot resolve any real enrolled
-  key~~ — **fixed** during the Key Return Flow implementation (see
-  Completed section above, `managedKeyAndSlotFor()`); was previously
-  logged here and in `phase10_card_uid_bugs.md` as a Phase 10-deferred
-  bug, now resolved.
-- ~~`releaseKeyForPickup` never ejects the cabinet door~~ — the door-eject
-  bug itself was already fixed by the time this was rechecked (via
-  `beginKeyTake`, built during the Key Take Flow work); the dead,
-  still-buggy `releaseKeyForPickup` method has since been deleted outright
-  rather than patched. See Project Status and
-  `phase10_retrieval_door_eject_bug.md` (now stale — kept for history).
-- Key Take Flow and Key Return Flow (`beginKeyTake`/`pollForKeyRemoval`/
-  `waitForDoorCloseAfterTake` and the Return-side equivalents) have still
-  not been run against physical hardware — only compile/assemble verified.
-  This is now the most safety-relevant untested path in the app, since the
-  door-eject fix above depends on this exact code being correct.
+
+Open work only — resolved/superseded items live in Completed or the status-truth table, not here.
+
+- **Key Take Flow and Key Return Flow not hardware-verified** on a physical F7G18P — only compile/assemble verified. This is the highest-priority untested hardware path (`beginKeyTake` / return-side equivalents).
+- **`web/` PATCH/update rollout not verified by build or live edit** in the environment that authored the change (that laptop had no Node — it could not `npm run build` locally). That does **not** mean the backend is missing: production is `https://kms-cvt.com`. Remaining work is rebuild/redeploy `web/` to the VPS (see `backend/DEPLOY.md` Part F) and manually test at least Units edit + `409` conflict against the live API.
+- **`web/` has not had a full section-by-section UX audit** against the vendor manual — only API-client / spot checks. Page-level UX and shared-type-equivalent checks still outstanding.
+- **Appointment-permissions API client stubs are broken/dead:** `client.ts` exposes `list`/`create`/`delete` for `/v1/admin/appointment-permissions`, but the backend router only implements `PATCH /:id`. Harmless today (`AppointmentPermissionsPage` just re-renders Appointments); clean up or implement properly before wiring a real page.
+- **Key Slots:** backend PATCH exists; no dedicated `web/` page exposes slot CRUD yet.
+- **Standing Super Admin / mobile alerts** for take door-left-open and return abandoned-return are not built (events may exist locally on terminal; no portal/mobile delivery UI).
+- **`mobileApp`:** still 100% local demo data, zero network.
+- Personnel management in frozen `webApp` was a shallow form — **moot** (module frozen). Live work is `web/PersonnelPage.tsx` (already has real backend CRUD + enrollment column); remaining gaps are audit/polish, not a missing page.
+- Orphaned terminal workflow scaffolds remain reference-only under `terminalApp/reference/` — do not merge as production UI.
+- Theme polish: terminal red/alarm status tone was never confirmed live on hardware (deferred by user during Cavotec pass).
 
 ### Next steps (in order)
-- Verify the Key Take Flow and Key Return Flow against a physical
-  F7G18P (door-open confirmation, both flows' timer pairs, the Take
-  Warning Time / Door-Close Warning Time countdowns) — this is now the
-  first not-yet-hardware-verified item, and per the note above it's also
-  where the door-eject fix actually lives now
-- Verify `web/`'s PATCH/update rollout: `cd web && npm run build`, then
-  manually test at least one edit (Units is simplest) end-to-end against
-  the real backend, including the `409`-conflict path — not yet
-  verified in any dev environment
-- Super Admin portal rework, now targeting `web/` (React) rather than the frozen `webApp`: a proper section-by-section audit of `web/` itself (not just the API-client spot-check) is the right next step before prioritizing further work, since `web/` is already meaningfully ahead of what the `webApp` audit would suggest
-- `web/`/mobileApp standing-alert UI: the Key Take Flow's door-left-open
-  case (Super Admin-only) and the Key Return Flow's abandoned-return case
-  (terminal user + Super Admin, two-party) — both need real backend/event
-  wiring now that one exists, rather than being demo-data-driven mockups;
-  likely worth building together given the overlapping UI
-- After hardware phases: rebuild Personnel management properly (on `web/`, not the frozen `webApp`)
+- Verify Key Take Flow and Key Return Flow on a physical F7G18P (door-open confirmation, timer pairs, Take Warning Time / Door-Close Warning Time)
+- Verify `web/` PATCH/update against **live** `https://kms-cvt.com`: rebuild portal, deploy `web_dist` on the VPS, manually edit at least Units (including `409` conflict reload). Do not stand up a new backend for this.
+- Full section-by-section audit of `web/` against the vendor manual / handover checklist
+- Standing-alert UI on `web/` (and later mobileApp) for door-left-open (take) and abandoned-return (return)
+- Optional cleanup: appointment-permissions client/router mismatch; Key Slots admin page if product needs it; terminal alarm-tone polish
+- Do **not** schedule a greenfield “rebuild Personnel on web/” — that page already exists; improve it in place if UX gaps remain after audit
 
 ### Reference
 - Hardware protocol: `docs/Key Cabinet Communication Protocol.md` (note

@@ -15,14 +15,19 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.ExposedDropdownMenuBox
+import androidx.compose.material3.ExposedDropdownMenuDefaults
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.MenuAnchorType
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
@@ -52,6 +57,7 @@ import android.util.Log
 import com.ekms.shared.api.CompleteCredentialEnrollmentRequest
 import com.ekms.shared.api.CreateAdminUserRequest
 import com.ekms.shared.api.RevokeCredentialEnrollmentRequest
+import com.ekms.shared.api.SiteDto
 import com.ekms.shared.api.UserDto
 import com.ekms.shared.domain.AuditEventType
 import com.ekms.shared.domain.CardUidMatch
@@ -711,9 +717,10 @@ fun TerminalAdminApp() {
                                         else -> emptySet()
                                     }
                                     if (userRole != UserRole.SUPER_ADMIN && siteIds.isEmpty()) {
-                                        notice =
+                                        val message =
                                             "Select a Unit before adding personnel (same as Personnel Management on the web portal)."
-                                        false
+                                        notice = message
+                                        PersonnelSaveResult(ok = false, message = message)
                                     } else {
                                         val created = apiClient.createUser(
                                             CreateAdminUserRequest(
@@ -729,16 +736,19 @@ fun TerminalAdminApp() {
                                                 .sortedBy { it.displayName.lowercase() },
                                         )
                                         serverPersonnel = store.cachedPersonnel()
-                                        notice =
+                                        val message =
                                             "${created.displayName} was added. It should now appear under Personnel Management on the web portal."
-                                        true
+                                        notice = message
+                                        PersonnelSaveResult(ok = true, message = message)
                                     }
                                 } catch (error: TerminalApiException) {
-                                    notice = error.message
-                                    false
+                                    val message = friendlyCreateUserError(error.message)
+                                    notice = message
+                                    PersonnelSaveResult(ok = false, message = message)
                                 } catch (error: Throwable) {
-                                    notice = error.message ?: "Failed to add personnel"
-                                    false
+                                    val message = friendlyCreateUserError(error.message)
+                                    notice = message
+                                    PersonnelSaveResult(ok = false, message = message)
                                 }
                             } else {
                                 when (val result = store.createUser(displayName, identifier, password, role)) {
@@ -749,17 +759,18 @@ fun TerminalAdminApp() {
                                             """{"displayName":"${result.value.displayName}","username":"${result.value.username}","role":"${result.value.role.name}"}""",
                                         )
                                         refreshSnapshot()
-                                        notice =
+                                        val message =
                                             result.value.displayName +
                                                 " was enrolled as " +
                                                 result.value.role.label +
                                                 " (local only — sign in with a server account to sync to the web portal)."
-                                        true
+                                        notice = message
+                                        PersonnelSaveResult(ok = true, message = message)
                                     }
 
                                     is StoreResult.Error -> {
                                         notice = result.message
-                                        false
+                                        PersonnelSaveResult(ok = false, message = result.message)
                                     }
                                 }
                             }
@@ -1274,16 +1285,48 @@ private fun TerminalUserRole.toUserRole(): UserRole = when (this) {
     TerminalUserRole.VENDOR -> UserRole.VENDOR
 }
 
+private data class PersonnelSaveResult(val ok: Boolean, val message: String)
+
+private data class PersonnelFeedback(val success: Boolean, val message: String)
+
+private fun friendlyCreateUserError(raw: String?): String {
+    val message = raw?.trim().orEmpty()
+    if (message.isBlank()) {
+        return "Could not add personnel. Check the fields and try again."
+    }
+    val lower = message.lowercase()
+    return when {
+        "email" in lower || "invalid_string" in lower || "invalid input" in lower ->
+            "Enter a valid email address (for example name@company.com)."
+        "password" in lower && ("8" in lower || "min" in lower) ->
+            "Password must be at least 8 characters."
+        "site" in lower || "unit" in lower || "assigned" in lower ->
+            "Select a Unit before adding Technician or Vendor personnel."
+        "duplicate" in lower || "already" in lower || "unique" in lower ->
+            "That email is already registered."
+        else -> message
+    }
+}
+
+private fun looksLikeEmail(value: String): Boolean {
+    val trimmed = value.trim()
+    val at = trimmed.indexOf('@')
+    if (at <= 0 || at != trimmed.lastIndexOf('@')) return false
+    val domain = trimmed.substring(at + 1)
+    return domain.contains('.') && domain.none { it.isWhitespace() }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun EnrollUserScreen(
     padding: PaddingValues,
     users: List<TerminalUser>,
     serverLinked: Boolean,
     assignedUnitId: String?,
-    unitSites: List<com.ekms.shared.api.SiteDto>,
+    unitSites: List<SiteDto>,
     notice: String?,
     onBack: () -> Unit,
-    onSave: suspend (String, String, String, TerminalUserRole, String) -> Boolean,
+    onSave: suspend (String, String, String, TerminalUserRole, String) -> PersonnelSaveResult,
 ) {
     val scope = rememberCoroutineScope()
     var displayName by remember { mutableStateOf("") }
@@ -1297,7 +1340,53 @@ private fun EnrollUserScreen(
         )
     }
     var saving by remember { mutableStateOf(false) }
-    var blockDialog by remember { mutableStateOf<String?>(null) }
+    var feedback by remember { mutableStateOf<PersonnelFeedback?>(null) }
+    var roleMenuExpanded by remember { mutableStateOf(false) }
+    var unitPickerOpen by remember { mutableStateOf(false) }
+    var unitSearch by remember { mutableStateOf("") }
+
+    val selectedUnit = unitSites.firstOrNull { it.id == selectedUnitId }
+    val assignableRoles = listOf(TerminalUserRole.TECHNICIAN, TerminalUserRole.VENDOR)
+    val filteredUnits = remember(unitSites, unitSearch) {
+        val query = unitSearch.trim()
+        if (query.isEmpty()) {
+            unitSites.sortedBy { it.name.lowercase() }
+        } else {
+            unitSites
+                .filter {
+                    it.name.contains(query, ignoreCase = true) ||
+                        (it.city?.contains(query, ignoreCase = true) == true) ||
+                        (it.province?.contains(query, ignoreCase = true) == true)
+                }
+                .sortedBy { it.name.lowercase() }
+        }
+    }
+
+    fun validateBeforeSave(): String? {
+        if (displayName.trim().length < 2) {
+            return "Enter a display name with at least 2 characters."
+        }
+        if (identifier.isBlank()) {
+            return if (serverLinked) {
+                "Email is required. Enter a work email such as name@company.com."
+            } else {
+                "Username is required."
+            }
+        }
+        if (serverLinked && !looksLikeEmail(identifier)) {
+            return "Enter a valid email address (for example name@company.com)."
+        }
+        if (!serverLinked && !identifier.trim().matches(Regex("^[A-Za-z0-9._-]{3,40}$"))) {
+            return "Username must use 3–40 letters, numbers, dot, underscore or hyphen."
+        }
+        if (temporaryPassword.length < 8) {
+            return "Password must be at least 8 characters."
+        }
+        if (serverLinked && selectedUnitId.isBlank()) {
+            return "Select a Unit before adding personnel. Create a unit on the web portal first, or set Key Cabinet ID in Admin Menu."
+        }
+        return null
+    }
 
     TerminalPage(padding) {
         BackButton(onBack)
@@ -1312,7 +1401,7 @@ private fun EnrollUserScreen(
         if (serverLinked) {
             SoftAssistChip(
                 text = if (unitSites.isNotEmpty()) {
-                    "Server linked · choose Unit below (Key Cabinet ID optional)"
+                    "Server linked · choose Unit below (${unitSites.size} units)"
                 } else {
                     "Server linked · loading units…"
                 },
@@ -1332,6 +1421,7 @@ private fun EnrollUserScreen(
             modifier = Modifier.fillMaxWidth(),
             label = { Text("Display name") },
             singleLine = true,
+            enabled = !saving,
         )
         OutlinedTextField(
             value = identifier,
@@ -1341,13 +1431,15 @@ private fun EnrollUserScreen(
             supportingText = {
                 Text(
                     if (serverLinked) {
-                        "Same email field as Personnel Management on the web portal."
+                        "Required. Use a full email address (name@company.com)."
                     } else {
                         "Use letters, numbers, dot, underscore or hyphen."
                     },
                 )
             },
             singleLine = true,
+            enabled = !saving,
+            isError = serverLinked && identifier.isNotBlank() && !looksLikeEmail(identifier),
         )
         if (serverLinked) {
             Text("Unit", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
@@ -1357,18 +1449,17 @@ private fun EnrollUserScreen(
                     attention = true,
                 )
             } else {
-                val selected = unitSites.firstOrNull { it.id == selectedUnitId } ?: unitSites.first()
                 OutlinedButton(
                     onClick = {
-                        val index = unitSites.indexOfFirst { it.id == selectedUnitId }.coerceAtLeast(0)
-                        selectedUnitId = unitSites[(index + 1) % unitSites.size].id
+                        unitSearch = ""
+                        unitPickerOpen = true
                     },
                     modifier = Modifier.fillMaxWidth(),
-                    enabled = !saving && unitSites.size > 1,
+                    enabled = !saving,
                 ) {
                     Text(
-                        selected.name +
-                            (if (unitSites.size > 1) " · change" else ""),
+                        (selectedUnit?.name ?: "Select a unit") +
+                            if (unitSites.size > 1) " · search / change" else "",
                     )
                 }
             }
@@ -1378,68 +1469,67 @@ private fun EnrollUserScreen(
             temporaryPassword,
         ) { temporaryPassword = it }
         Text("Role", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
-        OutlinedButton(
-            onClick = {
-                role = if (role == TerminalUserRole.TECHNICIAN) {
-                    TerminalUserRole.VENDOR
-                } else {
-                    TerminalUserRole.TECHNICIAN
-                }
-            },
-            modifier = Modifier.fillMaxWidth(),
-            enabled = !saving,
+        ExposedDropdownMenuBox(
+            expanded = roleMenuExpanded,
+            onExpandedChange = { if (!saving) roleMenuExpanded = it },
         ) {
-            Text("Selected: " + role.label + " · change")
+            OutlinedTextField(
+                value = role.label,
+                onValueChange = {},
+                readOnly = true,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .menuAnchor(type = MenuAnchorType.PrimaryNotEditable),
+                label = { Text("Role") },
+                trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = roleMenuExpanded) },
+                enabled = !saving,
+            )
+            ExposedDropdownMenu(
+                expanded = roleMenuExpanded,
+                onDismissRequest = { roleMenuExpanded = false },
+            ) {
+                assignableRoles.forEach { option ->
+                    DropdownMenuItem(
+                        text = { Text(option.label) },
+                        onClick = {
+                            role = option
+                            roleMenuExpanded = false
+                        },
+                    )
+                }
+            }
         }
         Button(
             onClick = {
-                // #region agent log
-                Log.i(
-                    "EKMS_DEBUG",
-                    "Add personnel button click nameLen=${displayName.trim().length} idLen=${identifier.trim().length} pwLen=${temporaryPassword.length} unit=$selectedUnitId serverLinked=$serverLinked",
-                )
-                // #endregion
-                if (serverLinked && selectedUnitId.isBlank() && unitSites.isEmpty()) {
-                    blockDialog =
-                        "Select a Unit before adding personnel. Create a unit on the web portal, or set Key Cabinet ID in Admin Menu."
+                val validationError = validateBeforeSave()
+                if (validationError != null) {
+                    feedback = PersonnelFeedback(success = false, message = validationError)
                     return@Button
                 }
                 saving = true
                 scope.launch {
-                    val ok = onSave(displayName, identifier, temporaryPassword, role, selectedUnitId)
-                    if (ok) {
+                    val result = onSave(displayName, identifier, temporaryPassword, role, selectedUnitId)
+                    feedback = PersonnelFeedback(success = result.ok, message = result.message)
+                    if (result.ok) {
                         displayName = ""
                         identifier = ""
                         temporaryPassword = ""
                         role = TerminalUserRole.TECHNICIAN
-                    } else if (serverLinked && selectedUnitId.isBlank()) {
-                        blockDialog =
-                            "Select a Unit before adding personnel (same as the web portal)."
                     }
                     saving = false
                 }
             },
             modifier = Modifier.fillMaxWidth(),
-            enabled = !saving &&
-                displayName.isNotBlank() &&
-                identifier.isNotBlank() &&
-                temporaryPassword.length >= 8,
+            enabled = !saving,
         ) {
             Text(if (saving) "Saving…" else "Add personnel")
         }
-        // #region agent log
-        if (
-            displayName.isNotBlank() &&
-            identifier.isNotBlank() &&
-            temporaryPassword.isNotEmpty() &&
-            temporaryPassword.length < 8
-        ) {
+        if (temporaryPassword.isNotEmpty() && temporaryPassword.length < 8) {
             SoftAssistChip(
-                text = "Password must be at least 8 characters before Add personnel enables",
+                text = "Password must be at least 8 characters.",
                 attention = true,
             )
         }
-        // #endregion
 
         Text("Personnel", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
         users.forEach { user ->
@@ -1454,14 +1544,78 @@ private fun EnrollUserScreen(
         }
     }
 
-    blockDialog?.let { message ->
+    feedback?.let { result ->
         AlertDialog(
-            onDismissRequest = { blockDialog = null },
-            title = { Text("Unit required") },
-            text = { Text(message) },
+            onDismissRequest = { feedback = null },
+            title = { Text(if (result.success) "Personnel added" else "Could not add personnel") },
+            text = { Text(result.message) },
             confirmButton = {
-                TextButton(onClick = { blockDialog = null }) {
+                TextButton(onClick = { feedback = null }) {
                     Text("OK")
+                }
+            },
+        )
+    }
+
+    if (unitPickerOpen) {
+        AlertDialog(
+            onDismissRequest = { unitPickerOpen = false },
+            title = { Text("Select unit") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    OutlinedTextField(
+                        value = unitSearch,
+                        onValueChange = { unitSearch = it },
+                        modifier = Modifier.fillMaxWidth(),
+                        label = { Text("Search units") },
+                        placeholder = { Text("Name, city, or province") },
+                        singleLine = true,
+                    )
+                    Text(
+                        "${filteredUnits.size} of ${unitSites.size} units",
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                    LazyColumn(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(280.dp),
+                        verticalArrangement = Arrangement.spacedBy(4.dp),
+                    ) {
+                        if (filteredUnits.isEmpty()) {
+                            item {
+                                Text("No units match that search.")
+                            }
+                        } else {
+                            items(filteredUnits, key = { it.id }) { site ->
+                                val selected = site.id == selectedUnitId
+                                TextButton(
+                                    onClick = {
+                                        selectedUnitId = site.id
+                                        unitPickerOpen = false
+                                    },
+                                    modifier = Modifier.fillMaxWidth(),
+                                ) {
+                                    Text(
+                                        buildString {
+                                            append(if (selected) "✓ " else "")
+                                            append(site.name)
+                                            val place = listOfNotNull(site.city, site.province)
+                                                .filter { it.isNotBlank() }
+                                                .joinToString(", ")
+                                            if (place.isNotBlank()) append(" · ").append(place)
+                                        },
+                                        modifier = Modifier.fillMaxWidth(),
+                                        textAlign = TextAlign.Start,
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { unitPickerOpen = false }) {
+                    Text("Close")
                 }
             },
         )
