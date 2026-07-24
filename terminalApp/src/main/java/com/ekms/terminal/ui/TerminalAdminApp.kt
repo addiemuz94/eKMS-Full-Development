@@ -126,6 +126,66 @@ fun TerminalAdminApp() {
             ?: "terminal-unknown"
     }
 
+    // Fresh/unpaired terminal: the pairing-code screen replaces standby/login/Admin Menu
+    // entirely until a Super Admin-issued 6-digit code has been redeemed — gated on cabinetId
+    // alone (not apiClient.isAuthenticated) so a later personnel sign-out, which clears the
+    // stored access/refresh token via signOut() below, never re-triggers this screen; "reset"
+    // only ever means clearing Key Cabinet ID, which nothing here does implicitly.
+    var isPaired by remember {
+        mutableStateOf(store.snapshot().cabinetSettings.cabinetId.isNotBlank())
+    }
+
+    if (!isPaired) {
+        var pairingServerAddress by remember { mutableStateOf(apiClient.baseUrl) }
+        var pairingSubmitting by remember { mutableStateOf(false) }
+        var pairingError by remember { mutableStateOf<String?>(null) }
+
+        EkmsTerminalTheme {
+            Scaffold(
+                topBar = { TopAppBar(title = { Text("eKMS Terminal · Pairing") }) },
+            ) { padding ->
+                TerminalPairingScreen(
+                    padding = padding,
+                    serverAddress = pairingServerAddress,
+                    onServerAddressChange = { pairingServerAddress = it },
+                    isSubmitting = pairingSubmitting,
+                    errorMessage = pairingError,
+                    onSubmit = { code ->
+                        apiClient.baseUrl = pairingServerAddress
+                        scope.launch {
+                            pairingSubmitting = true
+                            pairingError = null
+                            try {
+                                val response = apiClient.pairWithCode(code)
+                                val current = store.snapshot().cabinetSettings
+                                store.updateCabinetSettings(
+                                    current.copy(
+                                        cabinetId = response.terminal.id,
+                                        cabinetName = response.terminal.name.ifBlank { current.cabinetName },
+                                    ),
+                                )
+                                // Reuse the existing bootstrap pipeline (Admin Menu's own
+                                // Bootstrap button calls the same syncCoordinator.bootstrap())
+                                // rather than a parallel sync path. Best-effort: a failure here
+                                // does not undo the pairing that already succeeded above — the
+                                // Admin Menu Bootstrap button remains available to retry.
+                                runCatching { syncCoordinator.bootstrap() }
+                                isPaired = true
+                            } catch (error: TerminalApiException) {
+                                pairingError = error.message
+                            } catch (error: Exception) {
+                                pairingError = error.message ?: "Unable to reach the server."
+                            } finally {
+                                pairingSubmitting = false
+                            }
+                        }
+                    },
+                )
+            }
+        }
+        return
+    }
+
     var route by remember { mutableStateOf(SuperAdminRoute.LOGIN) }
     var session by remember { mutableStateOf<TerminalSession?>(null) }
     var snapshot by remember { mutableStateOf(store.snapshot()) }

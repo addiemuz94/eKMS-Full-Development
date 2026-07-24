@@ -17,6 +17,8 @@ import com.ekms.shared.api.SiteListResponse
 import com.ekms.shared.api.TerminalBootstrapRequest
 import com.ekms.shared.api.TerminalBootstrapResponse
 import com.ekms.shared.api.TerminalDto
+import com.ekms.shared.api.TerminalPairWithCodeRequest
+import com.ekms.shared.api.TerminalPairingResponse
 import com.ekms.shared.api.TerminalSyncAckResponse
 import com.ekms.shared.api.TerminalSyncPushRequest
 import com.ekms.shared.api.TerminalSyncPushResponse
@@ -65,8 +67,15 @@ class TerminalApiClient(context: Context) {
         }
     }
 
+    /**
+     * Defaults to the production VPS so a fresh terminal can reach
+     * `/v1/terminal/pair-with-code` with no manual setup — Admin Menu's
+     * "Set server address" still exists as a fallback/advanced override for
+     * on-prem or non-default deployments. A 6-digit pairing code has no room
+     * to encode a URL, so something has to supply one before pairing.
+     */
     var baseUrl: String
-        get() = preferences.getString(KEY_BASE_URL, "")?.trim().orEmpty().trimEnd('/')
+        get() = preferences.getString(KEY_BASE_URL, DEFAULT_BASE_URL)?.trim().orEmpty().trimEnd('/')
         set(value) {
             preferences.edit().putString(KEY_BASE_URL, value.trim().trimEnd('/')).apply()
         }
@@ -134,6 +143,31 @@ class TerminalApiClient(context: Context) {
                 method = HttpMethod.Post,
                 path = ApiPaths.AUTH_REFRESH,
                 body = json.encodeToString(RefreshTokenRequest(refreshToken = token)),
+                authenticated = false,
+                idempotent = false,
+            ),
+        )
+        accessToken = response.accessToken
+        refreshToken = response.refreshToken
+        return response
+    }
+
+    /**
+     * Unauthenticated by necessity (a fresh terminal has no token yet). On success stores the
+     * returned TERMINAL_DEVICE-scoped tokens in the same [accessToken]/[refreshToken] slots
+     * [login] uses — this terminal has no separate "device identity" vs. "signed-in operator"
+     * storage today, so pairing establishes the terminal's own persistent backend session the
+     * same way a Super Admin's manual sign-in used to under the old flow. Throws
+     * [TerminalApiException] on an invalid/expired/already-used code or a rate limit — callers
+     * must show that error as-is, never fall back silently.
+     */
+    suspend fun pairWithCode(code: String): TerminalPairingResponse {
+        ensureBaseUrl()
+        val response = decode<TerminalPairingResponse>(
+            send(
+                method = HttpMethod.Post,
+                path = ApiPaths.TERMINAL_PAIR_WITH_CODE,
+                body = json.encodeToString(TerminalPairWithCodeRequest(code = code)),
                 authenticated = false,
                 idempotent = false,
             ),
@@ -364,6 +398,7 @@ class TerminalApiClient(context: Context) {
         private const val KEY_BASE_URL = "base_url"
         private const val KEY_ACCESS_TOKEN = "access_token"
         private const val KEY_REFRESH_TOKEN = "refresh_token"
+        const val DEFAULT_BASE_URL = "https://kms-cvt.com"
     }
 }
 
