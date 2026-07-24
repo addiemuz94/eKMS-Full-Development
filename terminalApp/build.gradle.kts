@@ -48,4 +48,10 @@ dependencies {
     implementation(libs.ktor.client.content.negotiation)
     implementation(libs.ktor.serialization.kotlinx.json)
     implementation(files("libs/serialport.aar"))
+
+    // Face enrollment (Part C, decision-independent pieces only — see CLAUDE.md).
+    // Versions match ../eKMSHardwareTester exactly, pending native-compatibility
+    // verification against this module's pinned AGP 8.11.1/compileSdk 36 baseline.
+    implementation("org.opencv:opencv:5.0.0.1")
+    implementation("com.google.mediapipe:tasks-vision:0.10.35")
 }
