@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { NavLink, Outlet, useLocation } from 'react-router-dom'
 import { useAuth } from '../auth/AuthContext'
+import { Button } from '../components/ui'
 import { NAV_ICONS, type NavIconName } from './NavIcons'
 
 type NavItem = { to: string; label: string; icon: NavIconName; end?: boolean }
@@ -133,7 +134,7 @@ export function AppShell() {
           <div className="brand-mark">EK</div>
           <div>
             <h1 className="brand">eKMS</h1>
-            <p className="brand-copy">Admin portal</p>
+            <p className="brand-copy">Cavotec admin</p>
           </div>
         </div>
 
@@ -182,22 +183,22 @@ export function AppShell() {
       <main className="main">
         <div className="topbar">
           <div className="topbar-left">
-            <button
-              className="btn secondary nav-toggle"
-              type="button"
+            <Button
+              variant="tonal"
+              className="nav-toggle"
               aria-expanded={navOpen}
               aria-label={navOpen ? 'Close menu' : 'Open menu'}
               onClick={() => setNavOpen((open) => !open)}
             >
               {navOpen ? 'Close' : 'Menu'}
-            </button>
+            </Button>
             <div className="topbar-eyebrow">Website management portal</div>
           </div>
           <div className="session-pill">
             <span className="session-name">{session?.displayName}</span>
-            <button className="btn secondary" type="button" onClick={logout}>
+            <Button variant="outlined" onClick={logout}>
               Sign out
-            </button>
+            </Button>
           </div>
         </div>
         <div className="content">

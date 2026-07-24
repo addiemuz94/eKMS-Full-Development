@@ -59,6 +59,24 @@ export function PersonnelPage() {
       setSites(siteRows)
       setTerminals(terminalRows)
       setSiteId((current) => current || siteRows[0]?.id || '')
+      // #region agent log
+      fetch('/v1/debug/agent-log', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-Debug-Session-Id': '5c6d1f' },
+        body: JSON.stringify({
+          sessionId: '5c6d1f',
+          hypothesisId: 'C',
+          location: 'PersonnelPage.tsx:reload',
+          message: 'web personnel list loaded',
+          data: {
+            count: userRows.length,
+            emails: userRows.map((u) => u.email).slice(0, 20),
+          },
+          timestamp: Date.now(),
+          runId: 'pre-fix',
+        }),
+      }).catch(() => {})
+      // #endregion
       await loadCardStatuses(userRows)
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'Failed to load personnel')

@@ -1,6 +1,7 @@
 import { useEffect, useState, type FormEvent } from 'react'
 import { api, ApiError } from '../api/client'
 import type { SiteDto, TerminalDto } from '../api/types'
+import { Button, LinearProgress } from '../components/ui'
 
 export function TerminalsPage() {
   const [sites, setSites] = useState<SiteDto[]>([])
@@ -89,12 +90,13 @@ export function TerminalsPage() {
             Register Android key-cabinet terminals. Physical serial I/O remains on the Terminal only.
           </p>
         </div>
-        <button className="btn" type="button" onClick={() => setOpen(true)} disabled={!sites.length}>
+        <Button onClick={() => setOpen(true)} disabled={!sites.length}>
           Add Android terminal
-        </button>
+        </Button>
       </div>
 
       {error && <div className="error-banner">{error}</div>}
+      {busy && <LinearProgress className="table-busy" label="Loading terminals" />}
 
       <div className="field" style={{ maxWidth: 340 }}>
         <label>Filter by unit</label>
@@ -126,21 +128,16 @@ export function TerminalsPage() {
                 <tr key={terminal.id}>
                   <td className="cell-title">{terminal.name}</td>
                   <td>{siteName(terminal.siteId)}</td>
-                  <td>{terminal.serialNumber || '—'}</td>
+                  <td className="mono">{terminal.serialNumber || '—'}</td>
                   <td>
                     Box {terminal.boxAddress} · {terminal.configuredSlotCount} nodes ·{' '}
                     {terminal.connectionState || 'UNKNOWN'}
                   </td>
-                  <td>{terminal.id}</td>
+                  <td className="mono">{terminal.id}</td>
                   <td className="col-actions">
-                    <button
-                      className="btn linkish"
-                      type="button"
-                      disabled={busy}
-                      onClick={() => void onArchive(terminal.id)}
-                    >
+                    <Button variant="link" disabled={busy} onClick={() => void onArchive(terminal.id)}>
                       Recycle
-                    </button>
+                    </Button>
                   </td>
                 </tr>
               ))}
@@ -181,12 +178,12 @@ export function TerminalsPage() {
               </div>
             </div>
             <div className="dialog-actions">
-              <button className="btn secondary" type="button" onClick={() => setOpen(false)}>
+              <Button variant="outlined" onClick={() => setOpen(false)}>
                 Cancel
-              </button>
-              <button className="btn" type="submit" disabled={busy}>
+              </Button>
+              <Button type="submit" loading={busy}>
                 Save terminal
-              </button>
+              </Button>
             </div>
           </form>
         </div>

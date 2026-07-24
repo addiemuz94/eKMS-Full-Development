@@ -1,6 +1,7 @@
 import bcrypt from 'bcryptjs';
 import { Router } from 'express';
 import { z } from 'zod';
+import { agentDebugLog } from '../agentDebugLog.js';
 import pool from '../db.js';
 import {
   badRequest,
@@ -60,6 +61,19 @@ router.get('/', async (req, res) => {
   for (const row of rows) {
     items.push(mapUser(row, await assignedSites(row.id)));
   }
+  // #region agent log
+  agentDebugLog({
+    hypothesisId: 'C',
+    location: 'users.js:GET/',
+    message: 'list users',
+    data: {
+      siteId: siteId || null,
+      count: items.length,
+      emails: items.map((u) => u.email).slice(0, 20),
+      actor: req.auth?.sub || null,
+    },
+  });
+  // #endregion
   res.json({ items });
 });
 
@@ -80,9 +94,32 @@ router.post('/', async (req, res) => {
     password: z.string().min(8).optional(),
   });
   const parsed = schema.safeParse(req.body);
+  // #region agent log
+  agentDebugLog({
+    hypothesisId: 'B',
+    location: 'users.js:POST/',
+    message: 'create user attempt',
+    data: {
+      ok: parsed.success,
+      email: parsed.success ? parsed.data.email : null,
+      role: parsed.success ? parsed.data.role : null,
+      siteCount: parsed.success ? parsed.data.assignedSiteIds.length : null,
+      hasPassword: parsed.success ? Boolean(parsed.data.password) : null,
+      actor: req.auth?.sub || null,
+    },
+  });
+  // #endregion
   if (!parsed.success) return badRequest(res, 'Invalid user payload');
 
   if (parsed.data.role !== 'SUPER_ADMIN' && parsed.data.assignedSiteIds.length === 0) {
+    // #region agent log
+    agentDebugLog({
+      hypothesisId: 'B',
+      location: 'users.js:POST/',
+      message: 'create user rejected missing sites',
+      data: { email: parsed.data.email, role: parsed.data.role },
+    });
+    // #endregion
     return badRequest(res, 'TECHNICIAN and VENDOR require at least one assigned site');
   }
 
@@ -128,6 +165,14 @@ router.post('/', async (req, res) => {
     entityId: id,
     detail: 'USER_CREATED',
   });
+  // #region agent log
+  agentDebugLog({
+    hypothesisId: 'C',
+    location: 'users.js:POST/',
+    message: 'create user success',
+    data: { id, email: parsed.data.email, sites: parsed.data.assignedSiteIds },
+  });
+  // #endregion
   const [rows] = await pool.execute(`SELECT * FROM users WHERE id = :id`, { id });
   return res.status(201).json(mapUser(rows[0], await assignedSites(id)));
 });

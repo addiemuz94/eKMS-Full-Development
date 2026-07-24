@@ -1,11 +1,15 @@
 import { useEffect, useMemo, useState, type FormEvent } from 'react'
 import { api, ApiError } from '../api/client'
 import type { SiteDto } from '../api/types'
+import { Button, CircularProgress, LinearProgress, SegmentedControl } from '../components/ui'
 import { MALAYSIA_STATES, citiesForState } from '../geo/malaysiaLocations'
+
+type UnitView = 'all' | 'mapped'
 
 export function UnitsPage() {
   const [sites, setSites] = useState<SiteDto[]>([])
   const [query, setQuery] = useState('')
+  const [view, setView] = useState<UnitView>('all')
   const [error, setError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
@@ -35,17 +39,19 @@ export function UnitsPage() {
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase()
-    if (!q) return sites
     return sites.filter((site) => {
       const parent = sites.find((candidate) => candidate.id === site.parentSiteId)?.name ?? ''
-      return (
+      const matchesQuery =
+        !q ||
         site.name.toLowerCase().includes(q) ||
         (site.province ?? '').toLowerCase().includes(q) ||
         (site.city ?? '').toLowerCase().includes(q) ||
         parent.toLowerCase().includes(q)
-      )
+      const hasLocation = Boolean(site.province?.trim() && site.city?.trim())
+      const matchesView = view === 'all' || hasLocation
+      return matchesQuery && matchesView
     })
-  }, [sites, query])
+  }, [sites, query, view])
 
   function resetForm() {
     setName('')
@@ -117,27 +123,38 @@ export function UnitsPage() {
             Create the organisation hierarchy used by terminals, personnel, keys, permissions and reports.
           </p>
         </div>
-        <button
-          className="btn"
-          type="button"
+        <Button
           onClick={() => {
             resetForm()
             setOpen(true)
           }}
         >
           Add unit
-        </button>
+        </Button>
       </div>
 
       {notice && <div className="notice">{notice}</div>}
       {error && <div className="error-banner">{error}</div>}
 
-      <input
-        className="search"
-        placeholder="Search unit, state, city or superior unit"
-        value={query}
-        onChange={(e) => setQuery(e.target.value)}
-      />
+      {busy && <LinearProgress className="table-busy" label="Loading units" />}
+
+      <div className="toolbar-row">
+        <input
+          className="search"
+          placeholder="Search unit, state, city or superior unit"
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+        />
+        <SegmentedControl
+          ariaLabel="Unit filter"
+          value={view}
+          onChange={setView}
+          options={[
+            { value: 'all', label: 'All units' },
+            { value: 'mapped', label: 'Mapped' },
+          ]}
+        />
+      </div>
 
       {filtered.length ? (
         <div className="data-panel">
@@ -159,9 +176,9 @@ export function UnitsPage() {
                   <td>{site.city?.trim() || '—'}</td>
                   <td>{parentName(site)}</td>
                   <td className="col-actions">
-                    <button className="btn linkish" type="button" onClick={() => void onArchive(site.id)}>
+                    <Button variant="link" onClick={() => void onArchive(site.id)}>
                       Recycle
-                    </button>
+                    </Button>
                   </td>
                 </tr>
               ))}
@@ -224,14 +241,21 @@ export function UnitsPage() {
               </select>
             </div>
             <div className="dialog-actions">
-              <button className="btn secondary" type="button" onClick={() => setOpen(false)}>
+              <Button variant="outlined" onClick={() => setOpen(false)}>
                 Cancel
-              </button>
-              <button className="btn" type="submit" disabled={busy}>
+              </Button>
+              <Button type="submit" loading={busy}>
                 Save unit
-              </button>
+              </Button>
             </div>
           </form>
+        </div>
+      )}
+
+      {busy && !open && !filtered.length && (
+        <div className="busy-inline" style={{ marginTop: 16 }}>
+          <CircularProgress size={22} />
+          Loading units…
         </div>
       )}
     </section>

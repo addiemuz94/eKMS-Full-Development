@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState, type FormEvent, type ReactNode } from 'react'
 import { api, ApiError } from '../api/client'
 import type { SiteDto } from '../api/types'
+import { Button, LinearProgress } from './ui'
 
 export type FieldDef =
   | { name: string; label: string; type: 'text' | 'number'; required?: boolean }
@@ -126,13 +127,12 @@ export function ResourcePage({
           <h1>{title}</h1>
           <p className="muted">{description}</p>
         </div>
-        <button className="btn" type="button" onClick={openDialog}>
-          {addLabel}
-        </button>
+        <Button onClick={openDialog}>{addLabel}</Button>
       </div>
 
       {notice && <div className="notice">{notice}</div>}
       {error && <div className="error-banner">{error}</div>}
+      {busy && <LinearProgress className="table-busy" label="Loading" />}
 
       <input className="search" placeholder="Search…" value={query} onChange={(e) => setQuery(e.target.value)} />
 
@@ -162,9 +162,9 @@ export function ResourcePage({
                     <td className="col-actions">
                       <div className="row-actions">
                         {remove && (
-                          <button className="btn linkish" type="button" onClick={() => void onRemove(id)}>
+                          <Button variant="link" onClick={() => void onRemove(id)}>
                             Recycle
-                          </button>
+                          </Button>
                         )}
                         {extraActions?.(item, reload)}
                       </div>
@@ -213,12 +213,12 @@ export function ResourcePage({
               </div>
             ))}
             <div className="dialog-actions">
-              <button className="btn secondary" type="button" onClick={() => setOpen(false)}>
+              <Button variant="outlined" onClick={() => setOpen(false)}>
                 Cancel
-              </button>
-              <button className="btn" type="submit" disabled={busy}>
+              </Button>
+              <Button type="submit" loading={busy}>
                 Save
-              </button>
+              </Button>
             </div>
           </form>
         </div>

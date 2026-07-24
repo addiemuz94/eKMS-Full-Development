@@ -12,6 +12,8 @@ import com.ekms.shared.api.LoginRequest
 import com.ekms.shared.api.LoginResponse
 import com.ekms.shared.api.RefreshTokenRequest
 import com.ekms.shared.api.RevokeCredentialEnrollmentRequest
+import com.ekms.shared.api.SiteDto
+import com.ekms.shared.api.SiteListResponse
 import com.ekms.shared.api.TerminalBootstrapRequest
 import com.ekms.shared.api.TerminalBootstrapResponse
 import com.ekms.shared.api.TerminalDto
@@ -227,6 +229,19 @@ class TerminalApiClient(context: Context) {
         ).items
     }
 
+    suspend fun listSites(): List<SiteDto> {
+        ensureBaseUrl()
+        return decode<SiteListResponse>(
+            send(
+                method = HttpMethod.Get,
+                path = ApiPaths.ADMIN_SITES,
+                body = null,
+                authenticated = true,
+                idempotent = false,
+            ),
+        ).items
+    }
+
     suspend fun createUser(request: CreateAdminUserRequest): UserDto {
         ensureBaseUrl()
         return decode(
@@ -239,6 +254,38 @@ class TerminalApiClient(context: Context) {
             ),
         )
     }
+
+    // #region agent log
+    /** Fire-and-forget debug ingest for agent session (no secrets). */
+    fun postAgentDebugLog(
+        hypothesisId: String,
+        location: String,
+        message: String,
+        dataJson: String = "{}",
+    ) {
+        val root = baseUrl
+        if (root.isBlank()) return
+        Thread {
+            try {
+                val url = java.net.URL("$root/v1/debug/agent-log")
+                val conn = (url.openConnection() as java.net.HttpURLConnection).apply {
+                    requestMethod = "POST"
+                    doOutput = true
+                    setRequestProperty("Content-Type", "application/json")
+                    connectTimeout = 4000
+                    readTimeout = 4000
+                }
+                val body =
+                    """{"hypothesisId":"$hypothesisId","location":"$location","message":"$message","data":$dataJson,"runId":"pre-fix"}"""
+                conn.outputStream.use { it.write(body.toByteArray(Charsets.UTF_8)) }
+                conn.responseCode
+                conn.disconnect()
+            } catch (_: Exception) {
+                // ignore — debug only
+            }
+        }.start()
+    }
+    // #endregion
 
     suspend fun getTerminal(terminalId: String): TerminalDto {
         ensureBaseUrl()

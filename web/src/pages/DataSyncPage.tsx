@@ -1,10 +1,14 @@
 import { useEffect, useState } from 'react'
 import { api, ApiError } from '../api/client'
 import type { TerminalDto } from '../api/types'
+import { Button, LinearProgress, SegmentedControl } from '../components/ui'
+
+type SyncPanel = 'conflicts' | 'terminals'
 
 export function DataSyncPage() {
   const [conflicts, setConflicts] = useState<Record<string, unknown>[]>([])
   const [terminals, setTerminals] = useState<TerminalDto[]>([])
+  const [panel, setPanel] = useState<SyncPanel>('conflicts')
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
 
@@ -48,53 +52,76 @@ export function DataSyncPage() {
             Change, or merge later.
           </p>
         </div>
-        <button className="btn secondary" type="button" onClick={() => void reload()} disabled={busy}>
+        <Button variant="tonal" loading={busy} onClick={() => void reload()}>
           Refresh
-        </button>
+        </Button>
       </div>
 
       {error && <div className="error-banner">{error}</div>}
+      {busy && <LinearProgress className="table-busy" label="Sync in progress" />}
 
-      <div className="card">
-        <h3>Registered terminals</h3>
-        <div className="meta">
-          {terminals.map((terminal) => (
-            <div key={terminal.id}>
-              {terminal.name} · Key Cabinet ID: {terminal.id}
-            </div>
-          ))}
-          {!terminals.length && <div>No terminals registered yet.</div>}
-        </div>
-      </div>
+      <SegmentedControl
+        ariaLabel="Sync panel"
+        value={panel}
+        onChange={setPanel}
+        options={[
+          { value: 'conflicts', label: 'Conflicts' },
+          { value: 'terminals', label: 'Terminals' },
+        ]}
+      />
 
-      {conflicts.map((conflict) => (
-        <article className="card" key={String(conflict.id)}>
-          <h3>
-            {String(conflict.entityType)} · {String(conflict.entityId)}
-          </h3>
+      {panel === 'terminals' && (
+        <div className="card">
+          <h3>Registered terminals</h3>
           <div className="meta">
-            <div>Terminal: {String(conflict.terminalId)}</div>
-            <div>Server revision: {String(conflict.serverRevision)}</div>
-            <div>
-              Local payload: {String((conflict.localChange as { payloadJson?: string } | undefined)?.payloadJson ?? '—')}
-            </div>
+            {terminals.map((terminal) => (
+              <div key={terminal.id}>
+                {terminal.name} · Key Cabinet ID:{' '}
+                <span className="mono">{terminal.id}</span>
+              </div>
+            ))}
+            {!terminals.length && <div>No terminals registered yet.</div>}
           </div>
-          <div className="card-actions">
-            <button className="btn" type="button" onClick={() => void resolve(String(conflict.id), 'KEEP_SERVER')}>
-              Keep server
-            </button>
-            <button
-              className="btn secondary"
-              type="button"
-              onClick={() => void resolve(String(conflict.id), 'KEEP_TERMINAL_CHANGE')}
-            >
-              Keep terminal change
-            </button>
-          </div>
-        </article>
-      ))}
+        </div>
+      )}
 
-      {!conflicts.length && !busy && <div className="empty-state">No open sync conflicts.</div>}
+      {panel === 'conflicts' &&
+        conflicts.map((conflict) => (
+          <article className="card" key={String(conflict.id)}>
+            <h3>
+              {String(conflict.entityType)} · <span className="mono">{String(conflict.entityId)}</span>
+            </h3>
+            <div className="meta">
+              <div>
+                Terminal: <span className="mono">{String(conflict.terminalId)}</span>
+              </div>
+              <div>Server revision: {String(conflict.serverRevision)}</div>
+              <div>
+                Local payload:{' '}
+                {String((conflict.localChange as { payloadJson?: string } | undefined)?.payloadJson ?? '—')}
+              </div>
+            </div>
+            <div className="card-actions">
+              <Button loading={busy} onClick={() => void resolve(String(conflict.id), 'KEEP_SERVER')}>
+                Keep server
+              </Button>
+              <Button
+                variant="tonal"
+                loading={busy}
+                onClick={() => void resolve(String(conflict.id), 'KEEP_TERMINAL_CHANGE')}
+              >
+                Keep terminal change
+              </Button>
+              <Button variant="outlined" disabled>
+                Merge manually
+              </Button>
+            </div>
+          </article>
+        ))}
+
+      {panel === 'conflicts' && !conflicts.length && !busy && (
+        <div className="empty-state">No open sync conflicts.</div>
+      )}
     </section>
   )
 }

@@ -1,7 +1,9 @@
 import { useEffect, useState } from 'react'
 import { api, ApiError } from '../api/client'
+import { Button, LinearProgress, SegmentedControl } from '../components/ui'
 
 type LogLoader = () => Promise<Record<string, unknown>[]>
+type Density = 'comfortable' | 'compact'
 
 function LogsPage({
   title,
@@ -15,6 +17,7 @@ function LogsPage({
   const [items, setItems] = useState<Record<string, unknown>[]>([])
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
+  const [density, setDensity] = useState<Density>('comfortable')
 
   async function reload() {
     setBusy(true)
@@ -39,16 +42,29 @@ function LogsPage({
           <h1>{title}</h1>
           <p className="muted">{description}</p>
         </div>
-        <button className="btn secondary" type="button" onClick={() => void reload()} disabled={busy}>
+        <Button variant="tonal" loading={busy} onClick={() => void reload()}>
           Refresh
-        </button>
+        </Button>
       </div>
 
       {error && <div className="error-banner">{error}</div>}
+      {busy && <LinearProgress className="table-busy" label="Loading logs" />}
+
+      <div className="toolbar-row">
+        <SegmentedControl
+          ariaLabel="Table density"
+          value={density}
+          onChange={setDensity}
+          options={[
+            { value: 'comfortable', label: 'Comfortable' },
+            { value: 'compact', label: 'Compact' },
+          ]}
+        />
+      </div>
 
       {items.length ? (
         <div className="data-panel">
-          <table className="data-table">
+          <table className={`data-table${density === 'compact' ? ' compact' : ''}`}>
             <thead>
               <tr>
                 <th>Event</th>
@@ -62,14 +78,14 @@ function LogsPage({
               {items.map((item, idx) => (
                 <tr key={String(item.id ?? idx)}>
                   <td className="cell-title">{String(item.eventType ?? item.action ?? 'Event')}</td>
-                  <td>
+                  <td className="mono">
                     {item.occurredAtEpochMillis || item.createdAtEpochMillis
                       ? new Date(Number(item.occurredAtEpochMillis ?? item.createdAtEpochMillis)).toLocaleString()
                       : '—'}
                   </td>
-                  <td>{String(item.actorUserId ?? '—')}</td>
+                  <td className="mono">{String(item.actorUserId ?? '—')}</td>
                   <td>{String(item.detail ?? '—')}</td>
-                  <td>
+                  <td className="mono">
                     {String(item.entityType ?? '—')} {String(item.entityId ?? '')}
                   </td>
                 </tr>

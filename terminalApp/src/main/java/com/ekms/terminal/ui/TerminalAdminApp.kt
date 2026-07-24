@@ -48,6 +48,7 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import android.provider.Settings
+import android.util.Log
 import com.ekms.shared.api.CompleteCredentialEnrollmentRequest
 import com.ekms.shared.api.CreateAdminUserRequest
 import com.ekms.shared.api.RevokeCredentialEnrollmentRequest
@@ -679,27 +680,60 @@ fun TerminalAdminApp() {
                 }
 
                 SuperAdminRoute.ENROLL_USER -> {
+                    var unitSites by remember { mutableStateOf<List<com.ekms.shared.api.SiteDto>>(emptyList()) }
                     LaunchedEffect(serverLinked) {
-                        if (serverLinked) refreshServerPersonnel()
+                        if (serverLinked) {
+                            refreshServerPersonnel()
+                            try {
+                                unitSites = apiClient.listSites()
+                            } catch (error: Throwable) {
+                                notice = "Could not load units from server: ${error.message ?: "Unknown error"}"
+                            }
+                        }
                     }
                     EnrollUserScreen(
                         padding = padding,
                         users = personnelForScreens,
                         serverLinked = serverLinked,
                         assignedUnitId = assignedUnitId,
+                        unitSites = unitSites,
                         notice = notice,
                         onBack = { route = SuperAdminRoute.DASHBOARD },
-                        onSave = { displayName, identifier, password, role ->
+                        onSave = { displayName, identifier, password, role, selectedUnitId ->
+                            // #region agent log
+                            Log.i(
+                                "EKMS_DEBUG",
+                                "addPersonnel serverLinked=$serverLinked assignedUnit=${assignedUnitId != null} selectedUnit=${selectedUnitId.isNotBlank()} role=$role",
+                            )
+                            apiClient.postAgentDebugLog(
+                                hypothesisId = if (serverLinked) "B" else "A",
+                                location = "TerminalAdminApp.kt:onSave",
+                                message = "add personnel tapped",
+                                dataJson =
+                                    """{"serverLinked":$serverLinked,"hasAssignedUnit":${!assignedUnitId.isNullOrBlank()},"hasSelectedUnit":${selectedUnitId.isNotBlank()},"role":"${role.name}","identifierLen":${identifier.trim().length},"passwordLen":${password.length}}""",
+                            )
+                            // #endregion
                             if (serverLinked) {
                                 try {
                                     val userRole = role.toUserRole()
+                                    val resolvedUnitId = selectedUnitId.takeIf { it.isNotBlank() }
+                                        ?: assignedUnitId?.takeIf { it.isNotBlank() }
                                     val siteIds = when {
                                         userRole == UserRole.SUPER_ADMIN -> emptySet()
-                                        !assignedUnitId.isNullOrBlank() -> setOf(assignedUnitId!!)
+                                        !resolvedUnitId.isNullOrBlank() -> setOf(resolvedUnitId)
                                         else -> emptySet()
                                     }
                                     if (userRole != UserRole.SUPER_ADMIN && siteIds.isEmpty()) {
-                                        notice = "Set Key Cabinet ID to a backend terminal UUID so this unit can be assigned."
+                                        // #region agent log
+                                        apiClient.postAgentDebugLog(
+                                            hypothesisId = "B",
+                                            location = "TerminalAdminApp.kt:onSave",
+                                            message = "blocked missing unit",
+                                            dataJson = """{"role":"${userRole.name}"}""",
+                                        )
+                                        // #endregion
+                                        notice =
+                                            "Select a Unit before adding personnel (same as Personnel Management on the web portal)."
                                         false
                                     } else {
                                         val created = apiClient.createUser(
@@ -716,10 +750,27 @@ fun TerminalAdminApp() {
                                                 .sortedBy { it.displayName.lowercase() },
                                         )
                                         serverPersonnel = store.cachedPersonnel()
-                                        notice = "${created.displayName} was added to Personnel Management."
+                                        // #region agent log
+                                        apiClient.postAgentDebugLog(
+                                            hypothesisId = "C",
+                                            location = "TerminalAdminApp.kt:onSave",
+                                            message = "server createUser ok",
+                                            dataJson = """{"userId":"${created.id}","sites":${siteIds.size}}""",
+                                        )
+                                        // #endregion
+                                        notice =
+                                            "${created.displayName} was added. It should now appear under Personnel Management on the web portal."
                                         true
                                     }
                                 } catch (error: TerminalApiException) {
+                                    // #region agent log
+                                    apiClient.postAgentDebugLog(
+                                        hypothesisId = "B",
+                                        location = "TerminalAdminApp.kt:onSave",
+                                        message = "server createUser api error",
+                                        dataJson = """{"code":${error.statusCode},"msg":"${(error.message ?: "").replace("\"", "'").take(120)}"}""",
+                                    )
+                                    // #endregion
                                     notice = error.message
                                     false
                                 } catch (error: Throwable) {
@@ -735,7 +786,19 @@ fun TerminalAdminApp() {
                                             """{"displayName":"${result.value.displayName}","username":"${result.value.username}","role":"${result.value.role.name}"}""",
                                         )
                                         refreshSnapshot()
-                                        notice = result.value.displayName + " was enrolled as " + result.value.role.label + " (local only — not synced)."
+                                        // #region agent log
+                                        apiClient.postAgentDebugLog(
+                                            hypothesisId = "A",
+                                            location = "TerminalAdminApp.kt:onSave",
+                                            message = "local-only createUser",
+                                            dataJson = """{"userId":"${result.value.id}"}""",
+                                        )
+                                        // #endregion
+                                        notice =
+                                            result.value.displayName +
+                                                " was enrolled as " +
+                                                result.value.role.label +
+                                                " (local only — sign in with a server account to sync to the web portal)."
                                         true
                                     }
 
@@ -1262,36 +1325,44 @@ private fun EnrollUserScreen(
     users: List<TerminalUser>,
     serverLinked: Boolean,
     assignedUnitId: String?,
+    unitSites: List<com.ekms.shared.api.SiteDto>,
     notice: String?,
     onBack: () -> Unit,
-    onSave: suspend (String, String, String, TerminalUserRole) -> Boolean,
+    onSave: suspend (String, String, String, TerminalUserRole, String) -> Boolean,
 ) {
     val scope = rememberCoroutineScope()
     var displayName by remember { mutableStateOf("") }
     var identifier by remember { mutableStateOf("") }
     var temporaryPassword by remember { mutableStateOf("") }
     var role by remember { mutableStateOf(TerminalUserRole.TECHNICIAN) }
+    var selectedUnitId by remember(assignedUnitId, unitSites) {
+        mutableStateOf(
+            assignedUnitId?.takeIf { id -> unitSites.any { it.id == id } }
+                ?: unitSites.firstOrNull()?.id.orEmpty(),
+        )
+    }
     var saving by remember { mutableStateOf(false) }
+    var blockDialog by remember { mutableStateOf<String?>(null) }
 
     TerminalPage(padding) {
         BackButton(onBack)
         HeaderCard(
             title = "Personnel Management",
             description = if (serverLinked) {
-                "Add personnel for this unit. Records match Personnel Management on the web portal. Use Card enrollment to bind an NFC card."
+                "Same as Personnel Management on the web portal: display name, email, role, unit, and password. New records appear on the website immediately."
             } else {
                 "Local bootstrap only — sign in with a server account to sync with Personnel Management on the web portal."
             },
         )
         if (serverLinked) {
             SoftAssistChip(
-                text = if (assignedUnitId.isNullOrBlank()) {
-                    "Server linked · set Key Cabinet ID for unit assignment"
+                text = if (unitSites.isNotEmpty()) {
+                    "Server linked · choose Unit below (Key Cabinet ID optional)"
                 } else {
-                    "Server linked · assigned unit ready"
+                    "Server linked · loading units…"
                 },
-                success = !assignedUnitId.isNullOrBlank(),
-                attention = assignedUnitId.isNullOrBlank(),
+                success = unitSites.isNotEmpty(),
+                attention = unitSites.isEmpty(),
             )
         } else {
             SoftAssistChip(
@@ -1311,11 +1382,11 @@ private fun EnrollUserScreen(
             value = identifier,
             onValueChange = { identifier = it },
             modifier = Modifier.fillMaxWidth(),
-            label = { Text(if (serverLinked) "Email" else "Username") },
+            label = { Text(if (serverLinked) "Account email" else "Username") },
             supportingText = {
                 Text(
                     if (serverLinked) {
-                        "Same email used on the web portal."
+                        "Same email field as Personnel Management on the web portal."
                     } else {
                         "Use letters, numbers, dot, underscore or hyphen."
                     },
@@ -1323,6 +1394,30 @@ private fun EnrollUserScreen(
             },
             singleLine = true,
         )
+        if (serverLinked) {
+            Text("Unit", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+            if (unitSites.isEmpty()) {
+                SoftAssistChip(
+                    text = "No units loaded. Create a unit on the web portal first, or set Key Cabinet ID.",
+                    attention = true,
+                )
+            } else {
+                val selected = unitSites.firstOrNull { it.id == selectedUnitId } ?: unitSites.first()
+                OutlinedButton(
+                    onClick = {
+                        val index = unitSites.indexOfFirst { it.id == selectedUnitId }.coerceAtLeast(0)
+                        selectedUnitId = unitSites[(index + 1) % unitSites.size].id
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                    enabled = !saving && unitSites.size > 1,
+                ) {
+                    Text(
+                        selected.name +
+                            (if (unitSites.size > 1) " · change" else ""),
+                    )
+                }
+            }
+        }
         PasswordField(
             if (serverLinked) "Initial password (min 8)" else "Temporary password",
             temporaryPassword,
@@ -1343,14 +1438,28 @@ private fun EnrollUserScreen(
         }
         Button(
             onClick = {
+                // #region agent log
+                Log.i(
+                    "EKMS_DEBUG",
+                    "Add personnel button click nameLen=${displayName.trim().length} idLen=${identifier.trim().length} pwLen=${temporaryPassword.length} unit=$selectedUnitId serverLinked=$serverLinked",
+                )
+                // #endregion
+                if (serverLinked && selectedUnitId.isBlank() && unitSites.isEmpty()) {
+                    blockDialog =
+                        "Select a Unit before adding personnel. Create a unit on the web portal, or set Key Cabinet ID in Admin Menu."
+                    return@Button
+                }
                 saving = true
                 scope.launch {
-                    val ok = onSave(displayName, identifier, temporaryPassword, role)
+                    val ok = onSave(displayName, identifier, temporaryPassword, role, selectedUnitId)
                     if (ok) {
                         displayName = ""
                         identifier = ""
                         temporaryPassword = ""
                         role = TerminalUserRole.TECHNICIAN
+                    } else if (serverLinked && selectedUnitId.isBlank()) {
+                        blockDialog =
+                            "Select a Unit before adding personnel (same as the web portal)."
                     }
                     saving = false
                 }
@@ -1363,6 +1472,19 @@ private fun EnrollUserScreen(
         ) {
             Text(if (saving) "Saving…" else "Add personnel")
         }
+        // #region agent log
+        if (
+            displayName.isNotBlank() &&
+            identifier.isNotBlank() &&
+            temporaryPassword.isNotEmpty() &&
+            temporaryPassword.length < 8
+        ) {
+            SoftAssistChip(
+                text = "Password must be at least 8 characters before Add personnel enables",
+                attention = true,
+            )
+        }
+        // #endregion
 
         Text("Personnel", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
         users.forEach { user ->
@@ -1375,6 +1497,19 @@ private fun EnrollUserScreen(
                 }
             }
         }
+    }
+
+    blockDialog?.let { message ->
+        AlertDialog(
+            onDismissRequest = { blockDialog = null },
+            title = { Text("Unit required") },
+            text = { Text(message) },
+            confirmButton = {
+                TextButton(onClick = { blockDialog = null }) {
+                    Text("OK")
+                }
+            },
+        )
     }
 }
 
