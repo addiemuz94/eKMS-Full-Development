@@ -1,7 +1,6 @@
 import cors from 'cors';
 import dotenv from 'dotenv';
 import express from 'express';
-import { agentDebugLog } from './agentDebugLog.js';
 import { requireAuth, requireSuperAdmin } from './middleware/auth.js';
 import { idempotency } from './middleware/idempotency.js';
 import { login, refresh } from './routes/auth.js';
@@ -62,20 +61,6 @@ app.use(express.json({ limit: '1mb' }));
 app.get('/health', (_req, res) => {
   res.json({ ok: true, service: 'ekms-backend' });
 });
-
-// #region agent log
-app.post('/v1/debug/agent-log', (req, res) => {
-  const body = req.body && typeof req.body === 'object' ? req.body : {};
-  agentDebugLog({
-    hypothesisId: body.hypothesisId || 'client',
-    location: body.location || 'client',
-    message: body.message || 'client-log',
-    data: body.data && typeof body.data === 'object' ? body.data : {},
-    runId: body.runId || 'pre-fix',
-  });
-  res.status(204).end();
-});
-// #endregion
 
 app.post('/v1/auth/login', login);
 app.post('/v1/auth/refresh', refresh);

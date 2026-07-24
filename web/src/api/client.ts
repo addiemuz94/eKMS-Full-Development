@@ -108,6 +108,11 @@ function deletePath(path: string) {
     request<Record<string, unknown>>('DELETE', `${path}/${id}`, undefined, { idempotent: true })
 }
 
+function updatePath(path: string) {
+  return (id: string, payload: Record<string, unknown>) =>
+    request<Record<string, unknown>>('PATCH', `${path}/${id}`, payload, { idempotent: true })
+}
+
 export type RecycleBinEntry = {
   id: string
   recordType: string
@@ -163,6 +168,8 @@ export const api = {
     request<ListResponse<SiteDto>>('GET', '/v1/admin/sites').then((r) => r.items),
   createSite: (payload: Record<string, unknown>) =>
     request<SiteDto>('POST', '/v1/admin/sites', payload, { idempotent: true }),
+  updateSite: (id: string, payload: Record<string, unknown>) =>
+    request<SiteDto>('PATCH', `/v1/admin/sites/${id}`, payload, { idempotent: true }),
   deleteSite: (id: string) =>
     request<SiteDto>('DELETE', `/v1/admin/sites/${id}`, undefined, { idempotent: true }),
 
@@ -170,6 +177,8 @@ export const api = {
     request<ListResponse<TerminalDto>>('GET', '/v1/admin/terminals').then((r) => r.items),
   createTerminal: (payload: Record<string, unknown>) =>
     request<TerminalDto>('POST', '/v1/admin/terminals', payload, { idempotent: true }),
+  updateTerminal: (id: string, payload: Record<string, unknown>) =>
+    request<TerminalDto>('PATCH', `/v1/admin/terminals/${id}`, payload, { idempotent: true }),
   deleteTerminal: (id: string) =>
     request<TerminalDto>('DELETE', `/v1/admin/terminals/${id}`, undefined, { idempotent: true }),
 
@@ -177,6 +186,8 @@ export const api = {
     request<ListResponse<UserDto>>('GET', '/v1/admin/users').then((r) => r.items),
   createUser: (payload: Record<string, unknown>) =>
     request<UserDto>('POST', '/v1/admin/users', payload, { idempotent: true }),
+  updateUser: (id: string, payload: Record<string, unknown>) =>
+    request<UserDto>('PATCH', `/v1/admin/users/${id}`, payload, { idempotent: true }),
   deleteUser: (id: string) =>
     request<UserDto>('DELETE', `/v1/admin/users/${id}`, undefined, { idempotent: true }),
 
@@ -206,31 +217,39 @@ export const api = {
     request<ListResponse<KeyDto>>('GET', '/v1/admin/keys').then((r) => r.items),
   createKey: (payload: Record<string, unknown>) =>
     request<KeyDto>('POST', '/v1/admin/keys', payload, { idempotent: true }),
+  updateKey: (id: string, payload: Record<string, unknown>) =>
+    request<KeyDto>('PATCH', `/v1/admin/keys/${id}`, payload, { idempotent: true }),
   deleteKey: (id: string) =>
     request<KeyDto>('DELETE', `/v1/admin/keys/${id}`, undefined, { idempotent: true }),
 
   listAccessGrants: listPath('/v1/admin/access-grants'),
   createAccessGrant: createPath('/v1/admin/access-grants'),
+  updateAccessGrant: updatePath('/v1/admin/access-grants'),
   deleteAccessGrant: deletePath('/v1/admin/access-grants'),
 
   listEvents: listPath('/v1/admin/event-definitions'),
   createEvent: createPath('/v1/admin/event-definitions'),
+  updateEvent: updatePath('/v1/admin/event-definitions'),
   deleteEvent: deletePath('/v1/admin/event-definitions'),
 
   listSchedules: listPath('/v1/admin/schedules'),
   createSchedule: createPath('/v1/admin/schedules'),
+  updateSchedule: updatePath('/v1/admin/schedules'),
   deleteSchedule: deletePath('/v1/admin/schedules'),
 
   listPersonnelGroups: listPath('/v1/admin/personnel-groups'),
   createPersonnelGroup: createPath('/v1/admin/personnel-groups'),
+  updatePersonnelGroup: updatePath('/v1/admin/personnel-groups'),
   deletePersonnelGroup: deletePath('/v1/admin/personnel-groups'),
 
   listKeyGroups: listPath('/v1/admin/key-groups'),
   createKeyGroup: createPath('/v1/admin/key-groups'),
+  updateKeyGroup: updatePath('/v1/admin/key-groups'),
   deleteKeyGroup: deletePath('/v1/admin/key-groups'),
 
   listMultiAuthRules: listPath('/v1/admin/multi-authentication-rules'),
   createMultiAuthRule: createPath('/v1/admin/multi-authentication-rules'),
+  updateMultiAuthRule: updatePath('/v1/admin/multi-authentication-rules'),
   deleteMultiAuthRule: deletePath('/v1/admin/multi-authentication-rules'),
 
   listAppointments: listPath('/v1/admin/appointments'),
@@ -239,14 +258,20 @@ export const api = {
     request<Record<string, unknown>>('POST', `/v1/admin/appointments/${id}/review`, payload, {
       idempotent: true,
     }),
+  updateAppointmentPermissions: (id: string, payload: Record<string, unknown>) =>
+    request<Record<string, unknown>>('PATCH', `/v1/admin/appointments/${id}/permissions`, payload, {
+      idempotent: true,
+    }),
   deleteAppointment: deletePath('/v1/admin/appointments'),
 
   listAppointmentReasons: listPath('/v1/admin/appointment-reasons'),
   createAppointmentReason: createPath('/v1/admin/appointment-reasons'),
+  updateAppointmentReason: updatePath('/v1/admin/appointment-reasons'),
   deleteAppointmentReason: deletePath('/v1/admin/appointment-reasons'),
 
   listAppointmentPermissions: listPath('/v1/admin/appointment-permissions'),
   createAppointmentPermission: createPath('/v1/admin/appointment-permissions'),
+  updateAppointmentPermission: updatePath('/v1/admin/appointment-permissions'),
   deleteAppointmentPermission: deletePath('/v1/admin/appointment-permissions'),
 
   listSyncConflicts: listPath('/v1/admin/sync-conflicts'),

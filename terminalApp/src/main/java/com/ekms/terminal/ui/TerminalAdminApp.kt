@@ -700,19 +700,6 @@ fun TerminalAdminApp() {
                         notice = notice,
                         onBack = { route = SuperAdminRoute.DASHBOARD },
                         onSave = { displayName, identifier, password, role, selectedUnitId ->
-                            // #region agent log
-                            Log.i(
-                                "EKMS_DEBUG",
-                                "addPersonnel serverLinked=$serverLinked assignedUnit=${assignedUnitId != null} selectedUnit=${selectedUnitId.isNotBlank()} role=$role",
-                            )
-                            apiClient.postAgentDebugLog(
-                                hypothesisId = if (serverLinked) "B" else "A",
-                                location = "TerminalAdminApp.kt:onSave",
-                                message = "add personnel tapped",
-                                dataJson =
-                                    """{"serverLinked":$serverLinked,"hasAssignedUnit":${!assignedUnitId.isNullOrBlank()},"hasSelectedUnit":${selectedUnitId.isNotBlank()},"role":"${role.name}","identifierLen":${identifier.trim().length},"passwordLen":${password.length}}""",
-                            )
-                            // #endregion
                             if (serverLinked) {
                                 try {
                                     val userRole = role.toUserRole()
@@ -724,14 +711,6 @@ fun TerminalAdminApp() {
                                         else -> emptySet()
                                     }
                                     if (userRole != UserRole.SUPER_ADMIN && siteIds.isEmpty()) {
-                                        // #region agent log
-                                        apiClient.postAgentDebugLog(
-                                            hypothesisId = "B",
-                                            location = "TerminalAdminApp.kt:onSave",
-                                            message = "blocked missing unit",
-                                            dataJson = """{"role":"${userRole.name}"}""",
-                                        )
-                                        // #endregion
                                         notice =
                                             "Select a Unit before adding personnel (same as Personnel Management on the web portal)."
                                         false
@@ -750,27 +729,11 @@ fun TerminalAdminApp() {
                                                 .sortedBy { it.displayName.lowercase() },
                                         )
                                         serverPersonnel = store.cachedPersonnel()
-                                        // #region agent log
-                                        apiClient.postAgentDebugLog(
-                                            hypothesisId = "C",
-                                            location = "TerminalAdminApp.kt:onSave",
-                                            message = "server createUser ok",
-                                            dataJson = """{"userId":"${created.id}","sites":${siteIds.size}}""",
-                                        )
-                                        // #endregion
                                         notice =
                                             "${created.displayName} was added. It should now appear under Personnel Management on the web portal."
                                         true
                                     }
                                 } catch (error: TerminalApiException) {
-                                    // #region agent log
-                                    apiClient.postAgentDebugLog(
-                                        hypothesisId = "B",
-                                        location = "TerminalAdminApp.kt:onSave",
-                                        message = "server createUser api error",
-                                        dataJson = """{"code":${error.status},"msg":"${(error.message ?: "").replace("\"", "'").take(120)}"}""",
-                                    )
-                                    // #endregion
                                     notice = error.message
                                     false
                                 } catch (error: Throwable) {
@@ -786,14 +749,6 @@ fun TerminalAdminApp() {
                                             """{"displayName":"${result.value.displayName}","username":"${result.value.username}","role":"${result.value.role.name}"}""",
                                         )
                                         refreshSnapshot()
-                                        // #region agent log
-                                        apiClient.postAgentDebugLog(
-                                            hypothesisId = "A",
-                                            location = "TerminalAdminApp.kt:onSave",
-                                            message = "local-only createUser",
-                                            dataJson = """{"userId":"${result.value.id}"}""",
-                                        )
-                                        // #endregion
                                         notice =
                                             result.value.displayName +
                                                 " was enrolled as " +

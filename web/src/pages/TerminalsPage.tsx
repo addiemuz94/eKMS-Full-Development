@@ -10,6 +10,7 @@ export function TerminalsPage() {
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   const [open, setOpen] = useState(false)
+  const [editingTerminal, setEditingTerminal] = useState<TerminalDto | null>(null)
   const [name, setName] = useState('')
   const [siteId, setSiteId] = useState('')
   const [deviceId, setDeviceId] = useState('')
@@ -40,7 +41,23 @@ export function TerminalsPage() {
     return sites.find((site) => site.id === id)?.name ?? 'Unassigned unit'
   }
 
-  async function onCreate(e: FormEvent) {
+  function resetForm() {
+    setName('')
+    setDeviceId('')
+    setNodeCount('24')
+  }
+
+  function openEdit(terminal: TerminalDto) {
+    setEditingTerminal(terminal)
+    setName(terminal.name)
+    setSiteId(terminal.siteId)
+    setDeviceId(terminal.serialNumber ?? '')
+    setNodeCount(String(terminal.configuredSlotCount))
+    setError(null)
+    setOpen(true)
+  }
+
+  async function onSave(e: FormEvent) {
     e.preventDefault()
     if (!siteId) {
       setError('Select a unit before saving a terminal.')
@@ -49,19 +66,39 @@ export function TerminalsPage() {
     setBusy(true)
     setError(null)
     try {
-      await api.createTerminal({
-        siteId,
-        name: name.trim() || 'New Cabinet',
-        boxAddress: 1,
-        serialNumber: deviceId.trim() || null,
-        configuredSlotCount: Math.min(255, Math.max(1, Number(nodeCount) || 24)),
-      })
+      if (editingTerminal) {
+        await api.updateTerminal(editingTerminal.id, {
+          siteId,
+          name: name.trim() || 'New Cabinet',
+          boxAddress: editingTerminal.boxAddress,
+          serialNumber: deviceId.trim() || null,
+          configuredSlotCount: Math.min(255, Math.max(1, Number(nodeCount) || 24)),
+          expectedRevision: editingTerminal.revision,
+        })
+      } else {
+        await api.createTerminal({
+          siteId,
+          name: name.trim() || 'New Cabinet',
+          boxAddress: 1,
+          serialNumber: deviceId.trim() || null,
+          configuredSlotCount: Math.min(255, Math.max(1, Number(nodeCount) || 24)),
+        })
+      }
       setOpen(false)
-      setName('')
-      setDeviceId('')
+      setEditingTerminal(null)
+      resetForm()
       await reload()
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : 'Failed to create terminal')
+      if (err instanceof ApiError && err.status === 409) {
+        setError(
+          'This terminal was changed by someone else since you opened it. Reloading the latest version — please reapply your edit.',
+        )
+        setOpen(false)
+        setEditingTerminal(null)
+        await reload()
+      } else {
+        setError(err instanceof ApiError ? err.message : 'Failed to save terminal')
+      }
     } finally {
       setBusy(false)
     }
@@ -90,7 +127,14 @@ export function TerminalsPage() {
             Register Android key-cabinet terminals. Physical serial I/O remains on the Terminal only.
           </p>
         </div>
-        <Button onClick={() => setOpen(true)} disabled={!sites.length}>
+        <Button
+          onClick={() => {
+            resetForm()
+            setEditingTerminal(null)
+            setOpen(true)
+          }}
+          disabled={!sites.length}
+        >
           Add Android terminal
         </Button>
       </div>
@@ -135,6 +179,9 @@ export function TerminalsPage() {
                   </td>
                   <td className="mono">{terminal.id}</td>
                   <td className="col-actions">
+                    <Button variant="link" disabled={busy} onClick={() => openEdit(terminal)}>
+                      Edit
+                    </Button>
                     <Button variant="link" disabled={busy} onClick={() => void onArchive(terminal.id)}>
                       Recycle
                     </Button>
@@ -150,8 +197,8 @@ export function TerminalsPage() {
 
       {open && (
         <div className="dialog-backdrop" onClick={() => setOpen(false)}>
-          <form className="dialog" onClick={(e) => e.stopPropagation()} onSubmit={onCreate}>
-            <h2>Add Android terminal</h2>
+          <form className="dialog" onClick={(e) => e.stopPropagation()} onSubmit={onSave}>
+            <h2>{editingTerminal ? 'Edit Android terminal' : 'Add Android terminal'}</h2>
             <p className="dialog-copy">Create a cabinet record for the website and Android Terminal pairing.</p>
             <div className="field">
               <label>Terminal / cabinet name</label>
@@ -178,11 +225,17 @@ export function TerminalsPage() {
               </div>
             </div>
             <div className="dialog-actions">
-              <Button variant="outlined" onClick={() => setOpen(false)}>
+              <Button
+                variant="outlined"
+                onClick={() => {
+                  setOpen(false)
+                  setEditingTerminal(null)
+                }}
+              >
                 Cancel
               </Button>
               <Button type="submit" loading={busy}>
-                Save terminal
+                {editingTerminal ? 'Save changes' : 'Save terminal'}
               </Button>
             </div>
           </form>

@@ -166,52 +166,8 @@ class CabinetHardwareController(
     }
 
     /**
-     * Section 2 (key retrieval): unlocks the electromagnet at [nodeAddress]
-     * (0x13 — field-verified to free the key peg for pickup; see
-     * docs/Key_Cabinet_Communication_Protocol.md) then confirms via Test
-     * Micro Switch (0x16) that the bolt was actually removed before
-     * reporting success — an acknowledged command is not treated as proof
-     * the key was really taken. Connects the cabinet with its saved/default
-     * settings first if it isn't already open, since an ordinary operator
-     * reaches this directly from login, not through the admin hardware
-     * console's manual connect step.
-     */
-    fun releaseKeyForPickup(
-        nodeAddress: Int,
-        onReleased: () -> Unit,
-        onFailure: (String) -> Unit,
-    ) {
-        if (!canStartOperatorCommand(onFailure)) return
-        publish(currentState.copy(busy = true, message = "Releasing key at node $nodeAddress…"))
-        worker.execute {
-            try {
-                ensureConnectedOnWorker()
-                val activeLink = requireNotNull(link) { "Cabinet protocol is unavailable." }
-                activeLink.engageElectromagnet(nodeAddress)
-
-                val status = activeLink.testMicroSwitch(nodeAddress).data
-                if (!status.isFourBytesOf(0xFF)) {
-                    throw IllegalStateException("Node $nodeAddress did not confirm the key was removed.")
-                }
-
-                publish(
-                    currentState.copy(
-                        busy = false,
-                        nodeStatus = "Node $nodeAddress: key removed and confirmed.",
-                        message = "Key released for pickup.",
-                    ),
-                )
-                mainHandler.post(onReleased)
-            } catch (error: Exception) {
-                reportCommandFailure("Unable to release the key at node $nodeAddress", error, onFailure)
-            }
-        }
-    }
-
-    /**
      * Key Take Flow, step 1 (CLAUDE.md "Terminal App UX Baseline
-     * (Production)" §1 — supersedes [releaseKeyForPickup]'s bare release
-     * for the production TAKE side): Blue Light On (0x11) -> Unlock (0x13,
+     * (Production)" §1 — the production TAKE side): Blue Light On (0x11) -> Unlock (0x13,
      * field-verified) -> Eject Door (0x23), then confirms the door is
      * physically open via Check Door Status (0x22). The 500 ms/3-attempt
      * retry for that confirmation already lives in

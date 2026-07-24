@@ -16,6 +16,7 @@ export function EventsPage() {
       ]}
       list={api.listEvents}
       create={api.createEvent}
+      update={api.updateEvent}
       remove={api.deleteEvent}
       titleOf={(item) => String(item.name)}
       renderLines={(item, sites) => [
@@ -51,6 +52,7 @@ export function SchedulesPage() {
       ]}
       list={api.listSchedules}
       create={api.createSchedule}
+      update={api.updateSchedule}
       remove={api.deleteSchedule}
       titleOf={(item) => String(item.name)}
       renderLines={(item, sites) => [
@@ -75,6 +77,7 @@ export function UserGroupsPage() {
       ]}
       list={api.listPersonnelGroups}
       create={api.createPersonnelGroup}
+      update={api.updatePersonnelGroup}
       remove={api.deletePersonnelGroup}
       titleOf={(item) => String(item.name)}
       renderLines={(item, sites) => [`Unit: ${siteName(sites, item.siteId)}`, `Code: ${item.code}`]}
@@ -95,6 +98,7 @@ export function KeyGroupsPage() {
       ]}
       list={api.listKeyGroups}
       create={api.createKeyGroup}
+      update={api.updateKeyGroup}
       remove={api.deleteKeyGroup}
       titleOf={(item) => String(item.name)}
       renderLines={(item, sites: SiteDto[]) => [`Unit: ${siteName(sites, item.siteId)}`, `Code: ${item.code}`]}
@@ -114,6 +118,9 @@ export function AppointmentReasonsPage() {
       ]}
       list={api.listAppointmentReasons}
       create={(payload: Record<string, unknown>) => api.createAppointmentReason({ ...payload, active: true })}
+      update={(id: string, payload: Record<string, unknown>) =>
+        api.updateAppointmentReason(id, { ...payload, active: true })
+      }
       remove={api.deleteAppointmentReason}
       titleOf={(item) => String(item.name)}
       renderLines={(item, sites: SiteDto[]) => [

@@ -1,6 +1,5 @@
 import { Router } from 'express';
 import { z } from 'zod';
-import { agentDebugLog } from '../agentDebugLog.js';
 import pool from '../db.js';
 import { badRequest, lifecycleFromRow, newId, notFound, nowMs, writeAudit } from '../util.js';
 
@@ -283,21 +282,6 @@ async function applyOfflineChange(terminalRow, change) {
   }
 
   if (type === 'USER') {
-    // #region agent log
-    agentDebugLog({
-      hypothesisId: 'D',
-      location: 'sync.js:applyOfflineChange:USER',
-      message: 'offline USER change applied',
-      data: {
-        entityId,
-        hasEmail: Boolean(payload.email),
-        hasUsername: Boolean(payload.username),
-        role: payload.role || null,
-        terminalId: terminalRow.id,
-        siteId: terminalRow.site_id,
-      },
-    });
-    // #endregion
     const [existing] = await pool.execute(`SELECT id FROM users WHERE id = :id LIMIT 1`, {
       id: entityId,
     });

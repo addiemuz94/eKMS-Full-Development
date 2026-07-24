@@ -10,6 +10,7 @@ export function MultiAuthPage() {
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   const [open, setOpen] = useState(false)
+  const [editingRule, setEditingRule] = useState<Record<string, unknown> | null>(null)
   const [siteId, setSiteId] = useState('')
   const [primary, setPrimary] = useState('')
   const [keyGroupId, setKeyGroupId] = useState('')
@@ -48,22 +49,51 @@ export function MultiAuthPage() {
     return String(list.find((entry) => entry.id === id)?.name ?? id ?? '—')
   }
 
-  async function onCreate(e: FormEvent) {
+  function openEdit(rule: Record<string, unknown>) {
+    setEditingRule(rule)
+    setSiteId(String(rule.siteId ?? ''))
+    setPrimary(String(rule.primaryPersonnelGroupId ?? ''))
+    setKeyGroupId(String(rule.keyGroupId ?? ''))
+    setAssistant1(rule.assistantGroupOneId ? String(rule.assistantGroupOneId) : '')
+    setAssistant2(rule.assistantGroupTwoId ? String(rule.assistantGroupTwoId) : '')
+    setError(null)
+    setOpen(true)
+  }
+
+  async function onSave(e: FormEvent) {
     e.preventDefault()
     setBusy(true)
     setError(null)
     try {
-      await api.createMultiAuthRule({
+      const payload = {
         siteId,
         primaryPersonnelGroupId: primary,
         assistantGroupOneId: assistant1 || null,
         assistantGroupTwoId: assistant2 || null,
         keyGroupId,
-      })
+      }
+      if (editingRule) {
+        await api.updateMultiAuthRule(String(editingRule.id), {
+          ...payload,
+          expectedRevision: Number(editingRule.revision ?? 0),
+        })
+      } else {
+        await api.createMultiAuthRule(payload)
+      }
       setOpen(false)
+      setEditingRule(null)
       await reload()
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : 'Failed to create rule')
+      if (err instanceof ApiError && err.status === 409) {
+        setError(
+          'This rule was changed by someone else since you opened it. Reloading the latest version — please reapply your edit.',
+        )
+        setOpen(false)
+        setEditingRule(null)
+        await reload()
+      } else {
+        setError(err instanceof ApiError ? err.message : 'Failed to save rule')
+      }
     } finally {
       setBusy(false)
     }
@@ -76,7 +106,14 @@ export function MultiAuthPage() {
           <h1>Multi-authentication Rules</h1>
           <p className="muted">Primary and assistant personnel groups required for a key group.</p>
         </div>
-        <button className="btn" type="button" onClick={() => setOpen(true)}>
+        <button
+          className="btn"
+          type="button"
+          onClick={() => {
+            setEditingRule(null)
+            setOpen(true)
+          }}
+        >
           Add rule
         </button>
       </div>
@@ -93,6 +130,9 @@ export function MultiAuthPage() {
             <div>Key group: {label(keyGroups, rule.keyGroupId)}</div>
           </div>
           <div className="card-actions">
+            <button className="btn linkish" type="button" onClick={() => openEdit(rule)}>
+              Edit
+            </button>
             <button
               className="btn linkish"
               type="button"
@@ -114,8 +154,8 @@ export function MultiAuthPage() {
 
       {open && (
         <div className="dialog-backdrop" onClick={() => setOpen(false)}>
-          <form className="dialog" onClick={(e) => e.stopPropagation()} onSubmit={onCreate}>
-            <h2>Add multi-auth rule</h2>
+          <form className="dialog" onClick={(e) => e.stopPropagation()} onSubmit={onSave}>
+            <h2>{editingRule ? 'Edit multi-auth rule' : 'Add multi-auth rule'}</h2>
             <p className="dialog-copy">Require one primary group plus optional assistant groups for a key group.</p>
             <div className="field">
               <label>Unit</label>
@@ -172,11 +212,18 @@ export function MultiAuthPage() {
               </select>
             </div>
             <div className="dialog-actions">
-              <button className="btn secondary" type="button" onClick={() => setOpen(false)}>
+              <button
+                className="btn secondary"
+                type="button"
+                onClick={() => {
+                  setOpen(false)
+                  setEditingRule(null)
+                }}
+              >
                 Cancel
               </button>
               <button className="btn" type="submit" disabled={busy}>
-                Save
+                {editingRule ? 'Save changes' : 'Save'}
               </button>
             </div>
           </form>

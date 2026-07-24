@@ -14,6 +14,7 @@ export function UnitsPage() {
   const [notice, setNotice] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   const [open, setOpen] = useState(false)
+  const [editingSite, setEditingSite] = useState<SiteDto | null>(null)
   const [name, setName] = useState('')
   const [province, setProvince] = useState('')
   const [city, setCity] = useState('')
@@ -60,7 +61,17 @@ export function UnitsPage() {
     setParentSiteId('')
   }
 
-  async function onCreate(e: FormEvent) {
+  function openEdit(site: SiteDto) {
+    setEditingSite(site)
+    setName(site.name)
+    setProvince(site.province ?? '')
+    setCity(site.city ?? '')
+    setParentSiteId(site.parentSiteId ?? '')
+    setError(null)
+    setOpen(true)
+  }
+
+  async function onSave(e: FormEvent) {
     e.preventDefault()
     if (!name.trim()) {
       setError('Unit name is required.')
@@ -77,18 +88,39 @@ export function UnitsPage() {
     setBusy(true)
     setError(null)
     try {
-      await api.createSite({
-        name: name.trim(),
-        province,
-        city,
-        parentSiteId: parentSiteId || null,
-      })
+      if (editingSite) {
+        await api.updateSite(editingSite.id, {
+          name: name.trim(),
+          province,
+          city,
+          parentSiteId: parentSiteId || null,
+          expectedRevision: editingSite.revision,
+        })
+        setNotice('Unit saved.')
+      } else {
+        await api.createSite({
+          name: name.trim(),
+          province,
+          city,
+          parentSiteId: parentSiteId || null,
+        })
+        setNotice('Unit saved.')
+      }
       setOpen(false)
+      setEditingSite(null)
       resetForm()
-      setNotice('Unit saved.')
       await reload()
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : 'Failed to create unit')
+      if (err instanceof ApiError && err.status === 409) {
+        setError(
+          'This unit was changed by someone else since you opened it. Reloading the latest version — please reapply your edit.',
+        )
+        setOpen(false)
+        setEditingSite(null)
+        await reload()
+      } else {
+        setError(err instanceof ApiError ? err.message : 'Failed to save unit')
+      }
     } finally {
       setBusy(false)
     }
@@ -126,6 +158,7 @@ export function UnitsPage() {
         <Button
           onClick={() => {
             resetForm()
+            setEditingSite(null)
             setOpen(true)
           }}
         >
@@ -176,6 +209,9 @@ export function UnitsPage() {
                   <td>{site.city?.trim() || '—'}</td>
                   <td>{parentName(site)}</td>
                   <td className="col-actions">
+                    <Button variant="link" onClick={() => openEdit(site)}>
+                      Edit
+                    </Button>
                     <Button variant="link" onClick={() => void onArchive(site.id)}>
                       Recycle
                     </Button>
@@ -191,8 +227,8 @@ export function UnitsPage() {
 
       {open && (
         <div className="dialog-backdrop" onClick={() => setOpen(false)}>
-          <form className="dialog" onClick={(e) => e.stopPropagation()} onSubmit={onCreate}>
-            <h2>Add unit</h2>
+          <form className="dialog" onClick={(e) => e.stopPropagation()} onSubmit={onSave}>
+            <h2>{editingSite ? 'Edit unit' : 'Add unit'}</h2>
             <p className="dialog-copy">
               Choose a Malaysian state/province and city so the unit appears correctly on the dashboard map.
             </p>
@@ -233,19 +269,27 @@ export function UnitsPage() {
               <label>Superior unit (optional)</label>
               <select value={parentSiteId} onChange={(e) => setParentSiteId(e.target.value)}>
                 <option value="">— None —</option>
-                {sites.map((site) => (
-                  <option key={site.id} value={site.id}>
-                    {site.name}
-                  </option>
-                ))}
+                {sites
+                  .filter((site) => site.id !== editingSite?.id)
+                  .map((site) => (
+                    <option key={site.id} value={site.id}>
+                      {site.name}
+                    </option>
+                  ))}
               </select>
             </div>
             <div className="dialog-actions">
-              <Button variant="outlined" onClick={() => setOpen(false)}>
+              <Button
+                variant="outlined"
+                onClick={() => {
+                  setOpen(false)
+                  setEditingSite(null)
+                }}
+              >
                 Cancel
               </Button>
               <Button type="submit" loading={busy}>
-                Save unit
+                {editingSite ? 'Save changes' : 'Save unit'}
               </Button>
             </div>
           </form>

@@ -25,6 +25,7 @@ export function PersonnelPage() {
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   const [open, setOpen] = useState(false)
+  const [editingPerson, setEditingPerson] = useState<UserDto | null>(null)
   const [displayName, setDisplayName] = useState('')
   const [email, setEmail] = useState('')
   const [role, setRole] = useState('TECHNICIAN')
@@ -59,24 +60,6 @@ export function PersonnelPage() {
       setSites(siteRows)
       setTerminals(terminalRows)
       setSiteId((current) => current || siteRows[0]?.id || '')
-      // #region agent log
-      fetch('/v1/debug/agent-log', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'X-Debug-Session-Id': '5c6d1f' },
-        body: JSON.stringify({
-          sessionId: '5c6d1f',
-          hypothesisId: 'C',
-          location: 'PersonnelPage.tsx:reload',
-          message: 'web personnel list loaded',
-          data: {
-            count: userRows.length,
-            emails: userRows.map((u) => u.email).slice(0, 20),
-          },
-          timestamp: Date.now(),
-          runId: 'pre-fix',
-        }),
-      }).catch(() => {})
-      // #endregion
       await loadCardStatuses(userRows)
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'Failed to load personnel')
@@ -102,25 +85,61 @@ export function PersonnelPage() {
     return ids.map((id) => sites.find((site) => site.id === id)?.name ?? id).join(', ')
   }
 
-  async function onCreate(e: FormEvent) {
+  function resetForm() {
+    setDisplayName('')
+    setEmail('')
+    setPassword('')
+    setRole('TECHNICIAN')
+  }
+
+  function openEdit(person: UserDto) {
+    setEditingPerson(person)
+    setDisplayName(person.displayName)
+    setEmail(person.email)
+    setRole(person.role)
+    setSiteId(person.assignedSiteIds?.[0] ?? '')
+    setPassword('')
+    setError(null)
+    setOpen(true)
+  }
+
+  async function onSave(e: FormEvent) {
     e.preventDefault()
     setBusy(true)
     setError(null)
     try {
-      await api.createUser({
-        displayName: displayName.trim(),
-        email: email.trim(),
-        role,
-        assignedSiteIds: role === 'SUPER_ADMIN' ? [] : siteId ? [siteId] : [],
-        password: password.length >= 8 ? password : undefined,
-      })
+      if (editingPerson) {
+        await api.updateUser(editingPerson.id, {
+          displayName: displayName.trim(),
+          email: email.trim(),
+          role,
+          assignedSiteIds: role === 'SUPER_ADMIN' ? [] : siteId ? [siteId] : [],
+          expectedRevision: editingPerson.revision,
+        })
+      } else {
+        await api.createUser({
+          displayName: displayName.trim(),
+          email: email.trim(),
+          role,
+          assignedSiteIds: role === 'SUPER_ADMIN' ? [] : siteId ? [siteId] : [],
+          password: password.length >= 8 ? password : undefined,
+        })
+      }
       setOpen(false)
-      setDisplayName('')
-      setEmail('')
-      setPassword('')
+      setEditingPerson(null)
+      resetForm()
       await reload()
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : 'Failed to create personnel')
+      if (err instanceof ApiError && err.status === 409) {
+        setError(
+          'This person was changed by someone else since you opened it. Reloading the latest version — please reapply your edit.',
+        )
+        setOpen(false)
+        setEditingPerson(null)
+        await reload()
+      } else {
+        setError(err instanceof ApiError ? err.message : 'Failed to save personnel')
+      }
     } finally {
       setBusy(false)
     }
@@ -156,7 +175,15 @@ export function PersonnelPage() {
             the terminal.
           </p>
         </div>
-        <button className="btn" type="button" onClick={() => setOpen(true)}>
+        <button
+          className="btn"
+          type="button"
+          onClick={() => {
+            resetForm()
+            setEditingPerson(null)
+            setOpen(true)
+          }}
+        >
           Add personnel
         </button>
       </div>
@@ -195,6 +222,9 @@ export function PersonnelPage() {
                     <td className="col-actions">
                       {person.role !== 'SUPER_ADMIN' && (
                         <>
+                          <button className="btn linkish" type="button" onClick={() => openEdit(person)}>
+                            Edit
+                          </button>
                           <button
                             className="btn linkish"
                             type="button"
@@ -231,10 +261,12 @@ export function PersonnelPage() {
 
       {open && (
         <div className="dialog-backdrop" onClick={() => setOpen(false)}>
-          <form className="dialog" onClick={(e) => e.stopPropagation()} onSubmit={onCreate}>
-            <h2>Add personnel</h2>
+          <form className="dialog" onClick={(e) => e.stopPropagation()} onSubmit={onSave}>
+            <h2>{editingPerson ? 'Edit personnel' : 'Add personnel'}</h2>
             <p className="dialog-copy">
-              Create a new operator or admin account for the web and terminal ecosystem.
+              {editingPerson
+                ? 'Update this account. Password changes are not available here yet.'
+                : 'Create a new operator or admin account for the web and terminal ecosystem.'}
             </p>
             <div className="field">
               <label>Display name</label>
@@ -266,21 +298,30 @@ export function PersonnelPage() {
                 </div>
               )}
             </div>
-            <div className="field">
-              <label>Initial password (min 8, optional)</label>
-              <input
-                type="password"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                minLength={8}
-              />
-            </div>
+            {!editingPerson && (
+              <div className="field">
+                <label>Initial password (min 8, optional)</label>
+                <input
+                  type="password"
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  minLength={8}
+                />
+              </div>
+            )}
             <div className="dialog-actions">
-              <button className="btn secondary" type="button" onClick={() => setOpen(false)}>
+              <button
+                className="btn secondary"
+                type="button"
+                onClick={() => {
+                  setOpen(false)
+                  setEditingPerson(null)
+                }}
+              >
                 Cancel
               </button>
               <button className="btn" type="submit" disabled={busy}>
-                Save
+                {editingPerson ? 'Save changes' : 'Save'}
               </button>
             </div>
           </form>

@@ -8,6 +8,7 @@ export function KeysPage() {
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   const [open, setOpen] = useState(false)
+  const [editingKey, setEditingKey] = useState<KeyDto | null>(null)
   const [displayName, setDisplayName] = useState('')
   const [siteId, setSiteId] = useState('')
 
@@ -30,17 +31,44 @@ export function KeysPage() {
     void reload()
   }, [])
 
-  async function onCreate(e: FormEvent) {
+  function openEdit(key: KeyDto) {
+    setEditingKey(key)
+    setDisplayName(key.displayName)
+    setSiteId(key.siteId)
+    setError(null)
+    setOpen(true)
+  }
+
+  async function onSave(e: FormEvent) {
     e.preventDefault()
     setBusy(true)
     setError(null)
     try {
-      await api.createKey({ siteId, displayName: displayName.trim() })
+      if (editingKey) {
+        await api.updateKey(editingKey.id, {
+          siteId,
+          displayName: displayName.trim(),
+          fobEnrollmentReference: editingKey.fobEnrollmentReference ?? null,
+          expectedRevision: editingKey.revision,
+        })
+      } else {
+        await api.createKey({ siteId, displayName: displayName.trim() })
+      }
       setOpen(false)
+      setEditingKey(null)
       setDisplayName('')
       await reload()
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : 'Failed to create key')
+      if (err instanceof ApiError && err.status === 409) {
+        setError(
+          'This key was changed by someone else since you opened it. Reloading the latest version — please reapply your edit.',
+        )
+        setOpen(false)
+        setEditingKey(null)
+        await reload()
+      } else {
+        setError(err instanceof ApiError ? err.message : 'Failed to save key')
+      }
     } finally {
       setBusy(false)
     }
@@ -53,7 +81,16 @@ export function KeysPage() {
           <h1>Key Settings</h1>
           <p className="muted">Managed keys from the backend. Raw NFC UIDs never appear here.</p>
         </div>
-        <button className="btn" type="button" onClick={() => setOpen(true)} disabled={!sites.length}>
+        <button
+          className="btn"
+          type="button"
+          onClick={() => {
+            setEditingKey(null)
+            setDisplayName('')
+            setOpen(true)
+          }}
+          disabled={!sites.length}
+        >
           Add key
         </button>
       </div>
@@ -78,6 +115,9 @@ export function KeysPage() {
                   <td>{sites.find((site) => site.id === key.siteId)?.name ?? '—'}</td>
                   <td>{key.fobEnrollmentReference || 'Not enrolled'}</td>
                   <td className="col-actions">
+                    <button className="btn linkish" type="button" onClick={() => openEdit(key)}>
+                      Edit
+                    </button>
                     <button
                       className="btn linkish"
                       type="button"
@@ -103,8 +143,8 @@ export function KeysPage() {
 
       {open && (
         <div className="dialog-backdrop" onClick={() => setOpen(false)}>
-          <form className="dialog" onClick={(e) => e.stopPropagation()} onSubmit={onCreate}>
-            <h2>Add key</h2>
+          <form className="dialog" onClick={(e) => e.stopPropagation()} onSubmit={onSave}>
+            <h2>{editingKey ? 'Edit key' : 'Add key'}</h2>
             <p className="dialog-copy">Create a managed key record without exposing NFC secrets or biometric material.</p>
             <div className="field">
               <label>Key name</label>
@@ -121,11 +161,18 @@ export function KeysPage() {
               </select>
             </div>
             <div className="dialog-actions">
-              <button className="btn secondary" type="button" onClick={() => setOpen(false)}>
+              <button
+                className="btn secondary"
+                type="button"
+                onClick={() => {
+                  setOpen(false)
+                  setEditingKey(null)
+                }}
+              >
                 Cancel
               </button>
               <button className="btn" type="submit" disabled={busy}>
-                Save
+                {editingKey ? 'Save changes' : 'Save'}
               </button>
             </div>
           </form>

@@ -10,6 +10,7 @@ export function PermissionsPage() {
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   const [open, setOpen] = useState(false)
+  const [editingGrant, setEditingGrant] = useState<Record<string, unknown> | null>(null)
   const [userId, setUserId] = useState('')
   const [siteId, setSiteId] = useState('')
   const [keyId, setKeyId] = useState('')
@@ -42,19 +43,51 @@ export function PermissionsPage() {
     void reload()
   }, [])
 
-  async function onCreate(e: FormEvent) {
+  function openEdit(grant: Record<string, unknown>) {
+    setEditingGrant(grant)
+    setUserId(String(grant.userId ?? ''))
+    setSiteId(String(grant.siteId ?? ''))
+    const grantKeyIds = Array.isArray(grant.keyIds) ? (grant.keyIds as string[]) : []
+    setKeyId(grantKeyIds[0] ?? '')
+    setError(null)
+    setOpen(true)
+  }
+
+  async function onSave(e: FormEvent) {
     e.preventDefault()
     if (!userId || !siteId || !keyId) {
       setError('Select personnel, unit and at least one key.')
       return
     }
     setBusy(true)
+    setError(null)
     try {
-      await api.createAccessGrant({ userId, siteId, keyIds: [keyId] })
+      if (editingGrant) {
+        await api.updateAccessGrant(String(editingGrant.id), {
+          userId,
+          siteId,
+          keyIds: [keyId],
+          validFromEpochMillis: editingGrant.validFromEpochMillis ?? null,
+          validUntilEpochMillis: editingGrant.validUntilEpochMillis ?? null,
+          expectedRevision: Number(editingGrant.revision ?? 0),
+        })
+      } else {
+        await api.createAccessGrant({ userId, siteId, keyIds: [keyId] })
+      }
       setOpen(false)
+      setEditingGrant(null)
       await reload()
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : 'Failed to create grant')
+      if (err instanceof ApiError && err.status === 409) {
+        setError(
+          'This grant was changed by someone else since you opened it. Reloading the latest version — please reapply your edit.',
+        )
+        setOpen(false)
+        setEditingGrant(null)
+        await reload()
+      } else {
+        setError(err instanceof ApiError ? err.message : 'Failed to save grant')
+      }
     } finally {
       setBusy(false)
     }
@@ -67,7 +100,14 @@ export function PermissionsPage() {
           <h1>Permission Settings</h1>
           <p className="muted">Bind exact keys to a person. A site-only assignment is never enough.</p>
         </div>
-        <button className="btn" type="button" onClick={() => setOpen(true)}>
+        <button
+          className="btn"
+          type="button"
+          onClick={() => {
+            setEditingGrant(null)
+            setOpen(true)
+          }}
+        >
           Add access grant
         </button>
       </div>
@@ -89,6 +129,9 @@ export function PermissionsPage() {
             </div>
           </div>
           <div className="card-actions">
+            <button className="btn linkish" type="button" onClick={() => openEdit(grant)}>
+              Edit
+            </button>
             <button
               className="btn linkish"
               type="button"
@@ -110,8 +153,8 @@ export function PermissionsPage() {
 
       {open && (
         <div className="dialog-backdrop" onClick={() => setOpen(false)}>
-          <form className="dialog" onClick={(e) => e.stopPropagation()} onSubmit={onCreate}>
-            <h2>Add access grant</h2>
+          <form className="dialog" onClick={(e) => e.stopPropagation()} onSubmit={onSave}>
+            <h2>{editingGrant ? 'Edit access grant' : 'Add access grant'}</h2>
             <p className="dialog-copy">Grant a named person permission to a specific key under a specific unit.</p>
             <div className="field">
               <label>Personnel</label>
@@ -144,11 +187,18 @@ export function PermissionsPage() {
               </select>
             </div>
             <div className="dialog-actions">
-              <button className="btn secondary" type="button" onClick={() => setOpen(false)}>
+              <button
+                className="btn secondary"
+                type="button"
+                onClick={() => {
+                  setOpen(false)
+                  setEditingGrant(null)
+                }}
+              >
                 Cancel
               </button>
               <button className="btn" type="submit" disabled={busy}>
-                Save
+                {editingGrant ? 'Save changes' : 'Save'}
               </button>
             </div>
           </form>

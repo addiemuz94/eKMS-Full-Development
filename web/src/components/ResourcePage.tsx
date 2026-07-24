@@ -15,6 +15,7 @@ type Props = {
   fields: FieldDef[]
   list: () => Promise<Record<string, unknown>[]>
   create: (payload: Record<string, unknown>) => Promise<unknown>
+  update?: (id: string, payload: Record<string, unknown>) => Promise<unknown>
   remove?: (id: string) => Promise<unknown>
   renderLines: (item: Record<string, unknown>, sites: SiteDto[]) => string[]
   titleOf: (item: Record<string, unknown>) => string
@@ -29,6 +30,7 @@ export function ResourcePage({
   fields,
   list,
   create,
+  update,
   remove,
   renderLines,
   titleOf,
@@ -42,6 +44,7 @@ export function ResourcePage({
   const [notice, setNotice] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   const [open, setOpen] = useState(false)
+  const [editingId, setEditingId] = useState<string | null>(null)
   const [values, setValues] = useState<Record<string, string>>({})
 
   async function reload() {
@@ -76,10 +79,23 @@ export function ResourcePage({
       else initial[field.name] = ''
     }
     setValues(initial)
+    setEditingId(null)
     setOpen(true)
   }
 
-  async function onCreate(e: FormEvent) {
+  function openEditDialog(item: Record<string, unknown>) {
+    const initial: Record<string, string> = {}
+    for (const field of fields) {
+      const raw = item[field.name]
+      initial[field.name] = raw == null ? '' : String(raw)
+    }
+    setValues(initial)
+    setEditingId(String(item.id ?? ''))
+    setError(null)
+    setOpen(true)
+  }
+
+  async function onSave(e: FormEvent) {
     e.preventDefault()
     setBusy(true)
     setError(null)
@@ -94,12 +110,28 @@ export function ResourcePage({
               return [field.name, raw]
             }),
           )
-      await create(payload)
+      if (editingId && update) {
+        const current = items.find((item) => String(item.id ?? '') === editingId)
+        await update(editingId, { ...payload, expectedRevision: Number(current?.revision ?? 0) })
+        setNotice('Saved.')
+      } else {
+        await create(payload)
+        setNotice('Saved.')
+      }
       setOpen(false)
-      setNotice('Saved.')
+      setEditingId(null)
       await reload()
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : 'Save failed')
+      if (err instanceof ApiError && err.status === 409) {
+        setError(
+          'This record was changed by someone else since you opened it. Reloading the latest version — please reapply your edit.',
+        )
+        setOpen(false)
+        setEditingId(null)
+        await reload()
+      } else {
+        setError(err instanceof ApiError ? err.message : 'Save failed')
+      }
     } finally {
       setBusy(false)
     }
@@ -161,6 +193,11 @@ export function ResourcePage({
                     </td>
                     <td className="col-actions">
                       <div className="row-actions">
+                        {update && (
+                          <Button variant="link" onClick={() => openEditDialog(item)}>
+                            Edit
+                          </Button>
+                        )}
                         {remove && (
                           <Button variant="link" onClick={() => void onRemove(id)}>
                             Recycle
@@ -181,8 +218,8 @@ export function ResourcePage({
 
       {open && (
         <div className="dialog-backdrop" onClick={() => setOpen(false)}>
-          <form className="dialog" onClick={(e) => e.stopPropagation()} onSubmit={onCreate}>
-            <h2>{addLabel}</h2>
+          <form className="dialog" onClick={(e) => e.stopPropagation()} onSubmit={onSave}>
+            <h2>{editingId ? `Edit ${title.toLowerCase()}` : addLabel}</h2>
             <p className="dialog-copy">{description}</p>
             {fields.map((field) => (
               <div className="field" key={field.name}>
@@ -213,11 +250,17 @@ export function ResourcePage({
               </div>
             ))}
             <div className="dialog-actions">
-              <Button variant="outlined" onClick={() => setOpen(false)}>
+              <Button
+                variant="outlined"
+                onClick={() => {
+                  setOpen(false)
+                  setEditingId(null)
+                }}
+              >
                 Cancel
               </Button>
               <Button type="submit" loading={busy}>
-                Save
+                {editingId ? 'Save changes' : 'Save'}
               </Button>
             </div>
           </form>
