@@ -137,7 +137,8 @@ fun TerminalKeyRetrievalScreen(
     }
 }
 
-private enum class KeyDisplayMode { LAYOUT, LIST }
+/** Shared with [TerminalKeyMenuScreen] — the same Layout/List toggle concept, one enum. */
+internal enum class KeyDisplayMode { LAYOUT, LIST }
 
 @Composable
 private fun SoftStat(label: String, value: String, modifier: Modifier = Modifier) {
@@ -151,8 +152,9 @@ private fun SoftStat(label: String, value: String, modifier: Modifier = Modifier
     }
 }
 
+/** Shared with [TerminalKeyMenuScreen] — same Layout Display / List Display toggle pattern. */
 @Composable
-private fun SoftSegmented(
+internal fun SoftSegmented(
     leftLabel: String,
     rightLabel: String,
     leftSelected: Boolean,

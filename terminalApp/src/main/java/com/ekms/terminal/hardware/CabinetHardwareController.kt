@@ -185,6 +185,28 @@ class CabinetHardwareController(
         nodeAddress: Int,
         onDoorOpenConfirmed: () -> Unit,
         onFailure: (String) -> Unit,
+    ) = beginKeyTakeInternal(nodeAddress, precedingRedLightOff = false, onDoorOpenConfirmed, onFailure)
+
+    /**
+     * Multi-key sequential Take Flow (Key Menu): the exact same sequence as [beginKeyTake],
+     * preceded by turning this node's red "waiting in queue" indicator off as one atomic
+     * worker-thread operation — the red -> blue "your turn" transition. Sequential, not
+     * simultaneous: the red command completes before [beginKeyTakeInternal] sends its own
+     * blue-on — nothing in the protocol doc implies both lit at once is meaningful, so this
+     * is the conservative default. Every other node still waiting in the queue keeps its red
+     * light untouched; nothing here polls to hold it on, it already latches on its own.
+     */
+    fun beginQueuedKeyTake(
+        nodeAddress: Int,
+        onDoorOpenConfirmed: () -> Unit,
+        onFailure: (String) -> Unit,
+    ) = beginKeyTakeInternal(nodeAddress, precedingRedLightOff = true, onDoorOpenConfirmed, onFailure)
+
+    private fun beginKeyTakeInternal(
+        nodeAddress: Int,
+        precedingRedLightOff: Boolean,
+        onDoorOpenConfirmed: () -> Unit,
+        onFailure: (String) -> Unit,
     ) {
         if (!canStartOperatorCommand(onFailure)) return
         if (!takeMonitoring.compareAndSet(false, true)) {
@@ -196,6 +218,7 @@ class CabinetHardwareController(
             try {
                 ensureConnectedOnWorker()
                 val activeLink = requireNotNull(link) { "Cabinet protocol is unavailable." }
+                if (precedingRedLightOff) activeLink.redLightOff(nodeAddress)
                 activeLink.blueLightOn(nodeAddress)
                 activeLink.engageElectromagnet(nodeAddress)
                 activeLink.ejectDoor()
@@ -218,6 +241,48 @@ class CabinetHardwareController(
                 runCatching { link?.blueLightOff(nodeAddress) }
                 takeMonitoring.set(false)
                 reportCommandFailure("Unable to begin the key take at node $nodeAddress", error, onFailure)
+            }
+        }
+    }
+
+    /**
+     * Key Menu (multi-key sequential Take Flow), step 0: lights every selected node's red
+     * "waiting in queue" indicator (0x19) — one command per node, individually, never a
+     * batch/group command since the protocol has none — before the sequential per-node take
+     * loop in [beginQueuedKeyTake] begins. Runs as one worker-thread operation so the calls
+     * are naturally serialized one after another without needing [runCommand]'s single-
+     * command busy-gate to be re-entered per node. The light latches on its own once set; no
+     * polling/keep-alive loop is added to hold it on.
+     *
+     * On failure partway through, best-effort turns back off whichever lights this call did
+     * manage to set, so a partial failure never leaves stray red lights on with no active
+     * queue behind them.
+     */
+    fun beginMultiKeyRedLightSequence(
+        nodeAddresses: List<Int>,
+        onReady: () -> Unit,
+        onFailure: (String) -> Unit,
+    ) {
+        if (nodeAddresses.isEmpty()) {
+            notifyCommandFailure("No key was selected.", onFailure)
+            return
+        }
+        if (!canStartOperatorCommand(onFailure)) return
+        publish(currentState.copy(busy = true, message = "Lighting ${nodeAddresses.size} selected key(s)…"))
+        worker.execute {
+            val lit = mutableListOf<Int>()
+            try {
+                ensureConnectedOnWorker()
+                val activeLink = requireNotNull(link) { "Cabinet protocol is unavailable." }
+                nodeAddresses.forEach { nodeAddress ->
+                    activeLink.redLightOn(nodeAddress)
+                    lit += nodeAddress
+                }
+                publish(currentState.copy(busy = false, message = "${nodeAddresses.size} key(s) lit. Starting with node ${nodeAddresses.first()}…"))
+                mainHandler.post(onReady)
+            } catch (error: Exception) {
+                lit.forEach { nodeAddress -> runCatching { link?.redLightOff(nodeAddress) } }
+                reportCommandFailure("Unable to light the selected keys", error, onFailure)
             }
         }
     }
@@ -436,11 +501,44 @@ class CabinetHardwareController(
      * locks the fob (0x14) — but deliberately leaves the light on, since
      * the flow continues through [waitForDoorCloseAfterReturn] — and
      * calls [onInserted].
+     *
+     * Return Flow rework — wrong-slot detection: once the door is open, every physical key
+     * hook inside is reachable, not just [nodeAddress]'s — the protocol has no single command
+     * that reports "which node changed," so each poll cycle also sweeps
+     * [wrongSlotCandidateNodeAddresses] (every *other* node this cabinet actually has a
+     * KeySlot for — not the full 1..127 address space, which would make each cycle
+     * impractically slow) for an unexpected bolt-present transition. [onWrongSlotDetected]/
+     * [onWrongSlotCleared] fire only on a state change (entering/leaving the wrong-slot
+     * condition), not every cycle, so the caller doesn't need to de-duplicate. A wrong-slot
+     * node's light turns red as a warning only — its electromagnet is never engaged, since
+     * securing a key in the wrong place would be actively wrong, not helpful.
+     *
+     * Follow-up revision — identity, not just presence: the sweep now uses Test Micro Switch
+     * *and Card* (0x17) instead of plain Test Micro Switch (0x16), so each cycle learns not
+     * just "something is here" but the scanned fob's UID in the same round-trip (protocol doc
+     * §5.4: readable 4 bytes = a card UID, all-`0x00` = bolt present with no readable card,
+     * all-`0xFF` = nothing present at all — the same encoding [waitForReturnedKeyFob] already
+     * relies on). A readable UID is resolved via [resolveKeyFobUid] (the caller's
+     * `CardUidResolver`/key-fob-registry lookup — this class holds no UID store itself and
+     * never should, see CLAUDE.md boundary #2) to confirm it's a genuinely enrolled key, not
+     * guessed from bare presence. [onWrongSlotDetected]'s `confirmedKey` flag reports which
+     * case it was. Deliberately still alarms on an unresolved presence (bolt-present-no-card,
+     * or a scanned UID that doesn't resolve to any enrolled key) — a real key should always
+     * carry a readable card, so anything else sitting in a node mid-return is exactly as
+     * anomalous as a confirmed wrong key, and erring toward flagging it is the safer choice
+     * for an unlocked, physically-open cabinet. Untested at scale: polling cost for a cabinet
+     * with many configured slots — now with an extra card-read per candidate, not just a
+     * switch check — is unverified against real hardware timing (see CLAUDE.md).
      */
     fun pollForKeyInsertion(
         nodeAddress: Int,
         abandonAtEpochMillis: Long,
+        wrongSlotCandidateNodeAddresses: List<Int> = emptyList(),
+        /** Called from this method's own worker thread, not the main thread — must be a fast, side-effect-free lookup. */
+        resolveKeyFobUid: (rawUid: String) -> Boolean = { false },
         onInserted: () -> Unit,
+        onWrongSlotDetected: (wrongNodeAddress: Int, confirmedKey: Boolean) -> Unit = { _, _ -> },
+        onWrongSlotCleared: () -> Unit = {},
         onLouderBeepThreshold: () -> Unit,
         onAbandoned: () -> Unit,
         onFailure: (String) -> Unit,
@@ -449,11 +547,16 @@ class CabinetHardwareController(
             try {
                 val activeLink = requireNotNull(link) { "Cabinet protocol is unavailable." }
                 val startedAtMillis = System.currentTimeMillis()
+                val sweepCandidates = wrongSlotCandidateNodeAddresses.filter { it != nodeAddress }
                 var louderBeepFired = false
+                var wrongSlotNode: Int? = null
                 while (returnMonitoring.get() && transport.isOpen) {
                     val elapsedSinceDoorOpenMillis = System.currentTimeMillis() - startedAtMillis
                     val status = activeLink.testMicroSwitch(nodeAddress).data
                     if (status.isFourBytesOf(0x00)) {
+                        if (wrongSlotNode != null) {
+                            runCatching { activeLink.redLightOff(wrongSlotNode!!) }
+                        }
                         activeLink.releaseElectromagnet(nodeAddress)
                         publish(
                             currentState.copy(
@@ -466,12 +569,37 @@ class CabinetHardwareController(
                         return@execute
                     }
 
+                    val sweepHit = sweepCandidates.firstNotNullOfOrNull { candidate ->
+                        val data = activeLink.testMicroSwitchAndCard(candidate).data
+                        when {
+                            data.isFourBytesOf(0xFF) -> null
+                            isReadableFobData(data) -> candidate to resolveKeyFobUid(data.toCompactHex())
+                            else -> candidate to false
+                        }
+                    }
+                    val detectedWrongNode = sweepHit?.first
+                    if (detectedWrongNode != wrongSlotNode) {
+                        if (detectedWrongNode != null) {
+                            activeLink.redLightOn(detectedWrongNode)
+                            wrongSlotNode = detectedWrongNode
+                            val confirmedKey = sweepHit.second
+                            mainHandler.post { onWrongSlotDetected(detectedWrongNode, confirmedKey) }
+                        } else {
+                            wrongSlotNode?.let { previous -> runCatching { activeLink.redLightOff(previous) } }
+                            wrongSlotNode = null
+                            mainHandler.post(onWrongSlotCleared)
+                        }
+                    }
+
                     if (!louderBeepFired && elapsedSinceDoorOpenMillis >= INSERTION_LOUDER_BEEP_THRESHOLD_MILLIS) {
                         louderBeepFired = true
                         mainHandler.post(onLouderBeepThreshold)
                     }
 
                     if (System.currentTimeMillis() >= abandonAtEpochMillis) {
+                        if (wrongSlotNode != null) {
+                            runCatching { activeLink.redLightOff(wrongSlotNode!!) }
+                        }
                         activeLink.releaseElectromagnet(nodeAddress)
                         activeLink.blueLightOff(nodeAddress)
                         returnMonitoring.set(false)

@@ -12,6 +12,9 @@ enum class HintSeverity {
 
     /** Healthy / informational. */
     OK,
+
+    /** A check ran and definitively did not pass (e.g. required hardware absent). */
+    FAIL,
 }
 
 data class ConnectionHint(

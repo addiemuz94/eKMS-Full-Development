@@ -52,6 +52,8 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import android.content.Context
+import android.hardware.camera2.CameraManager
 import android.provider.Settings
 import android.util.Log
 import com.ekms.shared.api.CompleteCredentialEnrollmentRequest
@@ -59,6 +61,7 @@ import com.ekms.shared.api.CreateAdminUserRequest
 import com.ekms.shared.api.RevokeCredentialEnrollmentRequest
 import com.ekms.shared.api.SiteDto
 import com.ekms.shared.api.UserDto
+import com.ekms.shared.domain.AccessGrant
 import com.ekms.shared.domain.AuditEventType
 import com.ekms.shared.domain.CardUidMatch
 import com.ekms.shared.domain.CardUidResolver
@@ -79,6 +82,8 @@ import com.ekms.terminal.data.TerminalAdminSnapshot
 import com.ekms.terminal.data.TerminalAdminStore
 import com.ekms.terminal.data.TerminalApiClient
 import com.ekms.terminal.data.TerminalApiException
+import com.ekms.terminal.data.TerminalCheckoutRecord
+import com.ekms.terminal.data.TerminalCheckoutStore
 import com.ekms.terminal.data.TerminalKey
 import com.ekms.terminal.data.TerminalSession
 import com.ekms.terminal.data.TerminalServerCache
@@ -93,8 +98,12 @@ import com.ekms.terminal.hardware.FingerprintEnrollmentOutcome
 import com.ekms.terminal.hardware.FingerprintHardwareController
 import com.ekms.terminal.hardware.FingerprintHardwareState
 import com.ekms.terminal.hardware.FingerprintTemplateStore
+import com.ekms.terminal.hardware.NetworkStatus
+import com.ekms.terminal.hardware.NetworkStatusController
+import com.ekms.terminal.hardware.face.FaceCameraController
 import com.ekms.terminal.hardware.face.FaceProfileStore
 import com.ekms.terminal.hardware.PublicCardReaderController
+import com.ekms.terminal.hardware.PublicCardReaderState
 import com.ekms.terminal.hardware.TerminalNfcReaderController
 import com.ekms.terminal.hardware.TerminalNfcReaderState
 import com.ekms.terminal.hardware.UidEnrollmentResult
@@ -218,6 +227,9 @@ fun TerminalAdminApp() {
         FingerprintHardwareController { nextState -> fingerprintHardwareState = nextState }
     }
     val faceProfileStore = remember(applicationContext) { FaceProfileStore(applicationContext) }
+    // Return Flow rework — minimal local "who has which key" stand-in for Phase 5's fuller
+    // overdue/emergency/extension + backend-synced version; see TerminalCheckoutStore's doc.
+    val checkoutStore = remember(applicationContext) { TerminalCheckoutStore(applicationContext) }
     var capturedFob by remember { mutableStateOf<CapturedFob?>(null) }
     var notice by remember { mutableStateOf<String?>(null) }
     var pendingPhysicalAction by remember { mutableStateOf<PendingPhysicalAction?>(null) }
@@ -239,8 +251,16 @@ fun TerminalAdminApp() {
                 ?: KeySlotDemoData.slots().filter { it.terminalId == KeySlotDemoData.terminals.first().id },
         )
     }
+    // Key Menu (Technician/Vendor authorization) reads this as-is via AccessGrant.keyIds — no
+    // parallel authorization model, same source the Super Admin portal/backend already treats
+    // as canonical (Super Admin's own access stays implicit and is never represented here).
+    var retrievalAccessGrants by remember {
+        mutableStateOf(initialServerSnapshot?.accessGrants ?: KeySlotDemoData.accessGrants())
+    }
     var takenKeyIds by remember { mutableStateOf(emptySet<String>()) }
     var takeFlow by remember { mutableStateOf<TakeFlow?>(null) }
+    var multiKeyQueue by remember { mutableStateOf<MultiKeyTakeQueue?>(null) }
+    var multiKeyQueuePending by remember { mutableStateOf(false) }
     var returnFlow by remember { mutableStateOf<ReturnFlow?>(null) }
     var passwordChangeReturnRoute by remember { mutableStateOf(SuperAdminRoute.DASHBOARD) }
     var serverPersonnel by remember { mutableStateOf(store.cachedPersonnel()) }
@@ -250,6 +270,30 @@ fun TerminalAdminApp() {
         serverPersonnel
     } else {
         snapshot.users
+    }
+
+    // Key Menu: which keys the signed-in Technician/Vendor may take, straight from
+    // AccessGrant.keyIds — no parallel authorization model. A grant with an expired/not-yet-
+    // started validity window is excluded, same as the model's own fields are meant to be used
+    // for; Super Admin never needs this (their access is implicit, never a grant row).
+    val authorizedKeysForCurrentUser = remember(retrievalAccessGrants, retrievalKeys, session?.userId) {
+        val userId = session?.userId
+        if (userId == null) {
+            emptyList()
+        } else {
+            val nowMillis = System.currentTimeMillis()
+            val authorizedKeyIds = retrievalAccessGrants
+                .asSequence()
+                .filter { grant -> grant.userId == userId }
+                .filter { grant ->
+                    val validFrom = grant.validFromEpochMillis
+                    val validUntil = grant.validUntilEpochMillis
+                    (validFrom == null || nowMillis >= validFrom) && (validUntil == null || nowMillis <= validUntil)
+                }
+                .flatMap { grant -> grant.keyIds.asSequence() }
+                .toSet()
+            retrievalKeys.filter { key -> key.id in authorizedKeyIds }
+        }
     }
 
     // Key Take Flow (CLAUDE.md "Terminal App UX Baseline (Production)" §1):
@@ -267,11 +311,50 @@ fun TerminalAdminApp() {
         takeFlow = TakeFlow(key, slot)
     }
 
+    // Key Menu multi-key sequential Take Flow: confirming a selection first lights every
+    // selected node's red indicator individually (never a batch command — see
+    // CabinetHardwareController.beginMultiKeyRedLightSequence), then starts the queue at its
+    // first node once every light is confirmed lit. multiKeyQueuePending covers exactly that
+    // in-between window so the screen can show "preparing" rather than nothing.
+    fun beginMultiKeyTake(selectedKeys: List<ManagedKey>) {
+        val pairs = selectedKeys.mapNotNull { key ->
+            retrievalSlots.firstOrNull { it.managedKeyId == key.id }?.let { slot -> key to slot }
+        }
+        if (pairs.isEmpty()) {
+            notice = "None of the selected keys are assigned to a cabinet slot."
+            return
+        }
+        multiKeyQueuePending = true
+        hardwareController.beginMultiKeyRedLightSequence(
+            nodeAddresses = pairs.map { (_, slot) -> slot.nodeAddress },
+            onReady = {
+                multiKeyQueuePending = false
+                multiKeyQueue = MultiKeyTakeQueue(pairs)
+            },
+            onFailure = { message ->
+                multiKeyQueuePending = false
+                notice = message
+            },
+        )
+    }
+
     fun handleTakeFlowOutcome(outcome: TakeFlowOutcome) {
         val actorUserId = session?.userId
         when (outcome) {
-            is TakeFlowOutcome.Success ->
+            is TakeFlowOutcome.Success -> {
+                // Return Flow reads this back via checkoutStore.find(keyId) to show who has
+                // the key and since when, and to know what to close out on return — the
+                // minimal local stand-in described in TerminalCheckoutStore's doc.
+                checkoutStore.open(
+                    TerminalCheckoutRecord(
+                        keyId = outcome.key.id,
+                        userId = actorUserId,
+                        terminalId = retrievalTerminal.id,
+                        takenAtEpochMillis = System.currentTimeMillis(),
+                    ),
+                )
                 store.logEvent(AuditEventType.KEY_TAKEN, actorUserId, RecordType.KEY, outcome.key.id)
+            }
 
             is TakeFlowOutcome.Failed ->
                 store.logEvent(AuditEventType.KEY_TAKE_FAILED, actorUserId, RecordType.KEY, outcome.key.id, outcome.message)
@@ -309,9 +392,39 @@ fun TerminalAdminApp() {
         return managedKey to slot
     }
 
+    // Return Flow rework follow-up: wrong-slot identity check. Called from
+    // CabinetHardwareController's own worker thread (not main) during the wrong-slot sweep, so
+    // it must stay a fast, side-effect-free lookup — exactly what recordIdFor already is.
+    // Checks BOTH stores and goes through CardUidResolver, per the permanent NFC UID Resolution
+    // Rule (never assume a scan's meaning from context) — a personnel card sitting in a key
+    // slot is physically possible even if unlikely, and must not be misreported as a key.
+    fun resolveKeyFobUid(rawUid: String): Boolean {
+        val matchedUserId = personnelCardStore.recordIdFor(rawUid)
+        val matchedKeyId = keyCardStore.recordIdFor(rawUid)
+        return CardUidResolver.resolve(matchedUserId, matchedKeyId) is CardUidMatch.Key
+    }
+
+    // Return Flow rework: resolves the checkout record TerminalCheckoutStore holds for a key
+    // into the short "who/since when" line TerminalKeyReturnScreen shows the operator. Local-
+    // only stand-in, see TerminalCheckoutStore's doc — Phase 5 replaces this, not extends it.
+    fun checkoutSummaryFor(keyId: String): String? {
+        val record = checkoutStore.find(keyId) ?: return null
+        val takerName = record.userId
+            ?.let { userId -> personnelForScreens.firstOrNull { it.id == userId }?.displayName }
+            ?: "an unknown user"
+        val elapsedMinutes = ((System.currentTimeMillis() - record.takenAtEpochMillis) / 60_000L).coerceAtLeast(0)
+        val elapsedText = when {
+            elapsedMinutes < 1L -> "just now"
+            elapsedMinutes < 60L -> "${elapsedMinutes}m ago"
+            else -> "${elapsedMinutes / 60}h ${elapsedMinutes % 60}m ago"
+        }
+        return "Checked out by $takerName · $elapsedText"
+    }
+
     fun resolveDoorOpenState(
         matchedKey: ManagedKey?,
         matchedSlot: KeySlot?,
+        attemptId: Long,
         abandonAtEpochMillis: Long?,
     ): ReturnFlow.DoorOpen {
         // A real card-UID match (matchedKey/matchedSlot) is authoritative and
@@ -319,11 +432,17 @@ fun TerminalAdminApp() {
         // deadline — never a timed flow) only fires for the login screen's
         // UID-less manual key-card tap.
         if (matchedKey != null && matchedSlot != null) {
-            return ReturnFlow.DoorOpen(matchedKey, matchedSlot, abandonAtEpochMillis)
+            return ReturnFlow.DoorOpen(
+                matchedKey,
+                matchedSlot,
+                attemptId,
+                abandonAtEpochMillis,
+                checkoutSummaryFor(matchedKey.id),
+            )
         }
         val key = resolveReturningKey(takenKeyIds, retrievalKeys)
         val slot = key?.let { returningKey -> retrievalSlots.firstOrNull { it.managedKeyId == returningKey.id } }
-        return ReturnFlow.DoorOpen(key, slot, null)
+        return ReturnFlow.DoorOpen(key, slot, attemptId, null, key?.let { checkoutSummaryFor(it.id) })
     }
 
     // Key Return Flow (CLAUDE.md "Terminal App UX Baseline (Production)"
@@ -332,7 +451,27 @@ fun TerminalAdminApp() {
     // through AwaitingCertification and into DoorOpen, so a slow
     // certification login eats into the same window rather than getting
     // its own separate clock.
+    //
+    // Return Flow rework §3 (continuous multi-key session): the running totals live here, in
+    // dedicated state, NOT recovered from `returnFlow` at completion time — by the time
+    // onCompleted fires, `returnFlow` already holds the just-finished attempt's own DoorOpen/
+    // AwaitingCertification value, not the SessionIdle that preceded it, so there would be
+    // nothing left to read back from it. `startKeyCardReturn` starts the clock only if it
+    // isn't already running (a genuinely new session); the Done button and idle-timeout below
+    // both reset these alongside `returnFlow = null`.
+    var returnSessionStartedAtEpochMillis by remember { mutableStateOf<Long?>(null) }
+    var returnSessionReturnedKeyNames by remember { mutableStateOf<List<String>>(emptyList()) }
+
+    // Return Flow rework: [attemptId] (System.nanoTime(), effectively unique per call) is the
+    // one stable identity for this whole attempt, from swipe through however many login
+    // retries the operator needs. It's what the abandonment race below keys on instead of the
+    // full ReturnFlow value — see that LaunchedEffect's doc for why that distinction is the
+    // actual fix for the duplicate-abandonment bug.
     fun startKeyCardReturn(matchedKey: ManagedKey? = null, matchedSlot: KeySlot? = null) {
+        if (returnSessionStartedAtEpochMillis == null) {
+            returnSessionStartedAtEpochMillis = System.currentTimeMillis()
+        }
+        val attemptId = System.nanoTime()
         val abandonAtEpochMillis = if (matchedKey != null && matchedSlot != null) {
             System.currentTimeMillis() + CabinetHardwareController.RETURN_FLOW_ABANDONMENT_TIMEOUT_MILLIS
         } else {
@@ -341,17 +480,39 @@ fun TerminalAdminApp() {
         // "Key Return Certification" is Section 4's Admin Menu toggle, persisted
         // in TerminalAdminStore; Section 3's return flow only reacts to it.
         returnFlow = if (snapshot.cabinetSettings.keyReturnCertificationEnabled) {
-            ReturnFlow.AwaitingCertification(matchedKey, matchedSlot, abandonAtEpochMillis)
+            ReturnFlow.AwaitingCertification(matchedKey, matchedSlot, attemptId, abandonAtEpochMillis)
         } else {
-            resolveDoorOpenState(matchedKey, matchedSlot, abandonAtEpochMillis)
+            resolveDoorOpenState(matchedKey, matchedSlot, attemptId, abandonAtEpochMillis)
         }
+    }
+
+    fun endReturnSession() {
+        returnFlow = null
+        returnSessionStartedAtEpochMillis = null
+        returnSessionReturnedKeyNames = emptyList()
+    }
+
+    // handleReturnFlowOutcome appends to returnSessionReturnedKeyNames on Success; this just
+    // packages the running totals into what ReturnSessionScreen shows. Called from
+    // TerminalKeyReturnScreen's onCompleted, which already fires at the right time for every
+    // outcome — immediately for Success, after the existing 3s "here's what happened" display
+    // for Failed/Abandoned — so no new timing logic is needed here.
+    fun advanceReturnSession() {
+        returnFlow = ReturnFlow.SessionIdle(
+            sessionStartedAtEpochMillis = returnSessionStartedAtEpochMillis ?: System.currentTimeMillis(),
+            returnedKeyNames = returnSessionReturnedKeyNames,
+        )
     }
 
     fun handleReturnFlowOutcome(outcome: ReturnFlowOutcome) {
         val actorUserId = session?.userId
         when (outcome) {
             is ReturnFlowOutcome.Success -> {
-                outcome.key?.let { returnedKey -> takenKeyIds = takenKeyIds - returnedKey.id }
+                outcome.key?.let { returnedKey ->
+                    takenKeyIds = takenKeyIds - returnedKey.id
+                    checkoutStore.close(returnedKey.id)
+                    returnSessionReturnedKeyNames = returnSessionReturnedKeyNames + returnedKey.displayName
+                }
                 store.logEvent(AuditEventType.KEY_RETURNED, actorUserId, RecordType.KEY, outcome.key?.id)
             }
 
@@ -392,9 +553,12 @@ fun TerminalAdminApp() {
     // cards and key cards share the same physical medium and UID space, so
     // which action a scan means can only be decided by looking it up against
     // both encrypted stores, never assumed from which screen is showing.
+    var publicCardReaderState by remember {
+        mutableStateOf<PublicCardReaderState>(PublicCardReaderState.Idle)
+    }
     val cardReaderController = remember {
         PublicCardReaderController(
-            onStateChanged = {},
+            onStateChanged = { nextState -> publicCardReaderState = nextState },
             onCardDetected = { rawUid ->
                 val matchedUserId = personnelCardStore.recordIdFor(rawUid)
                 val matchedKeyId = keyCardStore.recordIdFor(rawUid)
@@ -406,7 +570,7 @@ fun TerminalAdminApp() {
                             route = when {
                                 result.value.requiresPasswordChange -> SuperAdminRoute.CHANGE_PASSWORD
                                 result.value.isSuperAdmin -> SuperAdminRoute.DASHBOARD
-                                else -> SuperAdminRoute.KEY_RETRIEVAL
+                                else -> SuperAdminRoute.KEY_MENU
                             }
                         }
 
@@ -431,30 +595,68 @@ fun TerminalAdminApp() {
             },
         )
     }
-    val isIdleAtLogin = route == SuperAdminRoute.LOGIN && returnFlow == null
+    // Return Flow rework: the public reader stays active at standby (unchanged) and now also
+    // through a continuous return session's idle screen, so the next scan is picked up without
+    // requiring Done first — but NOT while an attempt is actively in flight
+    // (AwaitingCertification/DoorOpen), same as before, to avoid a second scan colliding with
+    // one already in progress.
+    val cardReaderShouldBeActive = (route == SuperAdminRoute.LOGIN && returnFlow == null) ||
+        returnFlow is ReturnFlow.SessionIdle
 
     // Key Return Flow (CLAUDE.md "Terminal App UX Baseline (Production)"
     // §2): races the same 20s-from-swipe deadline while a Key Return
-    // Certification login is pending. Cancelled automatically (Compose
-    // key-change semantics) the moment `returnFlow` moves past this exact
-    // AwaitingCertification instance — login success, login retry, or the
-    // user backing out — so reaching the code after delay() always means
-    // this specific swipe's certification never completed in time. No
-    // hardware was ever engaged at this stage, so there is nothing to
-    // re-lock or turn off — only the log entry and clearing the flow.
-    LaunchedEffect(returnFlow) {
+    // Certification login is pending.
+    //
+    // Return Flow rework — this is the fix for CLAUDE.md's documented duplicate-abandonment
+    // bug. The old version keyed this LaunchedEffect on the whole `returnFlow` value, so a
+    // failed login attempt (same attempt, same deadline, only `loginError` changed) created a
+    // structurally-different `AwaitingCertification` instance and cancel-relaunched this
+    // coroutine for no functional reason — wasteful, and a real TOCTOU gap: if the old
+    // coroutine's `delay()` had already returned and it was about to log the event at the
+    // exact moment a login attempt resolved `returnFlow` to something else, nothing stopped
+    // both from firing. Two changes close this by construction, not by narrowing a race
+    // window:
+    // 1. Keyed on `attemptId` alone (stable across login retries for the same swipe), not the
+    //    whole value — a login-error retry no longer restarts this coroutine at all.
+    // 2. Re-reads the live `returnFlow` and checks it's STILL the same attemptId in
+    //    AwaitingCertification right before logging/clearing — if a login succeeded (or
+    //    another swipe started a new attempt) in the meantime, this is a no-op. There is no
+    //    window left in which two code paths can both decide to log the same abandonment.
+    LaunchedEffect(activeReturnFlowAttemptId(returnFlow)) {
         val flow = returnFlow
         if (flow is ReturnFlow.AwaitingCertification && flow.abandonAtEpochMillis != null) {
             val remainingMillis = flow.abandonAtEpochMillis - System.currentTimeMillis()
             if (remainingMillis > 0) delay(remainingMillis)
-            store.logEvent(
-                AuditEventType.KEY_RETURN_ABANDONED,
-                session?.userId,
-                RecordType.KEY,
-                flow.matchedKey?.id,
-                "Key Return Certification did not complete before the 20s ceiling. Alert both the terminal user and Super Admin.",
-            )
-            returnFlow = null
+            val current = returnFlow
+            if (current is ReturnFlow.AwaitingCertification && current.attemptId == flow.attemptId) {
+                store.logEvent(
+                    AuditEventType.KEY_RETURN_ABANDONED,
+                    session?.userId,
+                    RecordType.KEY,
+                    flow.matchedKey?.id,
+                    "Key Return Certification did not complete before the 20s ceiling. Alert both the terminal user and Super Admin.",
+                )
+                // Falls back to the continuous session (§3) rather than straight to standby,
+                // same as every other Return Flow outcome — a certification timeout on one
+                // scan shouldn't lose an already-in-progress session's running totals.
+                advanceReturnSession()
+            }
+        }
+    }
+
+    // Return Flow rework §3: ends a continuous return session after SESSION_IDLE_TIMEOUT_MILLIS
+    // of no new scan. Keyed on the specific SessionIdle instance (a fresh one is set every time
+    // a return completes, which is exactly the "reset the idle clock on activity" behavior
+    // wanted here — unlike the abandonment race above, restarting on every new value is
+    // correct, not a bug). The `returnFlow === flow` referential check is defense-in-depth on
+    // top of Compose's own cancel-on-key-change — only acts if truly nothing happened since.
+    LaunchedEffect(returnFlow as? ReturnFlow.SessionIdle) {
+        val flow = returnFlow
+        if (flow is ReturnFlow.SessionIdle) {
+            delay(SESSION_IDLE_TIMEOUT_MILLIS)
+            if (returnFlow === flow) {
+                endReturnSession()
+            }
         }
     }
 
@@ -470,6 +672,7 @@ fun TerminalAdminApp() {
             )
             retrievalKeys = serverSnapshot.keys
             retrievalSlots = serverSnapshot.keySlots
+            retrievalAccessGrants = serverSnapshot.accessGrants
         }
     }
 
@@ -625,7 +828,7 @@ fun TerminalAdminApp() {
                 route = when {
                     outcome.session.requiresPasswordChange -> SuperAdminRoute.CHANGE_PASSWORD
                     outcome.session.isSuperAdmin -> SuperAdminRoute.DASHBOARD
-                    else -> SuperAdminRoute.KEY_RETRIEVAL
+                    else -> SuperAdminRoute.KEY_MENU
                 }
             }
 
@@ -635,7 +838,7 @@ fun TerminalAdminApp() {
                 route = when {
                     outcome.session.requiresPasswordChange -> SuperAdminRoute.CHANGE_PASSWORD
                     outcome.session.isSuperAdmin -> SuperAdminRoute.DASHBOARD
-                    else -> SuperAdminRoute.KEY_RETRIEVAL
+                    else -> SuperAdminRoute.KEY_MENU
                 }
             }
 
@@ -713,14 +916,72 @@ fun TerminalAdminApp() {
         onDispose { fingerprintHardwareController.close() }
     }
 
-    // Section 10.3-10.4: the reader monitor starts automatically once idle at
-    // the login screen and stops automatically otherwise — including when
-    // this composable (the whole app) leaves composition, i.e. app exit.
-    LaunchedEffect(isIdleAtLogin) {
-        if (isIdleAtLogin) cardReaderController.start() else cardReaderController.stop()
+    // Section 10.3-10.4: the reader monitor starts automatically once idle at the login screen
+    // or in a continuous return session, and stops automatically otherwise — including when
+    // this composable (the whole app) leaves composition, i.e. app exit. See
+    // cardReaderShouldBeActive's own doc for the Return Flow rework's addition to this gate.
+    LaunchedEffect(cardReaderShouldBeActive) {
+        if (cardReaderShouldBeActive) cardReaderController.start() else cardReaderController.stop()
     }
     DisposableEffect(cardReaderController) {
         onDispose { cardReaderController.close() }
+    }
+
+    // Network bring-up: runs on every launch/restart, Ethernet preferred over Wi-Fi. Local
+    // hardware flows (take/return, local login) never depend on this — only network-bound
+    // screens (pairing above, live sync) are affected, and those already degrade to an
+    // explicit error/notice rather than blocking, per their own existing try/catch handling.
+    var networkStatus by remember { mutableStateOf(NetworkStatus()) }
+    val networkStatusController = remember(applicationContext) {
+        NetworkStatusController(applicationContext) { nextStatus -> networkStatus = nextStatus }
+    }
+    DisposableEffect(networkStatusController) {
+        networkStatusController.start()
+        onDispose { networkStatusController.stop() }
+    }
+
+    // Presence-only camera check for the startup diagnostic — see StartupDiagnosticsScreen's
+    // cameraDiagnostic doc for why this does not instantiate the full FaceCameraController.
+    val cameraManager = remember(applicationContext) {
+        applicationContext.getSystemService(Context.CAMERA_SERVICE) as CameraManager
+    }
+    val cameraAvailable = remember(cameraManager) {
+        runCatching { cameraManager.cameraIdList.contains(FaceCameraController.RGB_CAMERA_ID) }.getOrDefault(false)
+    }
+
+    // Self-diagnostic: runs automatically on every cold launch, crash-recovery relaunch, and
+    // manual restart (rememberSaveable resets on a genuinely new process, not on a mere
+    // recomposition/rotation) — shown once, right after the pairing gate, before the app
+    // reaches standby/login. Never blocks progression; see StartupDiagnosticsScreen's doc.
+    var showStartupDiagnostics by rememberSaveable { mutableStateOf(true) }
+    var startupHardwareProbeStarted by remember { mutableStateOf(false) }
+    LaunchedEffect(showStartupDiagnostics) {
+        if (showStartupDiagnostics && !startupHardwareProbeStarted) {
+            startupHardwareProbeStarted = true
+            if (!hardwareState.connected && !hardwareState.busy) hardwareController.connect()
+            if (!fingerprintHardwareState.connected && !fingerprintHardwareState.busy) {
+                fingerprintHardwareController.connect()
+            }
+        }
+    }
+
+    if (showStartupDiagnostics) {
+        EkmsTerminalTheme {
+            Scaffold(
+                topBar = { TopAppBar(title = { Text("eKMS Terminal · Startup Diagnostics") }) },
+            ) { padding ->
+                StartupDiagnosticsScreen(
+                    padding = padding,
+                    hardwareState = hardwareState,
+                    fingerprintHardwareState = fingerprintHardwareState,
+                    cameraAvailable = cameraAvailable,
+                    publicCardReaderState = publicCardReaderState,
+                    networkStatus = networkStatus,
+                    onContinue = { showStartupDiagnostics = false },
+                )
+            }
+        }
+        return
     }
 
     EkmsTerminalTheme {
@@ -752,11 +1013,13 @@ fun TerminalAdminApp() {
                             is StoreResult.Success -> returnFlow = resolveDoorOpenState(
                                 activeReturnFlow.matchedKey,
                                 activeReturnFlow.matchedSlot,
+                                activeReturnFlow.attemptId,
                                 activeReturnFlow.abandonAtEpochMillis,
                             )
                             is StoreResult.Error -> returnFlow = ReturnFlow.AwaitingCertification(
                                 matchedKey = activeReturnFlow.matchedKey,
                                 matchedSlot = activeReturnFlow.matchedSlot,
+                                attemptId = activeReturnFlow.attemptId,
                                 abandonAtEpochMillis = activeReturnFlow.abandonAtEpochMillis,
                                 loginError = result.message,
                             )
@@ -770,13 +1033,25 @@ fun TerminalAdminApp() {
                     key = activeReturnFlow.matchedKey,
                     slot = activeReturnFlow.matchedSlot,
                     abandonAtEpochMillis = activeReturnFlow.abandonAtEpochMillis,
+                    // Every other node this cabinet actually has a KeySlot for — the expected
+                    // node itself is excluded inside pollForKeyInsertion. Bounded to configured
+                    // slots, not the full 1..127 address space; see that method's doc.
+                    wrongSlotCandidateNodeAddresses = retrievalSlots.map { it.nodeAddress },
+                    checkoutSummary = activeReturnFlow.checkoutSummary,
                     doorCloseWarningTimeSeconds = snapshot.cabinetSettings.doorCloseWarningTimeSeconds,
                     videoRecordingEnabled = snapshot.cabinetSettings.returnKeyVideoEnabled,
                     onBeginReturnFlow = hardwareController::beginKeyReturnFlow,
                     onPollInsertion = hardwareController::pollForKeyInsertion,
+                    resolveKeyFobUid = ::resolveKeyFobUid,
                     onWaitForDoorClose = hardwareController::waitForDoorCloseAfterReturn,
                     onEvent = ::handleReturnFlowOutcome,
-                    onCompleted = { returnFlow = null },
+                    onCompleted = { advanceReturnSession() },
+                )
+
+                activeReturnFlow is ReturnFlow.SessionIdle -> ReturnSessionScreen(
+                    padding = padding,
+                    returnedKeyNames = activeReturnFlow.returnedKeyNames,
+                    onDone = { endReturnSession() },
                 )
 
                 else -> when (route) {
@@ -1235,6 +1510,52 @@ fun TerminalAdminApp() {
                             },
                             onTakeKey = ::takeKey,
                         )
+                    }
+                }
+
+                SuperAdminRoute.KEY_MENU -> {
+                    val activeQueue = multiKeyQueue
+                    when {
+                        activeQueue != null -> {
+                            val (currentKey, currentSlot) = activeQueue.current
+                            TerminalKeyTakeScreen(
+                                padding = padding,
+                                key = currentKey,
+                                slot = currentSlot,
+                                takeWarningTimeSeconds = snapshot.cabinetSettings.takeWarningTimeSeconds,
+                                videoRecordingEnabled = snapshot.cabinetSettings.keyRetrievalVideoEnabled,
+                                onBeginTake = hardwareController::beginQueuedKeyTake,
+                                onPollRemoval = hardwareController::pollForKeyRemoval,
+                                onWaitForDoorClose = hardwareController::waitForDoorCloseAfterTake,
+                                onKeyRemoved = { takenKeyIds = takenKeyIds + currentKey.id },
+                                onEvent = ::handleTakeFlowOutcome,
+                                onCompleted = {
+                                    val next = activeQueue.advanced()
+                                    multiKeyQueue = next
+                                    if (next == null) {
+                                        notice = "All selected keys have been taken."
+                                    }
+                                },
+                            )
+                        }
+
+                        multiKeyQueuePending -> {
+                            TerminalPage(padding) {
+                                HeaderCard(title = "Preparing your keys", description = hardwareState.message)
+                            }
+                        }
+
+                        else -> {
+                            TerminalKeyMenuScreen(
+                                padding = padding,
+                                authorizedKeys = authorizedKeysForCurrentUser,
+                                slots = retrievalSlots,
+                                takenKeyIds = takenKeyIds,
+                                backLabel = "Sign out",
+                                onBack = ::signOut,
+                                onConfirmSelection = ::beginMultiKeyTake,
+                            )
+                        }
                     }
                 }
                 }
@@ -2641,6 +2962,8 @@ private enum class SuperAdminRoute {
     FACE_ENROLLMENT,
     ACCESS_GRANTS,
     KEY_RETRIEVAL,
+    /** Technician/Vendor's post-login landing screen — see [TerminalKeyMenuScreen]. */
+    KEY_MENU,
     ADMIN_MENU,
     HARDWARE,
 }
@@ -2660,33 +2983,89 @@ private data class PendingPhysicalAction(
 
 /**
  * Section 3 (key return) state, driven by a key-card swipe rather than
- * `route`. [matchedKey]/[matchedSlot] carry a real card-UID match through
- * the certification-login step, so it is used directly once certification
- * succeeds instead of being lost and re-resolved by the "only key
- * currently taken" heuristic. [abandonAtEpochMillis] is the Key Return
- * Flow's 20s-from-swipe abandonment deadline (CLAUDE.md "Terminal App UX
- * Baseline (Production)" §2) — computed once at the original swipe and
- * threaded unchanged through both states, null only for the login
- * screen's UID-less manual key-card tap (never a timed flow).
+ * `route`. [AwaitingCertification.matchedKey]/[DoorOpen.matchedKey] (and matchedSlot) carry a
+ * real card-UID match through the certification-login step, so it is used directly once
+ * certification succeeds instead of being lost and re-resolved by the "only key currently
+ * taken" heuristic. `abandonAtEpochMillis` is the Key Return Flow's 20s-from-swipe abandonment
+ * deadline (CLAUDE.md "Terminal App UX Baseline (Production)" §2) — computed once at the
+ * original swipe and threaded unchanged through both states, null only for the login screen's
+ * UID-less manual key-card tap (never a timed flow).
+ *
+ * Return Flow rework: `attemptId` (`System.nanoTime()` at the original swipe) is the one
+ * stable identity for a whole attempt from swipe through however many certification-login
+ * retries it takes — unlike the old design, a login-error retry creates a new
+ * `AwaitingCertification` value (different `loginError`) but the *same* `attemptId`. This is
+ * what fixed the duplicate-abandonment bug: the abandonment race below keys and re-checks on
+ * `attemptId`, not on the whole `ReturnFlow` value, so a login retry no longer restarts a timer
+ * that was already correctly counting down to the same deadline. These per-subtype properties
+ * were deliberately NOT hoisted back onto the interface itself (removed from here on purpose)
+ * — every real access site already narrows to the concrete subtype first, and `SessionIdle`
+ * below has none of these concepts, so forcing it to carry dummy values would be worse than
+ * three independent subtypes.
  */
 private sealed interface ReturnFlow {
-    val matchedKey: ManagedKey?
-    val matchedSlot: KeySlot?
-    val abandonAtEpochMillis: Long?
-
     data class AwaitingCertification(
-        override val matchedKey: ManagedKey? = null,
-        override val matchedSlot: KeySlot? = null,
-        override val abandonAtEpochMillis: Long? = null,
+        val matchedKey: ManagedKey?,
+        val matchedSlot: KeySlot?,
+        val attemptId: Long,
+        val abandonAtEpochMillis: Long?,
         val loginError: String? = null,
     ) : ReturnFlow
 
     data class DoorOpen(
-        override val matchedKey: ManagedKey?,
-        override val matchedSlot: KeySlot?,
-        override val abandonAtEpochMillis: Long?,
+        val matchedKey: ManagedKey?,
+        val matchedSlot: KeySlot?,
+        val attemptId: Long,
+        val abandonAtEpochMillis: Long?,
+        /** Pre-formatted "Checked out by X · Ym ago" line from TerminalCheckoutStore, or null if unknown. */
+        val checkoutSummary: String?,
+    ) : ReturnFlow
+
+    /**
+     * Return Flow rework §3 (continuous multi-key session): entered instead of `null` after
+     * any attempt completes — success, failure, or abandonment all count, so one bad key
+     * doesn't kick the operator out of returning the rest of theirs. A new scan starts a fresh
+     * `AwaitingCertification`/`DoorOpen` directly from here (see `startKeyCardReturn`); the
+     * session itself ends via the Done button or the idle-timeout `LaunchedEffect` below,
+     * either way falling back to `null` (standby/login).
+     */
+    data class SessionIdle(
+        val sessionStartedAtEpochMillis: Long,
+        val returnedKeyNames: List<String>,
     ) : ReturnFlow
 }
 
+/**
+ * The abandonment-race `LaunchedEffect`'s key: the current attempt's `attemptId` while
+ * `AwaitingCertification`, `null` otherwise. Returning `null` for every other state
+ * (`DoorOpen`, `SessionIdle`, no flow at all) is deliberate — that effect has nothing to do
+ * outside `AwaitingCertification`, so those states shouldn't cause it to restart either.
+ */
+private fun activeReturnFlowAttemptId(flow: ReturnFlow?): Long? =
+    (flow as? ReturnFlow.AwaitingCertification)?.attemptId
+
+/** Return Flow rework §3: how long a continuous return session waits for the next scan before ending on its own. */
+private const val SESSION_IDLE_TIMEOUT_MILLIS = 20_000L
+
 /** Key Take Flow (CLAUDE.md "Terminal App UX Baseline (Production)" §1) in-progress state; see `TerminalKeyTakeScreen`. */
 private data class TakeFlow(val key: ManagedKey, val slot: KeySlot)
+
+/**
+ * Key Menu multi-key sequential Take Flow: the confirmed, ordered queue of keys to take one
+ * at a time. [currentIndex] only ever advances — there is no "go back" once a node's take has
+ * completed (succeeded, failed, or was abandoned), matching the single-key flow's own
+ * one-way completion. Each node in [items] is rendered through the exact same
+ * `TerminalKeyTakeScreen` the single-key flow uses, just re-keyed per node as the queue
+ * advances, so all of that screen's existing per-key safeguards (Take Warning Time,
+ * door-left-open logging, abandonment) apply unchanged to whichever node is current.
+ */
+private data class MultiKeyTakeQueue(
+    val items: List<Pair<ManagedKey, KeySlot>>,
+    val currentIndex: Int = 0,
+) {
+    val current: Pair<ManagedKey, KeySlot> get() = items[currentIndex]
+
+    /** Null once the last node in the queue has completed — the caller treats that as "done". */
+    fun advanced(): MultiKeyTakeQueue? =
+        if (currentIndex + 1 < items.size) copy(currentIndex = currentIndex + 1) else null
+}

@@ -142,16 +142,18 @@ fun HardwareStatusPage(
 }
 
 @Composable
-private fun ConnectionHintCard(hint: ConnectionHint) {
+internal fun ConnectionHintCard(hint: ConnectionHint) {
     val container = when (hint.severity) {
         HintSeverity.LIKELY -> SoftWarningContainer
         HintSeverity.CHECK -> MaterialTheme.colorScheme.surfaceContainerLow
         HintSeverity.OK -> SoftSuccessContainer
+        HintSeverity.FAIL -> MaterialTheme.colorScheme.errorContainer
     }
     val titleColor = when (hint.severity) {
         HintSeverity.LIKELY -> SoftWarningOnContainer
         HintSeverity.CHECK -> MaterialTheme.colorScheme.onSurface
         HintSeverity.OK -> SoftSuccessOnContainer
+        HintSeverity.FAIL -> MaterialTheme.colorScheme.onErrorContainer
     }
     SoftCard(containerColor = container, contentPadding = 14.dp) {
         Text(
@@ -159,6 +161,7 @@ private fun ConnectionHintCard(hint: ConnectionHint) {
                 HintSeverity.LIKELY -> "Likely · ${hint.title}"
                 HintSeverity.CHECK -> "Check · ${hint.title}"
                 HintSeverity.OK -> "OK · ${hint.title}"
+                HintSeverity.FAIL -> "Fail · ${hint.title}"
             },
             style = MaterialTheme.typography.titleSmall,
             fontWeight = FontWeight.SemiBold,
