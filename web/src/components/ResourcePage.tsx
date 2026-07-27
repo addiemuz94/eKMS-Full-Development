@@ -40,6 +40,8 @@ export function ResourcePage({
   const [items, setItems] = useState<Record<string, unknown>[]>([])
   const [sites, setSites] = useState<SiteDto[]>([])
   const [query, setQuery] = useState('')
+  const [siteFilter, setSiteFilter] = useState('all')
+  const [sortDir, setSortDir] = useState<'asc' | 'desc'>('asc')
   const [error, setError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
@@ -67,9 +69,18 @@ export function ResourcePage({
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase()
-    if (!q) return items
-    return items.filter((item) => JSON.stringify(item).toLowerCase().includes(q))
-  }, [items, query])
+    return items
+      .filter((item) => {
+        const matchQ = !q || JSON.stringify(item).toLowerCase().includes(q)
+        const matchSite = siteFilter === 'all' || item.siteId === siteFilter
+        return matchQ && matchSite
+      })
+      .sort((a, b) => {
+        const an = titleOf(a).toLowerCase()
+        const bn = titleOf(b).toLowerCase()
+        return sortDir === 'asc' ? an.localeCompare(bn) : bn.localeCompare(an)
+      })
+  }, [items, query, siteFilter, sortDir, titleOf])
 
   function openDialog() {
     const initial: Record<string, string> = {}
@@ -156,8 +167,8 @@ export function ResourcePage({
     <section>
       <div className="page-header">
         <div>
-          <h1>{title}</h1>
-          <p className="muted">{description}</p>
+          {title && <h1>{title}</h1>}
+          {description && <p className="muted">{description}</p>}
         </div>
         <Button onClick={openDialog}>{addLabel}</Button>
       </div>
@@ -166,7 +177,20 @@ export function ResourcePage({
       {error && <div className="error-banner">{error}</div>}
       {busy && <LinearProgress className="table-busy" label="Loading" />}
 
-      <input className="search" placeholder="Search…" value={query} onChange={(e) => setQuery(e.target.value)} />
+      <div className="toolbar-row">
+        <input className="search" placeholder="Search…" value={query} onChange={(e) => setQuery(e.target.value)} style={{ flex: 1 }} />
+        {sites.length > 0 && (
+          <select value={siteFilter} onChange={(e) => setSiteFilter(e.target.value)} title="Filter by unit">
+            <option value="all">All units</option>
+            {sites.map((s) => (
+              <option key={s.id} value={s.id}>{s.name}</option>
+            ))}
+          </select>
+        )}
+        <Button variant="outlined" onClick={() => setSortDir((d) => d === 'asc' ? 'desc' : 'asc')}>
+          Name {sortDir === 'asc' ? '↑' : '↓'}
+        </Button>
+      </div>
 
       {filtered.length ? (
         <div className="data-panel">
@@ -217,8 +241,8 @@ export function ResourcePage({
       )}
 
       {open && (
-        <div className="dialog-backdrop" onClick={() => setOpen(false)}>
-          <form className="dialog" onClick={(e) => e.stopPropagation()} onSubmit={onSave}>
+        <div className="dialog-backdrop">
+          <form className="dialog" onSubmit={onSave}>
             <h2>{editingId ? `Edit ${title.toLowerCase()}` : addLabel}</h2>
             <p className="dialog-copy">{description}</p>
             {fields.map((field) => (

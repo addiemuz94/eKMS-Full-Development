@@ -1,20 +1,40 @@
-import { useEffect, useState, type FormEvent } from 'react'
+import { useEffect, useMemo, useState, type FormEvent } from 'react'
 import { api, ApiError } from '../api/client'
 import type { SiteDto, TerminalDto } from '../api/types'
+import { CabinetSettingsForm } from '../components/CabinetSettingsForm'
 import { Button, LinearProgress } from '../components/ui'
+
+type PairingBanner = {
+  code: string
+  expiresAtEpochMillis: number
+  terminalName: string
+  terminalId: string
+  regenerated?: boolean
+}
 
 export function TerminalsPage() {
   const [sites, setSites] = useState<SiteDto[]>([])
   const [terminals, setTerminals] = useState<TerminalDto[]>([])
+  const [query, setQuery] = useState('')
   const [siteFilter, setSiteFilter] = useState('all')
+  const [pairedFilter, setPairedFilter] = useState<'all' | 'paired' | 'unpaired'>('all')
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   const [open, setOpen] = useState(false)
   const [editingTerminal, setEditingTerminal] = useState<TerminalDto | null>(null)
+  const [settingsTerminal, setSettingsTerminal] = useState<TerminalDto | null>(null)
+  const [pairing, setPairing] = useState<PairingBanner | null>(null)
+
   const [name, setName] = useState('')
   const [siteId, setSiteId] = useState('')
-  const [deviceId, setDeviceId] = useState('')
+  const [boxAddress, setBoxAddress] = useState('1')
+  const [serialNumber, setSerialNumber] = useState('')
   const [nodeCount, setNodeCount] = useState('24')
+  const [vendorDeviceId, setVendorDeviceId] = useState('')
+  const [nodeRows, setNodeRows] = useState('')
+  const [nodesPerRow, setNodesPerRow] = useState('')
+  const [latitude, setLatitude] = useState('')
+  const [longitude, setLongitude] = useState('')
 
   async function reload() {
     setBusy(true)
@@ -35,7 +55,16 @@ export function TerminalsPage() {
     void reload()
   }, [])
 
-  const visible = siteFilter === 'all' ? terminals : terminals.filter((terminal) => terminal.siteId === siteFilter)
+  const visible = useMemo(() => {
+    const q = query.trim().toLowerCase()
+    return terminals.filter((t) => {
+      const sn = sites.find((s) => s.id === t.siteId)?.name ?? ''
+      const matchQ = !q || t.name.toLowerCase().includes(q) || sn.toLowerCase().includes(q)
+      const matchSite = siteFilter === 'all' || t.siteId === siteFilter
+      const matchPaired = pairedFilter === 'all' || (pairedFilter === 'paired' ? t.paired : !t.paired)
+      return matchQ && matchSite && matchPaired
+    })
+  }, [terminals, sites, query, siteFilter, pairedFilter])
 
   function siteName(id: string) {
     return sites.find((site) => site.id === id)?.name ?? 'Unassigned unit'
@@ -43,51 +72,92 @@ export function TerminalsPage() {
 
   function resetForm() {
     setName('')
-    setDeviceId('')
+    setBoxAddress('1')
+    setSerialNumber('')
     setNodeCount('24')
+    setVendorDeviceId('')
+    setNodeRows('')
+    setNodesPerRow('')
+    setLatitude('')
+    setLongitude('')
+  }
+
+  function openCreate() {
+    setEditingTerminal(null)
+    resetForm()
+    if (sites[0]) setSiteId(sites[0].id)
+    setError(null)
+    setOpen(true)
   }
 
   function openEdit(terminal: TerminalDto) {
     setEditingTerminal(terminal)
     setName(terminal.name)
     setSiteId(terminal.siteId)
-    setDeviceId(terminal.serialNumber ?? '')
+    setBoxAddress(String(terminal.boxAddress))
+    setSerialNumber(terminal.serialNumber ?? '')
     setNodeCount(String(terminal.configuredSlotCount))
+    setVendorDeviceId(terminal.vendorDeviceId ?? '')
+    setNodeRows(terminal.nodeRows != null ? String(terminal.nodeRows) : '')
+    setNodesPerRow(terminal.nodesPerRow != null ? String(terminal.nodesPerRow) : '')
+    setLatitude(terminal.latitude != null ? String(terminal.latitude) : '')
+    setLongitude(terminal.longitude != null ? String(terminal.longitude) : '')
     setError(null)
     setOpen(true)
+  }
+
+  function buildPayload(forUpdate: boolean) {
+    const slots = Math.min(127, Math.max(1, Number(nodeCount) || 24))
+    const payload: Record<string, unknown> = {
+      siteId,
+      name: name.trim() || 'New Cabinet',
+      boxAddress: Math.max(1, Number(boxAddress) || 1),
+      serialNumber: serialNumber.trim() || null,
+      configuredSlotCount: slots,
+      vendorDeviceId: vendorDeviceId.trim() || null,
+      nodeRows: nodeRows.trim() ? Number(nodeRows) : null,
+      nodesPerRow: nodesPerRow.trim() ? Number(nodesPerRow) : null,
+      latitude: latitude.trim() ? Number(latitude) : null,
+      longitude: longitude.trim() ? Number(longitude) : null,
+    }
+    if (forUpdate && editingTerminal) {
+      payload.expectedRevision = editingTerminal.revision
+    }
+    return payload
   }
 
   async function onSave(e: FormEvent) {
     e.preventDefault()
     if (!siteId) {
-      setError('Select a unit before saving a terminal.')
+      setError('Select a unit before registering a key cabinet.')
+      return
+    }
+    const slots = Number(nodeCount)
+    if (!Number.isFinite(slots) || slots < 1 || slots > 127) {
+      setError('Configured node count must be between 1 and 127.')
       return
     }
     setBusy(true)
     setError(null)
     try {
       if (editingTerminal) {
-        await api.updateTerminal(editingTerminal.id, {
-          siteId,
-          name: name.trim() || 'New Cabinet',
-          boxAddress: editingTerminal.boxAddress,
-          serialNumber: deviceId.trim() || null,
-          configuredSlotCount: Math.min(255, Math.max(1, Number(nodeCount) || 24)),
-          expectedRevision: editingTerminal.revision,
-        })
+        await api.updateTerminal(editingTerminal.id, buildPayload(true))
+        setOpen(false)
+        setEditingTerminal(null)
+        resetForm()
+        await reload()
       } else {
-        await api.createTerminal({
-          siteId,
-          name: name.trim() || 'New Cabinet',
-          boxAddress: 1,
-          serialNumber: deviceId.trim() || null,
-          configuredSlotCount: Math.min(255, Math.max(1, Number(nodeCount) || 24)),
+        const result = await api.createTerminal(buildPayload(false))
+        setOpen(false)
+        resetForm()
+        setPairing({
+          code: result.pairingCode,
+          expiresAtEpochMillis: result.pairingCodeExpiresAtEpochMillis,
+          terminalName: result.terminal.name,
+          terminalId: result.terminal.id,
         })
+        await reload()
       }
-      setOpen(false)
-      setEditingTerminal(null)
-      resetForm()
-      await reload()
     } catch (err) {
       if (err instanceof ApiError && err.status === 409) {
         setError(
@@ -99,6 +169,33 @@ export function TerminalsPage() {
       } else {
         setError(err instanceof ApiError ? err.message : 'Failed to save terminal')
       }
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function onRegenerate(terminal: TerminalDto) {
+    if (
+      !confirm(
+        'Regenerate pairing code? This immediately revokes any existing device session for this cabinet. Give the new code only to the on-site technician.',
+      )
+    ) {
+      return
+    }
+    setBusy(true)
+    setError(null)
+    try {
+      const result = await api.regenerateTerminalPairingCode(terminal.id)
+      setPairing({
+        code: result.code,
+        expiresAtEpochMillis: result.expiresAtEpochMillis,
+        terminalName: terminal.name,
+        terminalId: terminal.id,
+        regenerated: true,
+      })
+      await reload()
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'Failed to regenerate pairing code')
     } finally {
       setBusy(false)
     }
@@ -122,35 +219,57 @@ export function TerminalsPage() {
     <section>
       <div className="page-header">
         <div>
-          <h1>Terminal Settings</h1>
+          <h1>Key Cabinet Registration</h1>
           <p className="muted">
-            Register Android key-cabinet terminals. Physical serial I/O remains on the Terminal only.
+            Super Admin registers a cabinet for a unit (e.g. Johor). The system shows a one-time 6-digit
+            pairing code. The on-site technician enters that code on the terminal; settings then download
+            from the server. NFC / fingerprint / face stay on the terminal only.
           </p>
         </div>
-        <Button
-          onClick={() => {
-            resetForm()
-            setEditingTerminal(null)
-            setOpen(true)
-          }}
-          disabled={!sites.length}
-        >
-          Add Android terminal
+        <Button onClick={openCreate} disabled={!sites.length}>
+          Register key cabinet
         </Button>
       </div>
 
       {error && <div className="error-banner">{error}</div>}
       {busy && <LinearProgress className="table-busy" label="Loading terminals" />}
 
-      <div className="field" style={{ maxWidth: 340 }}>
-        <label>Filter by unit</label>
-        <select value={siteFilter} onChange={(e) => setSiteFilter(e.target.value)}>
+      {pairing && (
+        <div className="notice pairing-code-banner" role="status">
+          <h3>{pairing.regenerated ? 'New pairing code' : 'Pairing code — copy now'}</h3>
+          <p className="muted">
+            For <strong>{pairing.terminalName}</strong>. Shown once — the server only stores a hash and
+            cannot show this code again. Expires{' '}
+            {new Date(pairing.expiresAtEpochMillis).toLocaleString()}.
+          </p>
+          <p className="pairing-code-digits mono">{pairing.code}</p>
+          <p className="muted mono" style={{ fontSize: '0.85rem' }}>
+            Key Cabinet ID: {pairing.terminalId}
+          </p>
+          <Button variant="outlined" onClick={() => setPairing(null)}>
+            Dismiss
+          </Button>
+        </div>
+      )}
+
+      <div className="toolbar-row">
+        <input
+          className="search"
+          placeholder="Search cabinet or unit…"
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          style={{ flex: 1 }}
+        />
+        <select value={siteFilter} onChange={(e) => setSiteFilter(e.target.value)} title="Filter by unit">
           <option value="all">All units</option>
           {sites.map((site) => (
-            <option key={site.id} value={site.id}>
-              {site.name}
-            </option>
+            <option key={site.id} value={site.id}>{site.name}</option>
           ))}
+        </select>
+        <select value={pairedFilter} onChange={(e) => setPairedFilter(e.target.value as 'all' | 'paired' | 'unpaired')} title="Pairing status">
+          <option value="all">All statuses</option>
+          <option value="paired">Paired</option>
+          <option value="unpaired">Not paired</option>
         </select>
       </div>
 
@@ -159,10 +278,10 @@ export function TerminalsPage() {
           <table className="data-table">
             <thead>
               <tr>
-                <th>Terminal</th>
+                <th>Cabinet</th>
                 <th>Unit</th>
-                <th>Device ID</th>
-                <th>Config</th>
+                <th>Layout</th>
+                <th>Paired</th>
                 <th>Key Cabinet ID</th>
                 <th className="col-actions">Actions</th>
               </tr>
@@ -172,19 +291,33 @@ export function TerminalsPage() {
                 <tr key={terminal.id}>
                   <td className="cell-title">{terminal.name}</td>
                   <td>{siteName(terminal.siteId)}</td>
-                  <td className="mono">{terminal.serialNumber || '—'}</td>
                   <td>
-                    Box {terminal.boxAddress} · {terminal.configuredSlotCount} nodes ·{' '}
-                    {terminal.connectionState || 'UNKNOWN'}
+                    Box {terminal.boxAddress} · {terminal.configuredSlotCount} nodes
+                    {terminal.nodeRows && terminal.nodesPerRow
+                      ? ` · ${terminal.nodeRows}×${terminal.nodesPerRow}`
+                      : ''}
+                  </td>
+                  <td>
+                    <span className={`badge${terminal.paired ? ' badge-success' : ''}`}>
+                      {terminal.paired ? 'Paired' : 'Not paired'}
+                    </span>
                   </td>
                   <td className="mono">{terminal.id}</td>
                   <td className="col-actions">
-                    <Button variant="link" disabled={busy} onClick={() => openEdit(terminal)}>
-                      Edit
-                    </Button>
-                    <Button variant="link" disabled={busy} onClick={() => void onArchive(terminal.id)}>
-                      Recycle
-                    </Button>
+                    <div className="row-actions">
+                      <Button variant="link" onClick={() => openEdit(terminal)}>
+                        Edit
+                      </Button>
+                      <Button variant="link" onClick={() => setSettingsTerminal(terminal)}>
+                        Settings
+                      </Button>
+                      <Button variant="link" disabled={busy} onClick={() => void onRegenerate(terminal)}>
+                        Pairing code
+                      </Button>
+                      <Button variant="link" disabled={busy} onClick={() => void onArchive(terminal.id)}>
+                        Recycle
+                      </Button>
+                    </div>
                   </td>
                 </tr>
               ))}
@@ -192,20 +325,24 @@ export function TerminalsPage() {
           </table>
         </div>
       ) : (
-        !busy && <div className="empty-state">No terminals yet.</div>
+        !busy && <div className="empty-state">No key cabinets yet. Register one for a unit first.</div>
       )}
 
       {open && (
-        <div className="dialog-backdrop" onClick={() => setOpen(false)}>
-          <form className="dialog" onClick={(e) => e.stopPropagation()} onSubmit={onSave}>
-            <h2>{editingTerminal ? 'Edit Android terminal' : 'Add Android terminal'}</h2>
-            <p className="dialog-copy">Create a cabinet record for the website and Android Terminal pairing.</p>
+        <div className="dialog-backdrop">
+          <form className="dialog" onSubmit={onSave}>
+            <h2>{editingTerminal ? 'Edit key cabinet' : 'Register key cabinet'}</h2>
+            <p className="dialog-copy">
+              {editingTerminal
+                ? 'Update cabinet configuration. Use Pairing code on the list to issue a new code for the technician.'
+                : 'After save, a 6-digit pairing code is shown once for the on-site technician.'}
+            </p>
             <div className="field">
-              <label>Terminal / cabinet name</label>
-              <input value={name} onChange={(e) => setName(e.target.value)} required />
+              <label>Cabinet name</label>
+              <input value={name} onChange={(e) => setName(e.target.value)} required placeholder="Johor HQ Cabinet" />
             </div>
             <div className="field">
-              <label>Affiliated unit</label>
+              <label>Unit (site)</label>
               <select value={siteId} onChange={(e) => setSiteId(e.target.value)} required>
                 {sites.map((site) => (
                   <option key={site.id} value={site.id}>
@@ -216,29 +353,67 @@ export function TerminalsPage() {
             </div>
             <div className="split">
               <div className="field">
-                <label>Unique device ID</label>
-                <input value={deviceId} onChange={(e) => setDeviceId(e.target.value)} />
+                <label>Box address</label>
+                <input value={boxAddress} onChange={(e) => setBoxAddress(e.target.value)} required />
               </div>
               <div className="field">
-                <label>Configured node count</label>
-                <input value={nodeCount} onChange={(e) => setNodeCount(e.target.value)} />
+                <label>Configured node count (1–127)</label>
+                <input value={nodeCount} onChange={(e) => setNodeCount(e.target.value)} required />
+              </div>
+            </div>
+            <div className="split">
+              <div className="field">
+                <label>Serial number (optional)</label>
+                <input value={serialNumber} onChange={(e) => setSerialNumber(e.target.value)} />
+              </div>
+              <div className="field">
+                <label>Vendor device ID (optional)</label>
+                <input value={vendorDeviceId} onChange={(e) => setVendorDeviceId(e.target.value)} />
+              </div>
+            </div>
+            <div className="split">
+              <div className="field">
+                <label>Node rows (optional)</label>
+                <input value={nodeRows} onChange={(e) => setNodeRows(e.target.value)} />
+              </div>
+              <div className="field">
+                <label>Nodes per row (optional)</label>
+                <input value={nodesPerRow} onChange={(e) => setNodesPerRow(e.target.value)} />
+              </div>
+            </div>
+            <div className="split">
+              <div className="field">
+                <label>Latitude (optional)</label>
+                <input value={latitude} onChange={(e) => setLatitude(e.target.value)} />
+              </div>
+              <div className="field">
+                <label>Longitude (optional)</label>
+                <input value={longitude} onChange={(e) => setLongitude(e.target.value)} />
               </div>
             </div>
             <div className="dialog-actions">
-              <Button
-                variant="outlined"
-                onClick={() => {
-                  setOpen(false)
-                  setEditingTerminal(null)
-                }}
-              >
+              <Button variant="outlined" onClick={() => setOpen(false)}>
                 Cancel
               </Button>
               <Button type="submit" loading={busy}>
-                {editingTerminal ? 'Save changes' : 'Save terminal'}
+                {editingTerminal ? 'Save changes' : 'Register & show pairing code'}
               </Button>
             </div>
           </form>
+        </div>
+      )}
+
+      {settingsTerminal && (
+        <div className="dialog-backdrop">
+          <div className="dialog">
+            <h2>Cabinet settings — {settingsTerminal.name}</h2>
+            <CabinetSettingsForm terminal={settingsTerminal} />
+            <div className="dialog-actions">
+              <Button variant="outlined" onClick={() => setSettingsTerminal(null)}>
+                Close
+              </Button>
+            </div>
+          </div>
         </div>
       )}
     </section>

@@ -9,11 +9,11 @@ ALTER TABLE terminals
   ADD COLUMN longitude DECIMAL(10, 7) NULL AFTER latitude,
   ADD COLUMN paired TINYINT(1) NOT NULL DEFAULT 0 AFTER connection_state,
   ADD COLUMN paired_at_epoch_ms BIGINT NULL AFTER paired,
-  -- Only the hash is ever stored; the plaintext 6-digit code is returned exactly once,
+  -- Only the hash is ever stored, and the plaintext 6-digit code is returned exactly once,
   -- at generation time, in the create/regenerate response.
   ADD COLUMN pairing_code_hash CHAR(64) NULL AFTER paired_at_epoch_ms,
   ADD COLUMN pairing_code_expires_at_epoch_ms BIGINT NULL AFTER pairing_code_hash,
-  -- NULL = still valid/unused. Non-null = already consumed; single-use enforced by checking this.
+  -- NULL = still valid/unused. Non-null = already consumed, and single-use is enforced by checking this.
   ADD COLUMN pairing_code_consumed_at_epoch_ms BIGINT NULL AFTER pairing_code_expires_at_epoch_ms;
 
 -- Refresh tokens for TERMINAL_DEVICE-scoped sessions. Kept separate from the existing

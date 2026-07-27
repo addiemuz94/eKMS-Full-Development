@@ -35,6 +35,8 @@ object ApiPaths {
     const val ADMIN_USER_CREDENTIALS_REVOKE = "/v1/admin/users/{userId}/credentials/revoke"
     const val ADMIN_SITES = "/v1/admin/sites"
     const val ADMIN_TERMINALS = "/v1/admin/terminals"
+    /** Super Admin. {id} is terminals.id. GET/PATCH cabinet behavioral settings. */
+    const val ADMIN_TERMINAL_CABINET_SETTINGS = "/v1/admin/terminals/{id}/cabinet-settings"
     const val ADMIN_KEYS = "/v1/admin/keys"
     const val ADMIN_KEY_SLOTS = "/v1/admin/key-slots"
     const val ADMIN_ACCESS_GRANTS = "/v1/admin/access-grants"
@@ -375,6 +377,33 @@ data class TerminalDownloadSnapshot(
     val keys: List<ManagedKey>,
     val keySlots: List<KeySlot>,
     val accessGrants: List<AccessGrant>,
+    /**
+     * Portal-managed Take/Return timers and toggles. Null on older servers;
+     * terminalApp keeps local defaults when absent.
+     */
+    val cabinetSettings: TerminalCabinetSettingsDto? = null,
+)
+
+/** Portal + sync DTO for terminal behavioral settings (Admin Menu timing/video/certification). */
+@Serializable
+data class TerminalCabinetSettingsDto(
+    val terminalId: String? = null,
+    val takeWarningTimeSeconds: Int = 15,
+    val doorCloseWarningTimeSeconds: Int = 15,
+    val keyReturnCertificationEnabled: Boolean = false,
+    val returnKeyVideoEnabled: Boolean = false,
+    val keyRetrievalVideoEnabled: Boolean = false,
+    val revision: Long = 1,
+)
+
+@Serializable
+data class UpdateTerminalCabinetSettingsRequest(
+    val takeWarningTimeSeconds: Int,
+    val doorCloseWarningTimeSeconds: Int,
+    val keyReturnCertificationEnabled: Boolean,
+    val returnKeyVideoEnabled: Boolean,
+    val keyRetrievalVideoEnabled: Boolean,
+    val expectedRevision: Long,
 )
 
 /** API HANDOVER — Sites & Terminals. All PATCH requests use revision checks. */

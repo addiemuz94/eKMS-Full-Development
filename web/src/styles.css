@@ -452,12 +452,70 @@ button {
   outline: none;
 }
 
+.field input[type='checkbox'],
+.field input[type='radio'],
+.toggle-row input[type='checkbox'] {
+  width: 16px;
+  min-width: 16px;
+  height: 16px;
+  min-height: 16px;
+  padding: 0;
+  margin: 2px 0 0;
+  border-radius: 3px;
+  accent-color: var(--md-sys-color-primary);
+  flex-shrink: 0;
+  box-shadow: none;
+}
+
+.toggle-list {
+  display: grid;
+  gap: 8px;
+  margin: 4px 0 16px;
+}
+
+.toggle-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--md-sys-color-surface-container-low, #f7f9fc);
+  cursor: pointer;
+  font-weight: 400;
+}
+
+.toggle-row strong {
+  display: block;
+  font-size: 0.92rem;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.toggle-row .muted {
+  display: block;
+  margin-top: 2px;
+  font-size: 0.82rem;
+  font-weight: 400;
+}
+
+.toggle-row:hover {
+  border-color: var(--line-strong);
+}
+
 .search:focus,
 .field input:focus,
 .field select:focus,
 .field textarea:focus {
   border-color: var(--md-sys-color-primary);
   box-shadow: 0 0 0 3px rgba(0, 85, 165, 0.18);
+}
+
+.field input[type='checkbox']:focus,
+.field input[type='radio']:focus,
+.toggle-row input[type='checkbox']:focus {
+  box-shadow: 0 0 0 2px rgba(0, 85, 165, 0.25);
+  outline: none;
 }
 
 .search {
@@ -567,6 +625,144 @@ button {
   color: #314155;
   font-size: 0.76rem;
   font-weight: 700;
+}
+
+.badge-success {
+  background: var(--md-sys-color-success-container, #d4edda);
+  color: var(--md-sys-color-on-success-container, #0f3d24);
+}
+
+.pairing-code-banner {
+  border-color: var(--md-sys-color-primary, #0055a5);
+  background: var(--md-sys-color-primary-container, #d6e3f5);
+}
+
+.pairing-code-banner h3 {
+  margin: 0 0 6px;
+}
+
+.pairing-code-digits {
+  font-size: 2.4rem;
+  font-weight: 700;
+  letter-spacing: 0.28em;
+  margin: 12px 0;
+  color: var(--md-sys-color-on-primary-container, #001d36);
+}
+
+.registration-step-card {
+  text-decoration: none;
+  color: inherit;
+  transition: box-shadow 140ms ease, border-color 140ms ease;
+}
+
+.registration-step-card:hover {
+  border-color: var(--md-sys-color-primary, #0055a5);
+  box-shadow: var(--shadow);
+}
+
+/* ─── Registration wizard ─────────────────────────────────────────────────── */
+
+.wizard-stepper {
+  display: flex;
+  gap: 0;
+  overflow-x: auto;
+  background: var(--surface-variant, #f0f4fa);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 6px;
+}
+
+.wizard-step {
+  flex: 1;
+  min-width: 70px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+  background: none;
+  border: none;
+  border-radius: 7px;
+  padding: 8px 4px;
+  cursor: pointer;
+  color: var(--on-surface-variant, #44505f);
+  font-family: inherit;
+  font-size: 0.75rem;
+  transition: background 130ms;
+}
+
+.wizard-step:hover {
+  background: rgba(0, 85, 165, 0.07);
+}
+
+.wizard-step-num {
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  border: 2px solid var(--line);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.72rem;
+  font-weight: 600;
+  background: var(--surface, #fff);
+  transition: background 130ms, border-color 130ms, color 130ms;
+}
+
+.wizard-step-active .wizard-step-num {
+  background: var(--md-sys-color-primary, #0055a5);
+  border-color: var(--md-sys-color-primary, #0055a5);
+  color: #fff;
+}
+
+.wizard-step-done .wizard-step-num {
+  background: var(--md-sys-color-success-container, #d4edda);
+  border-color: var(--md-sys-color-success-container, #d4edda);
+  color: var(--md-sys-color-on-success-container, #0f3d24);
+}
+
+.wizard-step-label {
+  text-align: center;
+  line-height: 1.3;
+  max-width: 64px;
+  word-break: break-word;
+}
+
+.wizard-optional {
+  font-size: 0.65rem;
+  opacity: 0.6;
+  display: block;
+}
+
+.wizard-step-active {
+  color: var(--md-sys-color-primary, #0055a5);
+  font-weight: 600;
+}
+
+.wizard-body {
+  min-height: 320px;
+}
+
+.toolbar-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.toolbar-row select {
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  font-family: inherit;
+  font-size: 0.9rem;
+  background: var(--surface, #fff);
+  color: inherit;
+  cursor: pointer;
+}
+
+.toolbar-row select:focus {
+  outline: 2px solid var(--md-sys-color-primary, #0055a5);
+  outline-offset: 1px;
 }
 
 .data-panel {

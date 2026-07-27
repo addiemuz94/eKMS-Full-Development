@@ -1,12 +1,16 @@
-import { useEffect, useState, type FormEvent } from 'react'
+import { useEffect, useMemo, useState, type FormEvent } from 'react'
 import { api, ApiError } from '../api/client'
 import type { KeyDto, SiteDto, UserDto } from '../api/types'
+import { Button, LinearProgress } from '../components/ui'
 
 export function PermissionsPage() {
   const [grants, setGrants] = useState<Record<string, unknown>[]>([])
   const [users, setUsers] = useState<UserDto[]>([])
   const [keys, setKeys] = useState<KeyDto[]>([])
   const [sites, setSites] = useState<SiteDto[]>([])
+  const [query, setQuery] = useState('')
+  const [siteFilter, setSiteFilter] = useState('all')
+  const [userFilter, setUserFilter] = useState('all')
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   const [open, setOpen] = useState(false)
@@ -42,6 +46,27 @@ export function PermissionsPage() {
   useEffect(() => {
     void reload()
   }, [])
+
+  const filtered = useMemo(() => {
+    const q = query.trim().toLowerCase()
+    return grants
+      .filter((g) => {
+        const uname = users.find((u) => u.id === g.userId)?.displayName ?? ''
+        const sname = sites.find((s) => s.id === g.siteId)?.name ?? ''
+        const knames = (Array.isArray(g.keyIds) ? (g.keyIds as string[]) : [])
+          .map((id) => keys.find((k) => k.id === id)?.displayName ?? '')
+          .join(' ')
+        const matchQ = !q || uname.toLowerCase().includes(q) || sname.toLowerCase().includes(q) || knames.toLowerCase().includes(q)
+        const matchSite = siteFilter === 'all' || g.siteId === siteFilter
+        const matchUser = userFilter === 'all' || g.userId === userFilter
+        return matchQ && matchSite && matchUser
+      })
+      .sort((a, b) => {
+        const an = users.find((u) => u.id === a.userId)?.displayName ?? ''
+        const bn = users.find((u) => u.id === b.userId)?.displayName ?? ''
+        return an.localeCompare(bn)
+      })
+  }, [grants, users, keys, sites, query, siteFilter, userFilter])
 
   function openEdit(grant: Record<string, unknown>) {
     setEditingGrant(grant)
@@ -79,9 +104,7 @@ export function PermissionsPage() {
       await reload()
     } catch (err) {
       if (err instanceof ApiError && err.status === 409) {
-        setError(
-          'This grant was changed by someone else since you opened it. Reloading the latest version — please reapply your edit.',
-        )
+        setError('This grant was changed by someone else since you opened it. Reloading — please reapply.')
         setOpen(false)
         setEditingGrant(null)
         await reload()
@@ -100,106 +123,122 @@ export function PermissionsPage() {
           <h1>Permission Settings</h1>
           <p className="muted">Bind exact keys to a person. A site-only assignment is never enough.</p>
         </div>
-        <button
-          className="btn"
-          type="button"
+        <Button
           onClick={() => {
             setEditingGrant(null)
             setOpen(true)
           }}
         >
           Add access grant
-        </button>
+        </Button>
       </div>
 
       {error && <div className="error-banner">{error}</div>}
+      {busy && <LinearProgress className="table-busy" label="Loading permissions" />}
 
-      {grants.map((grant) => (
-        <article className="card" key={String(grant.id)}>
-          <h3>{users.find((user) => user.id === grant.userId)?.displayName ?? String(grant.userId)}</h3>
-          <div className="meta">
-            <div>Unit: {sites.find((site) => site.id === grant.siteId)?.name ?? String(grant.siteId)}</div>
-            <div>
-              Keys:{' '}
-              {Array.isArray(grant.keyIds)
-                ? (grant.keyIds as string[])
-                    .map((id) => keys.find((key) => key.id === id)?.displayName ?? id)
-                    .join(', ')
-                : '—'}
-            </div>
-          </div>
-          <div className="card-actions">
-            <button className="btn linkish" type="button" onClick={() => openEdit(grant)}>
-              Edit
-            </button>
-            <button
-              className="btn linkish"
-              type="button"
-              onClick={() =>
-                void (async () => {
-                  if (!confirm('Move grant to Recycle Bin?')) return
-                  await api.deleteAccessGrant(String(grant.id))
-                  await reload()
-                })()
-              }
-            >
-              Move to Recycle Bin
-            </button>
-          </div>
-        </article>
-      ))}
+      <div className="toolbar-row">
+        <input
+          className="search"
+          placeholder="Search personnel, unit or key…"
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          style={{ flex: 1 }}
+        />
+        <select value={siteFilter} onChange={(e) => setSiteFilter(e.target.value)} title="Filter by unit">
+          <option value="all">All units</option>
+          {sites.map((s) => (
+            <option key={s.id} value={s.id}>{s.name}</option>
+          ))}
+        </select>
+        <select value={userFilter} onChange={(e) => setUserFilter(e.target.value)} title="Filter by personnel">
+          <option value="all">All personnel</option>
+          {users.map((u) => (
+            <option key={u.id} value={u.id}>{u.displayName}</option>
+          ))}
+        </select>
+      </div>
 
-      {!grants.length && !busy && <div className="empty-state">No access grants yet.</div>}
+      {filtered.length ? (
+        <div className="data-panel">
+          <table className="data-table">
+            <thead>
+              <tr>
+                <th>Personnel</th>
+                <th>Unit</th>
+                <th>Keys</th>
+                <th className="col-actions">Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {filtered.map((grant) => (
+                <tr key={String(grant.id)}>
+                  <td className="cell-title">{users.find((u) => u.id === grant.userId)?.displayName ?? String(grant.userId)}</td>
+                  <td>{sites.find((s) => s.id === grant.siteId)?.name ?? String(grant.siteId)}</td>
+                  <td>
+                    {Array.isArray(grant.keyIds)
+                      ? (grant.keyIds as string[])
+                          .map((id) => keys.find((k) => k.id === id)?.displayName ?? id)
+                          .join(', ')
+                      : '—'}
+                  </td>
+                  <td className="col-actions">
+                    <div className="row-actions">
+                      <Button variant="link" onClick={() => openEdit(grant)}>Edit</Button>
+                      <Button
+                        variant="link"
+                        onClick={() =>
+                          void (async () => {
+                            if (!confirm('Move grant to Recycle Bin?')) return
+                            await api.deleteAccessGrant(String(grant.id))
+                            await reload()
+                          })()
+                        }
+                      >
+                        Recycle
+                      </Button>
+                    </div>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      ) : (
+        !busy && <div className="empty-state">No access grants match current filters.</div>
+      )}
 
       {open && (
-        <div className="dialog-backdrop" onClick={() => setOpen(false)}>
-          <form className="dialog" onClick={(e) => e.stopPropagation()} onSubmit={onSave}>
+        <div className="dialog-backdrop">
+          <form className="dialog" onSubmit={onSave}>
             <h2>{editingGrant ? 'Edit access grant' : 'Add access grant'}</h2>
             <p className="dialog-copy">Grant a named person permission to a specific key under a specific unit.</p>
             <div className="field">
               <label>Personnel</label>
               <select value={userId} onChange={(e) => setUserId(e.target.value)} required>
-                {users.map((user) => (
-                  <option key={user.id} value={user.id}>
-                    {user.displayName}
-                  </option>
+                {users.map((u) => (
+                  <option key={u.id} value={u.id}>{u.displayName}</option>
                 ))}
               </select>
             </div>
             <div className="field">
               <label>Unit</label>
               <select value={siteId} onChange={(e) => setSiteId(e.target.value)} required>
-                {sites.map((site) => (
-                  <option key={site.id} value={site.id}>
-                    {site.name}
-                  </option>
+                {sites.map((s) => (
+                  <option key={s.id} value={s.id}>{s.name}</option>
                 ))}
               </select>
             </div>
             <div className="field">
               <label>Exact key</label>
               <select value={keyId} onChange={(e) => setKeyId(e.target.value)} required>
-                {keys.map((key) => (
-                  <option key={key.id} value={key.id}>
-                    {key.displayName}
-                  </option>
+                {keys.map((k) => (
+                  <option key={k.id} value={k.id}>{k.displayName}</option>
                 ))}
               </select>
             </div>
             <div className="dialog-actions">
-              <button
-                className="btn secondary"
-                type="button"
-                onClick={() => {
-                  setOpen(false)
-                  setEditingGrant(null)
-                }}
-              >
-                Cancel
-              </button>
-              <button className="btn" type="submit" disabled={busy}>
-                {editingGrant ? 'Save changes' : 'Save'}
-              </button>
+              <Button variant="outlined" onClick={() => { setOpen(false); setEditingGrant(null) }}>Cancel</Button>
+              <Button type="submit" loading={busy}>{editingGrant ? 'Save changes' : 'Save'}</Button>
             </div>
           </form>
         </div>

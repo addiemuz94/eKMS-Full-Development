@@ -105,28 +105,3 @@ export function KeyGroupsPage() {
     />
   )
 }
-
-export function AppointmentReasonsPage() {
-  return (
-    <ResourcePage
-      title="Appointment Reason Settings"
-      description="Reasons operators can pick when requesting temporary key access."
-      addLabel="Add reason"
-      fields={[
-        { name: 'siteId', label: 'Unit', type: 'site', required: true },
-        { name: 'name', label: 'Reason name', type: 'text', required: true },
-      ]}
-      list={api.listAppointmentReasons}
-      create={(payload: Record<string, unknown>) => api.createAppointmentReason({ ...payload, active: true })}
-      update={(id: string, payload: Record<string, unknown>) =>
-        api.updateAppointmentReason(id, { ...payload, active: true })
-      }
-      remove={api.deleteAppointmentReason}
-      titleOf={(item) => String(item.name)}
-      renderLines={(item, sites: SiteDto[]) => [
-        `Unit: ${siteName(sites, item.siteId)}`,
-        `Active: ${item.active === false ? 'No' : 'Yes'}`,
-      ]}
-    />
-  )
-}

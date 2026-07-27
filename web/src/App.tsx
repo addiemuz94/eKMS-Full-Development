@@ -8,6 +8,9 @@ import { LoginPage } from './pages/LoginPage'
 const DashboardPage = lazy(() =>
   import('./pages/DashboardPage').then((m) => ({ default: m.DashboardPage })),
 )
+const RegistrationPage = lazy(() =>
+  import('./pages/RegistrationPage').then((m) => ({ default: m.RegistrationPage })),
+)
 const UnitsPage = lazy(() => import('./pages/UnitsPage').then((m) => ({ default: m.UnitsPage })))
 const TerminalsPage = lazy(() =>
   import('./pages/TerminalsPage').then((m) => ({ default: m.TerminalsPage })),
@@ -42,17 +45,6 @@ const KeyRecordsPage = lazy(() =>
 )
 const OperationLogsPage = lazy(() =>
   import('./pages/LogsPages').then((m) => ({ default: m.OperationLogsPage })),
-)
-const AppointmentsPage = lazy(() =>
-  import('./pages/AppointmentsPage').then((m) => ({ default: m.AppointmentsPage })),
-)
-const AppointmentReasonsPage = lazy(() =>
-  import('./pages/SimpleResources').then((m) => ({ default: m.AppointmentReasonsPage })),
-)
-const AppointmentPermissionsPage = lazy(() =>
-  import('./pages/AppointmentPermissionsPage').then((m) => ({
-    default: m.AppointmentPermissionsPage,
-  })),
 )
 const SystemLogsPage = lazy(() =>
   import('./pages/LogsPages').then((m) => ({ default: m.SystemLogsPage })),
@@ -94,6 +86,14 @@ export default function App() {
                 <DashboardPage />
               </Suspense>
             </ErrorBoundary>
+          }
+        />
+        <Route
+          path="registration"
+          element={
+            <Suspense fallback={<PageFallback />}>
+              <RegistrationPage />
+            </Suspense>
           }
         />
         <Route
@@ -197,30 +197,6 @@ export default function App() {
           element={
             <Suspense fallback={<PageFallback />}>
               <OperationLogsPage />
-            </Suspense>
-          }
-        />
-        <Route
-          path="appointments"
-          element={
-            <Suspense fallback={<PageFallback />}>
-              <AppointmentsPage />
-            </Suspense>
-          }
-        />
-        <Route
-          path="appointment-reasons"
-          element={
-            <Suspense fallback={<PageFallback />}>
-              <AppointmentReasonsPage />
-            </Suspense>
-          }
-        />
-        <Route
-          path="appointment-permissions"
-          element={
-            <Suspense fallback={<PageFallback />}>
-              <AppointmentPermissionsPage />
             </Suspense>
           }
         />

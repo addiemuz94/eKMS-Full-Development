@@ -38,21 +38,40 @@ export function UnitsPage() {
     void reload()
   }, [])
 
+  const [stateFilter, setStateFilter] = useState('')
+  const [sortKey, setSortKey] = useState<'name' | 'province' | 'city'>('name')
+  const [sortDir, setSortDir] = useState<'asc' | 'desc'>('asc')
+
+  const usedStates = MALAYSIA_STATES.map((s) => s.name)
+
+  function toggleSort(k: 'name' | 'province' | 'city') {
+    if (sortKey === k) setSortDir((d) => (d === 'asc' ? 'desc' : 'asc'))
+    else { setSortKey(k); setSortDir('asc') }
+  }
+  const arrow = (k: 'name' | 'province' | 'city') => sortKey === k ? (sortDir === 'asc' ? ' ↑' : ' ↓') : ''
+
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase()
-    return sites.filter((site) => {
-      const parent = sites.find((candidate) => candidate.id === site.parentSiteId)?.name ?? ''
-      const matchesQuery =
-        !q ||
-        site.name.toLowerCase().includes(q) ||
-        (site.province ?? '').toLowerCase().includes(q) ||
-        (site.city ?? '').toLowerCase().includes(q) ||
-        parent.toLowerCase().includes(q)
-      const hasLocation = Boolean(site.province?.trim() && site.city?.trim())
-      const matchesView = view === 'all' || hasLocation
-      return matchesQuery && matchesView
-    })
-  }, [sites, query, view])
+    return sites
+      .filter((site) => {
+        const parent = sites.find((candidate) => candidate.id === site.parentSiteId)?.name ?? ''
+        const matchesQuery =
+          !q ||
+          site.name.toLowerCase().includes(q) ||
+          (site.province ?? '').toLowerCase().includes(q) ||
+          (site.city ?? '').toLowerCase().includes(q) ||
+          parent.toLowerCase().includes(q)
+        const hasLocation = Boolean(site.province?.trim() && site.city?.trim())
+        const matchesView = view === 'all' || hasLocation
+        const matchesState = !stateFilter || (site.province ?? '') === stateFilter
+        return matchesQuery && matchesView && matchesState
+      })
+      .sort((a, b) => {
+        const av = (sortKey === 'name' ? a.name : sortKey === 'province' ? (a.province ?? '') : (a.city ?? '')).toLowerCase()
+        const bv = (sortKey === 'name' ? b.name : sortKey === 'province' ? (b.province ?? '') : (b.city ?? '')).toLowerCase()
+        return sortDir === 'asc' ? av.localeCompare(bv) : bv.localeCompare(av)
+      })
+  }, [sites, query, view, stateFilter, sortKey, sortDir])
 
   function resetForm() {
     setName('')
@@ -177,13 +196,20 @@ export function UnitsPage() {
           placeholder="Search unit, state, city or superior unit"
           value={query}
           onChange={(e) => setQuery(e.target.value)}
+          style={{ flex: 1 }}
         />
+        <select value={stateFilter} onChange={(e) => setStateFilter(e.target.value)} title="Filter by state">
+          <option value="">All states</option>
+          {usedStates.map((s) => (
+            <option key={s} value={s}>{s}</option>
+          ))}
+        </select>
         <SegmentedControl
           ariaLabel="Unit filter"
           value={view}
           onChange={setView}
           options={[
-            { value: 'all', label: 'All units' },
+            { value: 'all', label: 'All' },
             { value: 'mapped', label: 'Mapped' },
           ]}
         />
@@ -194,9 +220,9 @@ export function UnitsPage() {
           <table className="data-table">
             <thead>
               <tr>
-                <th>Unit</th>
-                <th>State / province</th>
-                <th>City</th>
+                <th style={{ cursor: 'pointer' }} onClick={() => toggleSort('name')}>Unit{arrow('name')}</th>
+                <th style={{ cursor: 'pointer' }} onClick={() => toggleSort('province')}>State / province{arrow('province')}</th>
+                <th style={{ cursor: 'pointer' }} onClick={() => toggleSort('city')}>City{arrow('city')}</th>
                 <th>Superior unit</th>
                 <th className="col-actions">Actions</th>
               </tr>
@@ -226,8 +252,8 @@ export function UnitsPage() {
       )}
 
       {open && (
-        <div className="dialog-backdrop" onClick={() => setOpen(false)}>
-          <form className="dialog" onClick={(e) => e.stopPropagation()} onSubmit={onSave}>
+        <div className="dialog-backdrop">
+          <form className="dialog" onSubmit={onSave}>
             <h2>{editingSite ? 'Edit unit' : 'Add unit'}</h2>
             <p className="dialog-copy">
               Choose a Malaysian state/province and city so the unit appears correctly on the dashboard map.

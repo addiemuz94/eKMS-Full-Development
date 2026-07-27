@@ -9,7 +9,7 @@ Guidance for agents working in this repository. **Read Directory + Production + 
 | [Project](#project) | What eKMS is; live URLs; agent scope |
 | [Production is already live](#production-is-already-live--do-not-reinvent-the-backend) | VPS / `kms-cvt.com` — backend already running |
 | [Terminal → live API](#terminal--live-api-how-terminalapp-reaches-the-portal-backend) | How terminalApp configures and calls `/v1` so data shows on the web portal — **manual steps below are being superseded by pairing-code registration, see next row** |
-| [Web Portal — Pending UI Work (Registration Workflow)](#web-portal--pending-ui-work-registration-workflow) | **Read before building Key Cabinet / Personnel registration pages in `web/`** — exact fields, endpoints, and the pairing-code display requirement |
+| [Web Portal — Registration Workflow](#web-portal--registration-workflow) | Key Cabinet + Personnel registration + pairing-code UI (implemented in `web/`) |
 | [Toolchain](#toolchain-do-not-drift-from-this-baseline) | JDK / Gradle / Kotlin pins |
 | [Common commands](#common-commands) | Gradle + `web/` npm |
 | [Module architecture](#module-architecture) | shared / terminal / mobile / web / backend |
@@ -43,17 +43,13 @@ Deploy/ops details live in `backend/DEPLOY.md` (Docker Compose prod, Caddy, Clou
 
 ### Terminal → live API (how terminalApp reaches the portal backend)
 
-> **Being superseded.** terminalApp now has a pairing-code flow (a fresh terminal's first
-> screen is a 6-digit code entry that calls `POST /v1/terminal/pair-with-code`, then reuses
-> this same bootstrap pipeline automatically) that replaces steps 2-4 below. That code is
-> written and committed, but the backend pairing endpoint is **not yet deployed to the VPS**
-> and the flow has **not been run against a live terminal**. Until both of those happen, the
-> manual steps below remain the only working path — do not tell a user "just use the pairing
-> code" until this note is updated to say the flow is live. See "Web Portal — Pending UI Work
-> (Registration Workflow)" below for what `web/` needs to build so a Super Admin can actually
-> generate a code to type in.
+> **Pairing code path (preferred).** terminalApp's first screen is a 6-digit code entry
+> (`POST /v1/terminal/pair-with-code`), then bootstrap downloads settings from the database.
+> Super Admin creates the cabinet and code on the portal (**Registration → Key Cabinet Registration**).
+> Backend pairing + `web/` registration UI are deployed together in the Jul 2026 rework — still
+> verify end-to-end on a fresh terminal install before retiring the manual Admin Menu steps below.
 
-The terminal does **not** talk to the React UI. It talks to the **same backend** the portal uses (`https://kms-cvt.com/v1/...`). When the terminal creates personnel or completes card enrollment, the portal’s Personnel page sees it after refresh because both share MySQL on the VPS.
+The terminal does **not** talk to the React UI. It talks to the **same backend** the portal uses (`https://kms-cvt.com/v1/...`). When the terminal creates personnel (server-linked), the portal’s Personnel page sees it after refresh because both share MySQL on the VPS. **NFC / fingerprint / face enrollment stays terminal-local** and is not uploaded to the portal database (policy A, Jul 2026).
 
 **Wire-up on the device (Admin Menu):**
 
@@ -61,14 +57,15 @@ The terminal does **not** talk to the React UI. It talks to the **same backend**
 2. **Set server address** → `https://kms-cvt.com` (no trailing slash).
 3. **Key Cabinet ID** → UUID of this cabinet’s terminal row from portal **Terminal Settings** (same id used in sync paths).
 4. Sign out, then sign in with a **portal** Super Admin email/password so `TerminalApiClient` stores JWT access/refresh tokens.
-5. Use **Bootstrap** / **Download** / **Push** (Admin Menu) for snapshot sync; Personnel Management / Card enrollment call admin credential APIs directly when server-linked.
+5. Use **Bootstrap** / **Download** / **Push** (Admin Menu) for snapshot sync. Personnel create still uses admin user APIs when server-linked. **Do not** call credential complete/revoke APIs for NFC/fingerprint/face (policy A — terminal-local only).
 
-**Client code:** `terminalApp/.../data/TerminalApiClient.kt` builds requests as `{baseUrl}{ApiPaths.*}`. Canonical path strings live in `shared/.../api/ApiContracts.kt` (`object ApiPaths`). Auth header: `Authorization: Bearer <accessToken>` on every route except login/refresh. Login sends `clientType: TERMINAL`.
+**Client code:** `terminalApp/.../data/TerminalApiClient.kt` builds requests as `{baseUrl}{ApiPaths.*}`. Canonical path strings live in `shared/.../api/ApiContracts.kt` (`object ApiPaths`). Auth header: `Authorization: Bearer <accessToken>` on every route except login/refresh/pair-with-code. Login sends `clientType: TERMINAL`.
 
 **Endpoints terminalApp actually calls today** (base = `https://kms-cvt.com`):
 
 | Purpose | Method | Path | Auth |
 |---|---|---|---|
+| Pair with 6-digit code (fresh device) | `POST` | `/v1/terminal/pair-with-code` | No |
 | Sign in (store tokens) | `POST` | `/v1/auth/login` | No |
 | Refresh tokens | `POST` | `/v1/auth/refresh` | No (body refresh token) |
 | First-link / bootstrap snapshot | `POST` | `/v1/terminal/sync/bootstrap` | Yes |
@@ -78,16 +75,15 @@ The terminal does **not** talk to the React UI. It talks to the **same backend**
 | List units (sites) for Add Personnel | `GET` | `/v1/admin/sites` | Yes |
 | Resolve this cabinet’s unit | `GET` | `/v1/admin/terminals/{terminalId}` | Yes |
 | List / create personnel | `GET` / `POST` | `/v1/admin/users` | Yes |
-| List credential enrollment status | `GET` | `/v1/admin/users/{userId}/credentials` | Yes |
-| Complete card enrollment (opaque ref only — never raw UID) | `POST` | `/v1/admin/users/{userId}/credentials/complete` | Yes |
-| Revoke card enrollment | `POST` | `/v1/admin/users/{userId}/credentials/revoke` | Yes |
+
+Credential complete/revoke admin routes may still exist on the backend for older clients; terminalApp must not call them for biometric/NFC enrollment under policy A.
 
 **What shows on the web portal after terminal actions:**
 
 | Terminal action | Portal place to check |
 |---|---|
 | Add personnel (server-linked) | **Personnel Management** — new user row |
-| Card enroll / revoke | **Personnel Management** — card enrollment column / status |
+| Card / fingerprint / face enroll | **On the terminal only** — portal shows “Terminal-local only” |
 | Bootstrap / Download / Push | **Data Synchronization** (+ underlying users/keys/slots/grants lists) |
 
 Full admin/report path catalog (portal-only and unused by terminal yet) is still in `ApiPaths` and `docs/API_HANDOVER_SUPER_ADMIN V4.md`. Do not invent a second base URL or `api.kms-cvt.com`.
@@ -96,67 +92,42 @@ Full admin/report path catalog (portal-only and unused by terminal yet) is still
 
 The `ekmshardwaretester-main` project mentioned in README.md is reference material only and is not part of this production build.
 
-### Web Portal — Pending UI Work (Registration Workflow)
+### Web Portal — Registration Workflow
 
-**Scope note:** `web/` UI is owned by a separate developer. The session that added the fields/
-endpoints below did backend/`shared`/terminalApp only, deliberately built **no** `web/` pages
-or components — this section is that handoff. Everything referenced here already exists in
-`shared/.../api/ApiContracts.kt` (the canonical contract — read the actual DTOs there, this
-section is a summary, not a substitute) and in the backend routes; it needs a redeploy to the
-VPS before it's callable at `https://kms-cvt.com` (see `backend/DEPLOY.md`) — check with
-whoever owns deploys before assuming it's live.
+**Status (Jul 2026 rework): implemented in `web/`; pairing backend + portal must be redeployed together on the VPS (see `backend/DEPLOY.md`).**
 
-**1. Key Cabinet (Terminal) registration form** — `POST /v1/admin/terminals`, body is
-`TerminalUpsertRequest`:
+Portal paths:
+- `/registration` — **continuous unit-scoped wizard** (7 steps): Register Unit → Key Cabinet → **Cabinet Settings** → Personnel → Keys → Permissions → Generate Pairing Code. Unit chosen in step 1 is carried through all steps automatically; pairing code is always generated last.
+- `/terminals` — **Key Cabinet Registration** (full `TerminalUpsertRequest` fields, one-time pairing code banner, regenerate with revoke warning, `paired` badge, **Settings** action for behavioral timers/toggles)
+- `/personnel` — includes optional `staffId`; credentials column states **terminal-local only**
 
-| Field | Type | Notes |
-|---|---|---|
-| `siteId` | string (UUID) | required — pick from the Units list |
-| `name` | string | required |
-| `boxAddress` | int | required, positive |
-| `serialNumber` | string? | optional |
-| `configuredSlotCount` | int | required, **server-validated 1–127** (docs/Key Cabinet Communication Protocol.md §7.1) — validate client-side too so the error isn't a surprise 400 |
-| `cabinetSerialPort` | string? | optional |
-| `cabinetBaudRate` | int? | optional |
-| `vendorDeviceId` | string? | optional — vendor-assigned physical device ID, **distinct from the backend `id`** (a UUID minted on create). Commonly unknown at registration time; fine to leave blank and fill in later via edit. |
-| `nodeRows` | int? | optional — **structured**, not free text. Pair with `nodesPerRow` to describe the physical cabinet layout (e.g. 4 rows × 6 nodes). |
-| `nodesPerRow` | int? | optional, see above |
-| `latitude` | double? | optional, must be -90..90 if present |
-| `longitude` | double? | optional, must be -180..180 if present |
+**Cabinet behavioral settings (portal + DB + sync):** Take Warning Time, Door-Close Warning Time, Key Return Certification, Return/Retrieval video toggles live in `terminal_cabinet_settings` (`GET`/`PATCH /v1/admin/terminals/:id/cabinet-settings`, `expectedRevision`-guarded). Defaults are created with each terminal. Bootstrap/download snapshot includes `cabinetSettings`; `TerminalAdminStore.applyServerSnapshot` merges them (server wins). NFC / fingerprint / face remain terminal-local (policy A).
 
-**Response is `TerminalRegistrationResponse`, not a bare `TerminalDto`** — this is a breaking
-change from the old create response shape:
-```
-{ terminal: TerminalDto, pairingCode: string, pairingCodeExpiresAtEpochMillis: number }
-```
-`pairingCode` is a **plaintext 6-digit code, shown exactly once** — the backend only ever
-stores its hash and cannot show it again. **The registration form's success state must display
-this code prominently** (large, easy to read off a screen, with an explicit "expires at
-`pairingCodeExpiresAtEpochMillis`" — 30 minutes from generation) so the Super Admin can type it
-into the terminal's pairing screen. If the admin navigates away without noting it down, the
-only recovery is regenerate (next).
+**Appointment Authorization** was removed from the portal nav/routes and unmounted from the live API (`/v1/admin/appointments*`) — not required by the client.
 
-**Regenerate code** — `POST /v1/admin/terminals/{id}/pairing-code` (no body), response is
-`RegeneratePairingCodeResponse`: `{ terminalId, code, expiresAtEpochMillis }`. Same "shown once"
-requirement — same prominent display treatment as registration. **Put a visible warning on this
-action**: regenerating immediately revokes that terminal's current TERMINAL_DEVICE session (see
-`backend/src/routes/pairing.js`'s `revokeTerminalSessions` — this was a deliberate, user-
-confirmed design choice: a lost/reset device's old session must not keep syncing once a new
-code is issued for a replacement device). This has no effect on a terminal still running the
-legacy manual-login flow above (that terminal's tokens are ordinary Super Admin user tokens,
-unaffected). Surface `terminal.paired` (on `TerminalDto`) somewhere in the Terminals list/detail
-view so an admin can tell at a glance whether a cabinet has completed pairing at all.
+#### What terminalApp must do for pairing to work end-to-end
 
-**2. Personnel registration form** — `POST /v1/admin/users`, body is `CreateAdminUserRequest`.
-Only what's new/relevant here (the rest of this form should already exist per Project Status):
-add a `staffId` text field, optional (`staffId: String? = null`), described in `UserDto`/
-`CreateAdminUserRequest`/`UpdateAdminUserRequest` as "external/employee identifier, distinct
-from `id`". The role picker's "Vendor" option (`UserRole.VENDOR`) **already exists** — nothing
-new needed there, it was not added as part of this work.
+Already in `terminalApp` (verify after `git pull` + rebuild):
 
-**3. What did NOT change:** Sites/Units registration, Keys, Key Slots, Access Grants, and every
-other existing `web/` form are untouched by this work — do not extend this section's scope
-beyond Terminal registration + `staffId` on Personnel.
+1. Fresh/unpaired device shows `TerminalPairingScreen` (gate on non-blank Key Cabinet / `cabinetId`).
+2. Default API base URL `https://kms-cvt.com` (Admin Menu / Advanced override still allowed).
+3. `TerminalApiClient.pairWithCode(code)` → `POST /v1/terminal/pair-with-code`.
+4. On success: store TERMINAL_DEVICE tokens, persist cabinet id/name, **best-effort** `syncCoordinator.bootstrap()` so unit data **and cabinetSettings** download from the DB.
+5. Do **not** clear pairing when operators sign out (gate is cabinet id, not access token).
+6. After bootstrap, local `TerminalCabinetSettings` timers/toggles match the portal (server wins on those five fields; `serverAddress` / activation stay device-local).
+
+Operator checklist after Super Admin registers a Johor (or any) cabinet:
+
+1. Complete registration wizard through **Cabinet Settings** (or set Settings on `/terminals`), then note the **6-digit code** from the final pairing step (shown once; regenerate if lost — regenerating revokes the old device session).
+2. On site: open terminal → enter code (and server URL only if not using production default).
+3. Confirm bootstrap/download succeeds; Personnel/Keys/grants **and** Take/Return warning timers match the portal for that cabinet.
+4. Enroll NFC / fingerprint / face **on the terminal only** — those enrollments are **not** uploaded to MySQL (policy A).
+
+Manual Admin Menu pairing (server address + Key Cabinet UUID + Super Admin login) remains a fallback if pairing is unavailable.
+
+#### Credential policy (policy A)
+
+`reportPersonnelCardEnrollment` / fingerprint / face complete+revoke in `TerminalAdminApp` no longer call `completeCredentialEnrollment` / `revokeCredentialEnrollment`. Local enrollment still works; portal does not store biometric/NFC enrollment rows.
 
 ## Toolchain (do not drift from this baseline)
 
@@ -448,13 +419,13 @@ Project Status below is an **append-only session diary**. Older bullets were oft
 | Topic | Conflicting claims that used to confuse agents | Current truth (as of commit documenting PATCH + door-eject cleanup) |
 |---|---|---|
 | **Door eject on key take** | Phase 10 says `releaseKeyForPickup` never calls `ejectDoor()` and is still deferred. Later text says the bug is already fixed / method deleted. | Production take path is **`beginKeyTake`** (blue light → unlock → **ejectDoor** → confirm open). `releaseKeyForPickup` is **deleted dead code**. Door-eject on take is implemented in code **and hardware-verified** on a real F7G18P (see Completed "Combined hardware verification session" below) — sequence, 20s abandonment ceiling, and removal-triggered countdown all confirmed correct. Two bugs found in the same session: beep-continuity is **still open, unrelated to Return Flow, lives in `AudioFeedbackController`'s audio-driver interaction**; Return-flow double-abandonment is **believed structurally fixed by the Return Flow rework (`attemptId`-keyed abandonment race) but not yet hardware-reverified** — see Known issues for both. |
-| **Fingerprint/face enrollment hardware status** | Earlier Known issues said "fully coded and building but not hardware-verified — no R503 module or camera was available this session." | **Superseded.** Real R503 hardware (enroll/duplicate-detect/revoke) and real camera (preview/liveness/capture/revoke) are both now hardware-verified — see Completed "Combined hardware verification session" below. What's still open is narrower: the **backend credential-sync call** (`completeCredentialEnrollment`/`revokeCredentialEnrollment`) fails on every kind (confirmed for fingerprint and face; NFC untested but shares the same code path) due to a systemic zod schema bug — see Known issues. Device-local hardware behavior is verified; server-side sync of that data is confirmed broken. |
+| **Fingerprint/face enrollment hardware status** | Earlier Known issues said hardware unverified; later said credential-sync zod bug blocked portal sync. | **Device-local enroll/revoke is hardware-verified.** Server credential sync is **intentionally disabled (policy A, Jul 2026)** — do not treat missing portal credential rows as a bug. |
 | **Key-card swipe → return** | Phase 10 says real enrolled keys never resolve a node (`matchedKey` always null). Later Known issues says fixed via `managedKeyAndSlotFor()`. | **Fixed** during Key Return Flow. Phase 10 "NOT fixed" text is historical only. |
 | **Web PATCH / in-place edit** | Early spot-check and older boundary notes said `web/` has create+delete only, no update. Later Completed says PATCH wired for ~10 resources. Intro used to say portal still "hardcoded/in-memory for others." One authoring note said "no Node" as if the API were unreachable. | **Code exists** in `web/src/api/client.ts` + edit UIs for Units/Terminals/Personnel/Keys/Permissions/Events/Schedules/Groups/Multi-Auth. Production API is **already at `https://kms-cvt.com/v1`** — verification is “rebuild/redeploy `web/` and click Edit,” not “stand up a backend.” A machine without local Node cannot `npm run build` there; it can still hit the live portal. Treat as **implemented, end-to-end edit verify pending**. Frozen `webApp` still has no edit UI (irrelevant — do not build it). |
 | **Personnel on web** | Next steps said "rebuild Personnel management properly on web/". | Core list/create/delete/update + card-enrollment status already exist on `web/` Personnel page. Remaining work is UX/audit polish and standing-alert features — **not** a greenfield rebuild. |
 | **Theme / fonts (terminal)** | Cavotec rewrite paragraph mentions Inter and older hex tokens, then says a later pull changed Outfit / hex. | Trust **`terminalApp/.../ui/theme/Color.kt` and `Typography.kt`** in the tree, not hex values quoted in older diary paragraphs. |
 | **Take/Return Flow audio** | Take/Return Flow Completed bullets above say `AudioFeedbackController` is a no-op stub. Later text says beep uses `SoundPool` and voice lines use `MediaPlayer`. | **Both claims are stale.** Real audio shipped (superseding the no-op stub), but beep was later switched from `SoundPool` to `MediaPlayer` as well — see Completed "Beep-continuity investigation" below. Both beep and voice lines are now one-shot `MediaPlayer` instances, kept as fully separate players with distinct `AudioAttributes`. Beep-continuity itself (the audible-dropout bug) has two code-only fixes applied but is **not yet hardware-reverified** — see Known issues. |
-| **Terminal pairing** | "Terminal → live API" section documents manual Admin Menu pairing (Set server address + Key Cabinet ID + Super Admin sign-in). | **Still the only working pairing path in production today.** Backend/shared (6-digit code endpoints) and terminalApp's pairing-code screen are both **implemented and committed** (see Completed "Key Cabinet + Personnel registration" and "terminalApp pairing-code flow"), but the backend change is **not yet deployed to the VPS** and the flow has **not been run live** — `web/` also has no registration UI yet to generate a code with (see "Web Portal — Pending UI Work" section). Do not tell a user the pairing code flow works today; it's built, not live. |
+| **Terminal pairing** | Manual Admin Menu was the only path; web registration UI was missing / "not yet deployed". | **Portal Key Cabinet Registration + pairing API + terminal pairing screen are implemented and deployed.** Preferred path: web register → 6-digit code → terminal enter code → bootstrap (includes `cabinetSettings`). Manual Admin Menu remains fallback until live e2e is confirmed on a fresh install. |
 
 **Agent rule:** When deciding whether a bug is open, check **Known issues / not yet resolved** and **Next steps** first. Only use older Completed Phase notes for history. Do not re-open struck-through or superseded items.
 
@@ -826,27 +797,63 @@ Project Status below is an **append-only session diary**. Older bullets were oft
   **Investigated (and explained, not fixed — a source-asset issue) why a user-replaced `beep.wav` sounded like a "chirp":** read the file's actual PCM samples rather than guessing. Confirmed via zero-crossing frequency measurement at 5 points across the clip that it is **not** a real frequency sweep (steady ~1300-1350 Hz throughout) — the "chirp" perception is most likely harmonic distortion from **severe clipping**: 43.9% of all samples sit at or within 800 of the 16-bit digital ceiling (peak hits exactly ±32768), consistent with the file being rendered/normalized too hot at export. Confirmed this is independent of playback engine or software volume scaling (a linear gain multiplier preserves the same distorted waveform shape, just louder/quieter) — recommended re-exporting with headroom (peak around -6dB); not done as of this writing.
   Both temporary tools were fully removed at the end of this session — grepped the whole `terminalApp/src/main` tree afterward to confirm zero remaining references to either.
   **Verified:** every step above (installs, launches, the 15-rep beep loop, the voice lines, the final cleaned build) was confirmed live via direct `adb`-driven builds/installs/launches and logcat capture on the connected device — genuinely hardware-run, not compile/assemble-only, for the parts described as hardware-run above. Final cleanup re-verified via `:terminalApp:compileDebugKotlin`/`:terminalApp:assembleDebug` and reinstalled onto the same device.
+- **Jul 2026 portal + pairing rework (web team + policy A).** Super Admin registers a Key Cabinet on the portal; system issues a one-time 6-digit code; on-site technician enters it on `TerminalPairingScreen`; bootstrap pulls settings from MySQL. Delivered in this pass:
+  - **Policy A:** `TerminalAdminApp` no longer calls credential complete/revoke APIs for NFC/fingerprint/face — enrollments stay on-device.
+  - **`web/` Registration:** `/registration` hub (Basic Settings steps), `/terminals` Key Cabinet Registration with full create fields + pairing-code banner + regenerate (revoke warning) + `paired` badge, Personnel `staffId` + “Terminal-local only” credentials column.
+  - **Appointments removed** from portal nav/routes and unmounted from `backend/src/index.js`.
+  - **CLAUDE.md** updated with terminalApp e2e pairing checklist (already coded: gate on `cabinetId`, `pairWithCode`, bootstrap).
+  - Redeploy API + `web/dist` + migration `006` per `backend/DEPLOY.md` (same session when deploying).
+  Live field verification on a fresh F7G18P remains the open Known-issues item.
+
+- **Registration wizard + Basic Settings sort/filter/search (Jul 2026).** `web/` changes built and deployed to `https://kms-cvt.com`.
+  - **Registration wizard:** `/registration` is now a 10-step in-page wizard (stepper header + embedded form per step, Prev/Next navigation). No page redirects — the Super Admin completes Units → Key Cabinets → Personnel → Keys → Permissions → optional steps 6–10 without leaving the page. Steps 1–5 are required; 6–10 are optional. Clicking any stepper tab jumps directly to that step.
+  - **Sort, filter, search on all Basic Settings pages** (both wizard steps and standalone pages):
+    - **Units** (`/units`): state/province dropdown filter (populated from existing data), clickable column headers for Name / State / City sort, existing search and Mapped toggle preserved.
+    - **Terminals** (`/terminals`): text search (cabinet name / unit name), unit dropdown filter, paired-status filter (All / Paired / Not paired).
+    - **Personnel** (`/personnel`): text search (name, email, staff ID), role filter, unit filter, clickable column headers for Name / Role / Units sort.
+    - **Keys** (`/keys`): text search, unit filter, enrollment-status filter (All / Enrolled / Not enrolled), Name sort toggle.
+    - **Permissions** (`/permissions`): text search (personnel / unit / key names), unit filter, personnel filter; switched from card layout to a sortable data table (sorted alphabetically by personnel name).
+    - **ResourcePage** (Events, Schedules, User Groups, Key Groups): unit dropdown filter + Name sort toggle added to the shared `ResourcePage` component — all four pages inherit them automatically.
+  - `web/src/styles.css` gained `.wizard-stepper`, `.wizard-step-*`, `.toolbar-row select` and related classes.
+
+- **Registration wizard redesigned as continuous unit-scoped flow (Jul 2026).** Reworked to match the actual onboarding intent: register one unit first, then every subsequent step is automatically scoped to that unit — no re-selecting the unit in later steps.
+  - **Flow (6 steps, unit carried through):** 1. Register Unit → 2. Key Cabinet (unit pre-filled, read-only) → 3. Personnel (assigned to unit automatically) → 4. Keys (for this unit only) → 5. Permissions (personnel and keys scoped to this unit) → 6. Generate Pairing Code (LAST step — 6-digit code issued for the on-site technician).
+  - **Pairing code is always the last step.** Steps 2–5 register everything needed for the site; the technician code is only generated once the admin is satisfied with the full registration.
+  - **Stepper tabs 2–6 are disabled until a unit is registered in step 1** — can't skip ahead to cabinet or permissions before a unit exists.
+  - **"Start another unit" button** on the final step resets wizard state (clears active unit, goes back to step 1) for a clean next registration.
+  - **Dialogs no longer close on backdrop click** across the entire portal (`RegistrationPage`, `UnitsPage`, `TerminalsPage`, `PersonnelPage`, `KeysPage`, `PermissionsPage`, `MultiAuthPage`, `ResourcePage`). The only way to close a dialog is Cancel or Save — prevents accidental data loss from mis-clicking.
+
+- **Portal-managed cabinet settings + registration wizard step (Jul 2026).** Behavioral Admin Menu settings are no longer terminal-local-only:
+  - Backend: `terminal_cabinet_settings` (migration `007`), nested `GET`/`PATCH /v1/admin/terminals/:id/cabinet-settings` with `expectedRevision`, auto-insert defaults on terminal create, included in sync bootstrap/download as `cabinetSettings`.
+  - Shared: `TerminalCabinetSettingsDto` + optional field on `TerminalDownloadSnapshot`; `ApiPaths.ADMIN_TERMINAL_CABINET_SETTINGS`.
+  - terminalApp: `applyServerSnapshot` merges the five fields (server wins); `serverAddress` / activation unchanged.
+  - Web: wizard step **Cabinet Settings** (after Key Cabinet); `/terminals` **Settings** action; shared `CabinetSettingsForm` with compact toggle rows (not full-width checkboxes).
+  - Wizard is now **7 steps**: Unit → Key Cabinet → Cabinet Settings → Personnel → Keys → Permissions → Pairing Code (still last).
+  - Phase 1 extras (Regional Admin, checkout sync, office hours, vendor passkey) remain deferred.
 
 ### Known issues / not yet resolved
 
 Open work only — resolved/superseded items live in Completed or the status-truth table, not here.
 
-- **Systemic credential backend-sync bug: `expectedRevision: null` is rejected by the backend's zod schema, breaking `completeCredentialEnrollment`/`revokeCredentialEnrollment` for every credential kind.** Confirmed on real hardware on two independent code paths this session (fingerprint revoke, face complete **and** revoke) — both failed with "Invalid credential enrollment completion/revoke" even after ruling out every other cause (e.g. face's failure persisted with a valid-UUID `terminalId`, and revoke's schema doesn't even include `terminalId`, so it can only be `expectedRevision`). Root cause: `backend/src/routes/credentials.js`'s three routes (`enroll`/`complete`/`revoke`) all declare `expectedRevision: z.number().int().nonnegative().optional()` — zod's `.optional()` only tolerates the key being *absent*, not an explicit JSON `null` — while `TerminalApiClient.kt`'s `Json { encodeDefaults = true }` always serializes `expectedRevision: Long? = null` as an explicit `null` on every call, since no terminalApp call site currently populates it. This almost certainly also blocks NFC card-credential sync (same code path, never independently retested this session). **Not fixed** — the user explicitly chose "log it, keep testing" over fixing it now, both times it was found (Part 2 and again when it resurfaced identically in Part 3). The fix is small and already has a precedent in the same file (`terminalId` already correctly uses `.nullable().optional()`) — add `.nullable()` to `expectedRevision` on all three routes — but it's a `backend/` change that also needs a VPS redeploy before it affects `https://kms-cvt.com`; do not make this change without the user's explicit go-ahead (see "Production is already live").
-- **Beep-continuity bug: two code-only fixes applied this session, neither hardware-reverified against the original concurrent scenario.** Fixes: (1) `LaunchedEffect` re-keying in both Take/Return screens (`beeping` alone, `beepLoud`/`wrongSlotNodeAddress` via `rememberUpdatedState`); (2) distinct `AudioAttributes` for beep vs. voice line in `AudioFeedbackController` — see Completed "Beep-continuity bug investigation" for the full trace and reasoning on which is believed the actual root cause (fix 2, the shared-`AudioAttributes` issue). A later hardware test (`SoundTestActivity`, 15 beep reps at 1/sec) ran clean, but it never ran the beep loop *concurrently* with a voice line — the exact scenario that originally exhibited the bug — so do not treat that as reverification. Check first whether the user's stated intent to redesign Take/Return Flow ("too chunky... will remake") has superseded point-fixing this further.
-- **Boot auto-launch confirmed failing on a real reboot test** (the app had been manually opened before the test, so this isn't the "stopped app" `BOOT_COMPLETED` exemption). `BootCompletedReceiver`/manifest were re-verified line by line and found correct (see Completed "Boot auto-launch diagnosis") — no code bug found. Diagnostic logging (tag `BootAutoLaunch`) is now in place at all four plausible failure points but has not yet been exercised by another reboot. Do not build an OEM/vendor auto-start workaround until the user's separate check for such a device setting comes back and/or the next reboot's logcat narrows down where this actually fails.
-- **`beep.wav` (current file in the tree) is severely clipped/distorted** — confirmed via direct PCM analysis (43.9% of samples at/within 800 of the 16-bit ceiling, steady ~1300-1350 Hz, not a frequency sweep) — very likely why the sound reads as a "chirp" rather than a clean beep. Source-asset problem, not a code/playback-engine issue; switching `beep()` to `MediaPlayer` (see Completed) does not and cannot fix it. Needs re-export with headroom (peak around -6dB).
+- **Credentials are terminal-local (policy A, Jul 2026):** NFC / fingerprint / face enrollment no longer POSTs `complete`/`revoke` to the backend. The old `expectedRevision: null` zod rejection is therefore moot for those call sites. Do **not** re-enable server credential sync without an explicit product decision.
+- **Pairing-code flow: code + portal UI + cabinet settings sync deployed; live e2e on a fresh F7G18P still required.** Run: portal register (including Cabinet Settings) → copy 6-digit code → fresh terminalApp enter code → confirm bootstrap downloads unit data **and** timers/toggles.
+- **Beep-continuity bug: two code-only fixes applied, neither hardware-reverified against the original concurrent scenario.** Fixes: (1) `LaunchedEffect` re-keying in both Take/Return screens (`beeping` alone, `beepLoud`/`wrongSlotNodeAddress` via `rememberUpdatedState`); (2) distinct `AudioAttributes` for beep vs. voice line in `AudioFeedbackController` — see Completed "Beep-continuity bug investigation". A later hardware test (`SoundTestActivity`, 15 beep reps at 1/sec) ran clean, but it never ran the beep loop *concurrently* with a voice line — do not treat that as reverification. Check first whether Take/Return redesign has superseded point-fixing this further.
+- **Boot auto-launch confirmed failing on a real reboot test** (the app had been manually opened before the test, so this isn't the "stopped app" `BOOT_COMPLETED` exemption). `BootCompletedReceiver`/manifest were re-verified line by line and found correct (see Completed "Boot auto-launch diagnosis") — no code bug found. Diagnostic logging (tag `BootAutoLaunch`) is in place but has not yet been exercised by another reboot.
+- **`beep.wav` clipping:** earlier PCM analysis found severe clipping on a prior asset; audio assets were later replaced (see remote Completed beep work). Re-confirm on device if chirp persists after the replacement files.
 - **Return Flow "double abandonment" event — believed structurally fixed by the Return Flow rework, not yet hardware-reverified.** Originally: a single card-swipe/no-insert test produced two separate `KEY_RETURN_ABANDONED` events ~28 seconds apart, cause never conclusively answered. The rework's `attemptId`-keyed, live-re-checked abandonment race (see Completed "Return Flow rework" above) closes the specific TOCTOU gap traced in the old code, but this has **not been re-tested on a real cabinet** — treat as fixed-by-construction/code-review, not fixed-and-confirmed, until a repeat of the original test happens.
 - **Return Flow's success/insertion path has never been hardware-tested at all** — no run of insertion-within-5s, the `PLEASE_INSERT_THE_KEY` voice line, or the Door-Close Warning Time countdown has happened on real hardware yet (Part 1 only exercised the abandonment path, and even that was ambiguous — see above).
 
-- **Pairing-code flow (backend + terminalApp, both Parts 1-2) is fully coded and committed but not live**: needs a VPS redeploy (`backend/DEPLOY.md`) and has never been run against a real terminal/server. `web/` also has no registration UI yet to generate a code with — see "Web Portal — Pending UI Work (Registration Workflow)". Until all three land, the only working pairing path is the manual Admin Menu flow in "Terminal → live API". **This session's test device bypassed the pairing gate locally** (an `adb run-as` SharedPreferences edit setting `cabinetId` to a placeholder UUID, purely to unblock testing since the real flow isn't deployed) — this is test-device-local state only, not evidence the flow works, and not a production concern; don't mistake that device's local prefs for a real paired terminal.
-- **Fingerprint and face enrollment: device-local hardware behavior is now hardware-verified; backend credential-sync is confirmed broken.** See Completed "Combined hardware verification session" above for exactly what was tested. Real R503 enrollment/duplicate-detection/revoke and real camera preview/liveness/5-sample-capture/revoke all confirmed working on physical hardware this session. What remains open: (1) `completeCredentialEnrollment`/`revokeCredentialEnrollment` fail for every credential kind due to the systemic zod bug above — so enrolled credentials never actually reach the backend/Personnel Management page today; (2) fingerprint's specific "misaligned/dirty finger" failure case was never literally tested; (3) face's liveness was only tested against a passive/static photo, not a deliberately-manipulated spoof attempt.
+- **Pairing-code flow field verification outstanding** — see Known issues. Portal registration UI and API are in place after the Jul 2026 rework; confirm live e2e on hardware.
+- **`mobileApp`:** still 100% local demo data, zero network — hold (no work this rework).
+- **Take/Return hardware verification / redesign** — hold per product; not part of the pairing/registration rework.
+- **Fingerprint and face enrollment: device-local hardware behavior is hardware-verified.** Server credential sync is **disabled by policy A** (not a bug). Remaining narrow gaps: fingerprint “misaligned/dirty finger” failure case never literally tested; face liveness not tested against a deliberately manipulated spoof.
 - **Face enrollment ships RGB-only active liveness — reworked this session from blink+head-turn to head-turn-only** (see Completed above for why: blink detection was unreliable due to a polling-rate/blink-duration mismatch, not a threshold-tuning issue). Confirmed live: reliably passable by a real person, correctly times out against a static photo. Still a deliberate, user-confirmed v1 choice with a real, weaker anti-spoof tier than the vendor manual's RGB+IR spec (section 4.8.3/4.8.4, not available in this repo) — the rework improved reliability, not the security tier. A deliberately-manipulated spoof (rotating/tilting a photo to mimic head-yaw) was not tested. Explicit plan to upgrade later; do not treat this as final or silently "fix" the anti-spoof tier without revisiting the tradeoff.
 - **`terminalApp/src/main/assets/models/`'s ~41 MB of binary face-model assets are permanently in git history as raw blobs** (commit `ff332f5`) — Git LFS was set up afterward (commit `3b4c8dd`, `.gitattributes` + the three files re-added as LFS pointers), so nothing new grows the problem, but the historical ~41 MB itself was deliberately **not** removed via a history rewrite (`git filter-repo`/BFG/`git lfs migrate import`) — that would change every commit hash from `ff332f5` onward, forcing the concurrently-active `web/` developer to hard-reset/re-clone instead of a normal `git pull`, which given this repo's prior silent-revert merge incident was judged a materially worse risk than the one-time bloat. Treat a history rewrite here as a **future, deliberately coordinated maintenance action** (both developers idle, remote refs cleaned, everyone re-clones after) — never do it as a routine session action. Everyone working in this repo needs `git lfs install` run once locally (see Toolchain) or these files silently resolve to unusable pointer stubs.
 - **Key Take Flow is hardware-verified for its core path (door sequence, 20s abandonment ceiling, removal-triggered countdown, success path)** — see Completed "Combined hardware verification session" above. **Key Return Flow, post-rework, is entirely unverified on real hardware** — the whole state machine changed (continuous session, wrong-slot sweep, `attemptId` rework) since the last hardware run, so even the previously-confirmed real card-swipe node resolution needs re-confirming, not just the new pieces. Do not assume anything about Return Flow's hardware behavior from before the rework still applies.
 - **Return Flow rework (continuous session, wrong-slot detection, checkout record) is entirely unverified on real hardware** — see Completed "Return Flow rework" and its follow-up above for exactly what shipped. Specifically untested: a real wrong-slot insertion actually lighting red/warning/beeping and clearing on correction; the identity-vs-unresolved wording distinction; a continuous multi-key session actually staying active across multiple scans and ending via Done or the 20s idle timeout; `TerminalCheckoutStore`'s "Checked out by X · Ym ago" display; and `testMicroSwitchAndCard`'s real sweep timing on a cabinet with several configured slots.
-- **`web/` PATCH/update rollout not verified by build or live edit** in the environment that authored the change (that laptop had no Node — it could not `npm run build` locally). That does **not** mean the backend is missing: production is `https://kms-cvt.com`. Remaining work is rebuild/redeploy `web/` to the VPS (see `backend/DEPLOY.md` Part F) and manually test at least Units edit + `409` conflict against the live API.
+- **`web/` PATCH/update rollout is now built and redeployed, but still not click-verified live.** `npm run build` passes, the VPS now serves the rebuilt `web/dist`, and production remains `https://kms-cvt.com`. Remaining work is manual live verification of at least one edit path (for example Units edit + `409` conflict handling) against the live API.
 - **`web/` has not had a full section-by-section UX audit** against the vendor manual — only API-client / spot checks. Page-level UX and shared-type-equivalent checks still outstanding.
-- **Appointment-permissions API client stubs are broken/dead:** `client.ts` exposes `list`/`create`/`delete` for `/v1/admin/appointment-permissions`, but the backend router only implements `PATCH /:id`. Harmless today (`AppointmentPermissionsPage` just re-renders Appointments); clean up or implement properly before wiring a real page.
+- **Appointment Authorization removed from portal + API mounts** (Jul 2026). Dead `phase4.js` appointment routers may still exist unmounted; ignore unless product restores appointments.
 - **Key Slots:** backend PATCH exists; no dedicated `web/` page exposes slot CRUD yet.
 - **Standing Super Admin / mobile alerts** for take door-left-open and return abandoned-return are not built (events may exist locally on terminal; no portal/mobile delivery UI).
 - **`mobileApp`:** still 100% local demo data, zero network.
@@ -858,23 +865,17 @@ Open work only — resolved/superseded items live in Completed or the status-tru
 - **Key Menu & multi-key sequential Take Flow is compile/assemble-verified only, not live-verified at all.** See Completed above for the full breakdown. The live backend (`kms-cvt.com`) this device is paired to has zero access grants and no Technician/Vendor personnel, so `KEY_MENU` has never actually been reached through a real login — only a regression check on the pre-existing Super Admin grid was done. Creating a throwaway test technician + grant to close this gap was offered and declined; do this before reporting Key Menu as working. Completely unverified: the screen's own render (multi-select, Layout/List toggle, empty state), the red-light batch sequence, the red→blue transition, and multi-node queue advancement.
 
 ### Next steps (in order)
-- Re-run the reboot test now that `BootAutoLaunch` diagnostic logging is in place — `adb logcat -s BootAutoLaunch` after power-cycle should show exactly which of the four stages (receiver invoked / action mismatch / reached startActivity / startActivity threw) fails, if any
-- Re-export `beep.wav` with headroom (peak around -6dB) — the current file is confirmed clipped (43.9% of samples at/near full scale), very likely the cause of the reported "chirp" sound; the `MediaPlayer` playback path is ready to test it as soon as a fixed file is dropped in
-- Hardware-reverify the beep-continuity fixes (`LaunchedEffect` re-key + distinct `AudioAttributes`, now also carried through the `SoundPool`→`MediaPlayer` beep switch) against the *actual* concurrent scenario — beep loop running while a voice line fires at the 5s mark during a real Take/Return Flow — not just the isolated repeat-loop test already confirmed clean
-- Fix and deploy the systemic `expectedRevision`-null credential-sync bug (`backend/src/routes/credentials.js`, add `.nullable()` to all three routes' `expectedRevision` schema, matching the existing `terminalId` pattern in the same file) — currently blocks `completeCredentialEnrollment`/`revokeCredentialEnrollment` for every credential kind (NFC/fingerprint/face) on the live backend; needs the user's explicit go-ahead per "Production is already live" before touching `backend/` or redeploying
-- Hardware-verify the Return Flow rework end to end on a real cabinet: re-run the original duplicate-abandonment test to confirm the `attemptId` fix actually holds live (not just by code tracing); a real wrong-slot insertion (both a confirmed-key case and an unresolved-object case); a continuous multi-key session across several scans, ending via both Done and the 20s idle timeout; `testMicroSwitchAndCard`'s real sweep timing on a cabinet with several configured slots
-- Resolve the still-open beep-continuity bug (continuous take-side beep stopping early / never escalating) — lives in `AudioFeedbackController`'s `SoundPool`/`MediaPlayer` interaction, unrelated to the Return Flow rework and not touched by it; check first whether the user's stated intent to redesign Take/Return Flow ("too chunky... will remake this process") has superseded point-fixing it
-- Create a test Technician/Vendor personnel record + access grant on the live backend (still zero of both) to close two separate verification gaps at once: the Key Menu render/selection/queue, and Return Flow's checkout-record display (needs a real taker to show "Checked out by X")
-- Hardware-test Key Return Flow's untested success/insertion path (Door-Close Warning Time countdown, `PLEASE_INSERT_THE_KEY` voice line) — never run this session
-- Deploy the pairing/registration backend changes to the VPS (`backend/DEPLOY.md`); build `web/`'s Terminal/Personnel registration UI per "Web Portal — Pending UI Work (Registration Workflow)" (someone else's work, not this session's); then do a live end-to-end pairing run (register a terminal on the portal → type the code into a fresh terminalApp install → confirm bootstrap sync completes) before calling the flow done — code for all three pieces already exists, none of it has been run together
-- Verify `web/` PATCH/update against **live** `https://kms-cvt.com`: rebuild portal, deploy `web_dist` on the VPS, manually edit at least Units (including `409` conflict reload). Do not stand up a new backend for this.
-- Full section-by-section audit of `web/` against the vendor manual / handover checklist
-- Standing-alert UI on `web/` (and later mobileApp) for door-left-open (take) and abandoned-return (return)
-- Optional cleanup: appointment-permissions client/router mismatch; Key Slots admin page if product needs it; terminal alarm-tone polish; fingerprint's untested "misaligned finger" failure case; a real adversarial liveness spoof test (rotated/tilted photo) rather than just a static one
-- Do **not** schedule a greenfield “rebuild Personnel on web/” — that page already exists; improve it in place if UX gaps remain after audit
-- Create a test Technician/Vendor personnel record + access grant on the live backend (currently zero of both exist), then live-verify the Key Menu: the screen's own render (multi-select, Layout/List toggle, empty state), the red-light batch sequence, the red→blue "your turn" transition, and multi-node queue advancement — none of this has run against real hardware or a real account yet
-- Power-cycle a real F7G18P to confirm `BootCompletedReceiver` actually auto-launches the app — the only piece of the auto-launch/diagnostic/network work that can't be verified any other way
-- Verify the network bring-up's Ethernet-preferred path with both Ethernet and Wi-Fi actually present on the same device (only Wi-Fi was available during testing), and the fully-offline degraded state
+- Live e2e: portal set Cabinet Settings → pair fresh terminal → confirm Admin Menu / Take-Return timers match DB values after bootstrap
+- Live e2e pairing checklist (unit data + pairing code) on a fresh F7G18P
+- Re-run the reboot test with `BootAutoLaunch` diagnostic logging (`adb logcat -s BootAutoLaunch` after power-cycle)
+- Hardware-reverify beep-continuity fixes against concurrent beep + voice line during a real Take/Return Flow
+- Hardware-verify the Return Flow rework end to end on a real cabinet (duplicate-abandonment retest, wrong-slot, continuous session)
+- Create a test Technician/Vendor + access grant on live backend, then verify Key Menu multi-key take
+- Full section-by-section audit of `web/` against the vendor manual (appointments removed — skip those sections)
+- Standing-alert UI on `web/` for door-left-open / abandoned-return (later)
+- `mobileApp` remains on hold
+- Optional: Key Slots admin page if product needs it
+- Phase 1 deferred: Regional Admin role, checkout records sync, office hours, vendor passkey
 
 ### Reference
 - Hardware protocol: `docs/Key Cabinet Communication Protocol.md` (note

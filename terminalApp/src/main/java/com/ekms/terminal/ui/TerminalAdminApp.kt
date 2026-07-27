@@ -56,16 +56,13 @@ import android.content.Context
 import android.hardware.camera2.CameraManager
 import android.provider.Settings
 import android.util.Log
-import com.ekms.shared.api.CompleteCredentialEnrollmentRequest
 import com.ekms.shared.api.CreateAdminUserRequest
-import com.ekms.shared.api.RevokeCredentialEnrollmentRequest
 import com.ekms.shared.api.SiteDto
 import com.ekms.shared.api.UserDto
 import com.ekms.shared.domain.AccessGrant
 import com.ekms.shared.domain.AuditEventType
 import com.ekms.shared.domain.CardUidMatch
 import com.ekms.shared.domain.CardUidResolver
-import com.ekms.shared.domain.CredentialKind
 import com.ekms.shared.domain.KeySlot
 import com.ekms.shared.domain.KeySlotDemoData
 import com.ekms.shared.domain.LifecycleMetadata
@@ -697,117 +694,28 @@ fun TerminalAdminApp() {
     }
 
     fun reportPersonnelCardEnrollment(userId: String, enrollmentReference: String) {
-        if (!apiClient.isAuthenticated) return
-        scope.launch {
-            try {
-                val terminalId = runCatching { syncCoordinator.resolveTerminalId() }.getOrNull()
-                apiClient.completeCredentialEnrollment(
-                    userId = userId,
-                    request = CompleteCredentialEnrollmentRequest(
-                        credentialKind = CredentialKind.NFC_CARD,
-                        enrollmentReference = enrollmentReference,
-                        terminalId = terminalId,
-                        note = "Card enrollment on Terminal",
-                    ),
-                )
-                notice = "Card enrollment synced to Personnel Management."
-            } catch (error: Throwable) {
-                notice = "Card saved on terminal, but web sync failed: ${error.message ?: "Unknown error"}"
-            }
-        }
+        // Credentials stay terminal-local (policy A): do not POST complete to the server DB.
+        notice = "Card enrolled on this terminal only. NFC/Fingerprint/Face are not uploaded to the server."
     }
 
     fun reportPersonnelCardRevoke(userId: String) {
-        if (!apiClient.isAuthenticated) return
-        scope.launch {
-            try {
-                apiClient.revokeCredentialEnrollment(
-                    userId = userId,
-                    request = RevokeCredentialEnrollmentRequest(
-                        credentialKind = CredentialKind.NFC_CARD,
-                        note = "Card revoked on Terminal",
-                    ),
-                )
-            } catch (error: Throwable) {
-                notice = "Card revoked on terminal, but web sync failed: ${error.message ?: "Unknown error"}"
-            }
-        }
+        notice = "Card revoked on this terminal only (not synced to the server)."
     }
 
     fun reportFingerprintEnrollment(userId: String, enrollmentReference: String) {
-        if (!apiClient.isAuthenticated) return
-        scope.launch {
-            try {
-                val terminalId = runCatching { syncCoordinator.resolveTerminalId() }.getOrNull()
-                apiClient.completeCredentialEnrollment(
-                    userId = userId,
-                    request = CompleteCredentialEnrollmentRequest(
-                        credentialKind = CredentialKind.FINGERPRINT,
-                        enrollmentReference = enrollmentReference,
-                        terminalId = terminalId,
-                        note = "Fingerprint enrolled on Terminal",
-                    ),
-                )
-                notice = "Fingerprint enrollment synced to Personnel Management."
-            } catch (error: Throwable) {
-                notice = "Fingerprint saved on terminal, but web sync failed: ${error.message ?: "Unknown error"}"
-            }
-        }
+        notice = "Fingerprint enrolled on this terminal only. Biometrics are not uploaded to the server."
     }
 
     fun reportFingerprintRevoke(userId: String) {
-        if (!apiClient.isAuthenticated) return
-        scope.launch {
-            try {
-                apiClient.revokeCredentialEnrollment(
-                    userId = userId,
-                    request = RevokeCredentialEnrollmentRequest(
-                        credentialKind = CredentialKind.FINGERPRINT,
-                        note = "Fingerprint revoked on Terminal",
-                    ),
-                )
-            } catch (error: Throwable) {
-                notice = "Fingerprint revoked on terminal, but web sync failed: ${error.message ?: "Unknown error"}"
-            }
-        }
+        notice = "Fingerprint revoked on this terminal only (not synced to the server)."
     }
 
     fun reportFaceEnrollment(userId: String, enrollmentReference: String) {
-        if (!apiClient.isAuthenticated) return
-        scope.launch {
-            try {
-                val terminalId = runCatching { syncCoordinator.resolveTerminalId() }.getOrNull()
-                apiClient.completeCredentialEnrollment(
-                    userId = userId,
-                    request = CompleteCredentialEnrollmentRequest(
-                        credentialKind = CredentialKind.FACE_RECOGNITION,
-                        enrollmentReference = enrollmentReference,
-                        terminalId = terminalId,
-                        note = "Face enrolled on Terminal",
-                    ),
-                )
-                notice = "Face enrollment synced to Personnel Management."
-            } catch (error: Throwable) {
-                notice = "Face saved on terminal, but web sync failed: ${error.message ?: "Unknown error"}"
-            }
-        }
+        notice = "Face enrolled on this terminal only. Biometrics are not uploaded to the server."
     }
 
     fun reportFaceRevoke(userId: String) {
-        if (!apiClient.isAuthenticated) return
-        scope.launch {
-            try {
-                apiClient.revokeCredentialEnrollment(
-                    userId = userId,
-                    request = RevokeCredentialEnrollmentRequest(
-                        credentialKind = CredentialKind.FACE_RECOGNITION,
-                        note = "Face revoked on Terminal",
-                    ),
-                )
-            } catch (error: Throwable) {
-                notice = "Face revoked on terminal, but web sync failed: ${error.message ?: "Unknown error"}"
-            }
-        }
+        notice = "Face revoked on this terminal only (not synced to the server)."
     }
 
     fun signOut() {

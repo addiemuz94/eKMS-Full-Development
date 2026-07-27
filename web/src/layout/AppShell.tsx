@@ -11,14 +11,17 @@ const GROUPS: NavGroup[] = [
   {
     title: 'Home',
     icon: 'groupHome',
-    items: [{ to: '/', label: 'Dashboard', icon: 'home', end: true }],
+    items: [
+      { to: '/', label: 'Dashboard', icon: 'home', end: true },
+      { to: '/registration', label: 'Registration', icon: 'units' },
+    ],
   },
   {
-    title: 'Basic Settings',
+    title: 'Registration / Basic Settings',
     icon: 'groupSettings',
     items: [
       { to: '/units', label: 'Unit Settings', icon: 'units' },
-      { to: '/terminals', label: 'Terminal Settings', icon: 'terminals' },
+      { to: '/terminals', label: 'Key Cabinet Registration', icon: 'terminals' },
       { to: '/personnel', label: 'Personnel Management', icon: 'personnel' },
       { to: '/keys', label: 'Key Settings', icon: 'keys' },
       { to: '/permissions', label: 'Permission Settings', icon: 'permissions' },
@@ -40,19 +43,6 @@ const GROUPS: NavGroup[] = [
     items: [
       { to: '/key-records', label: 'Pickup & Return Records', icon: 'keyRecords' },
       { to: '/operation-logs', label: 'Operation Log', icon: 'operationLogs' },
-    ],
-  },
-  {
-    title: 'Appointment Authorization',
-    icon: 'groupAppointments',
-    items: [
-      { to: '/appointments', label: 'Appointment Authorization', icon: 'appointments' },
-      { to: '/appointment-reasons', label: 'Appointment Reason Settings', icon: 'appointmentReasons' },
-      {
-        to: '/appointment-permissions',
-        label: 'Appointment Permission Settings',
-        icon: 'appointmentPermissions',
-      },
     ],
   },
   {

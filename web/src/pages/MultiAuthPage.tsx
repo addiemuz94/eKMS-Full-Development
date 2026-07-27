@@ -153,8 +153,8 @@ export function MultiAuthPage() {
       {!rules.length && !busy && <div className="empty-state">No multi-auth rules yet. Create user and key groups first.</div>}
 
       {open && (
-        <div className="dialog-backdrop" onClick={() => setOpen(false)}>
-          <form className="dialog" onClick={(e) => e.stopPropagation()} onSubmit={onSave}>
+        <div className="dialog-backdrop">
+          <form className="dialog" onSubmit={onSave}>
             <h2>{editingRule ? 'Edit multi-auth rule' : 'Add multi-auth rule'}</h2>
             <p className="dialog-copy">Require one primary group plus optional assistant groups for a key group.</p>
             <div className="field">

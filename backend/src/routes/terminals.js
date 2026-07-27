@@ -39,6 +39,48 @@ function mapTerminal(row) {
   };
 }
 
+function mapCabinetSettings(row) {
+  return {
+    terminalId: row.terminal_id,
+    takeWarningTimeSeconds: Number(row.take_warning_time_seconds),
+    doorCloseWarningTimeSeconds: Number(row.door_close_warning_time_seconds),
+    keyReturnCertificationEnabled: Boolean(row.key_return_certification_enabled),
+    returnKeyVideoEnabled: Boolean(row.return_key_video_enabled),
+    keyRetrievalVideoEnabled: Boolean(row.key_retrieval_video_enabled),
+    revision: Number(row.revision),
+  };
+}
+
+async function insertDefaultCabinetSettings(connOrPool, terminalId, now = nowMs()) {
+  await connOrPool.execute(
+    `INSERT INTO terminal_cabinet_settings (
+       terminal_id, take_warning_time_seconds, door_close_warning_time_seconds,
+       key_return_certification_enabled, return_key_video_enabled, key_retrieval_video_enabled,
+       revision, updated_at_epoch_ms
+     ) VALUES (
+       :terminalId, 15, 15, 0, 0, 0, 1, :now
+     )
+     ON DUPLICATE KEY UPDATE terminal_id = terminal_id`,
+    { terminalId, now },
+  );
+}
+
+async function loadCabinetSettings(terminalId) {
+  const [rows] = await pool.execute(
+    `SELECT * FROM terminal_cabinet_settings WHERE terminal_id = :terminalId LIMIT 1`,
+    { terminalId },
+  );
+  if (rows[0]) return mapCabinetSettings(rows[0]);
+  await insertDefaultCabinetSettings(pool, terminalId);
+  const [created] = await pool.execute(
+    `SELECT * FROM terminal_cabinet_settings WHERE terminal_id = :terminalId LIMIT 1`,
+    { terminalId },
+  );
+  return mapCabinetSettings(created[0]);
+}
+
+export { mapCabinetSettings, loadCabinetSettings, insertDefaultCabinetSettings };
+
 router.get('/', async (req, res) => {
   const state = req.query.state || 'ACTIVE';
   const siteId = req.query.siteId;
@@ -59,6 +101,73 @@ router.get('/:id', async (req, res) => {
   });
   if (!rows[0]) return notFound(res, 'Terminal not found');
   return res.json(mapTerminal(rows[0]));
+});
+
+router.get('/:id/cabinet-settings', async (req, res) => {
+  const [existing] = await pool.execute(
+    `SELECT id FROM terminals WHERE id = :id AND lifecycle_state = 'ACTIVE' LIMIT 1`,
+    { id: req.params.id },
+  );
+  if (!existing[0]) return notFound(res, 'Terminal not found');
+  return res.json(await loadCabinetSettings(req.params.id));
+});
+
+router.patch('/:id/cabinet-settings', async (req, res) => {
+  const schema = z.object({
+    takeWarningTimeSeconds: z.number().int().min(1).max(300),
+    doorCloseWarningTimeSeconds: z.number().int().min(1).max(300),
+    keyReturnCertificationEnabled: z.boolean(),
+    returnKeyVideoEnabled: z.boolean(),
+    keyRetrievalVideoEnabled: z.boolean(),
+    expectedRevision: z.number().int().nonnegative(),
+  });
+  const parsed = schema.safeParse(req.body);
+  if (!parsed.success) return badRequest(res, 'Invalid cabinet settings update');
+
+  const [existingTerminal] = await pool.execute(
+    `SELECT id FROM terminals WHERE id = :id AND lifecycle_state = 'ACTIVE' LIMIT 1`,
+    { id: req.params.id },
+  );
+  if (!existingTerminal[0]) return notFound(res, 'Terminal not found');
+
+  await insertDefaultCabinetSettings(pool, req.params.id);
+
+  const [existing] = await pool.execute(
+    `SELECT * FROM terminal_cabinet_settings WHERE terminal_id = :id LIMIT 1`,
+    { id: req.params.id },
+  );
+  if (!existing[0]) return notFound(res, 'Cabinet settings not found');
+  if (Number(existing[0].revision) !== parsed.data.expectedRevision) return conflict(res);
+
+  const now = nowMs();
+  const [result] = await pool.execute(
+    `UPDATE terminal_cabinet_settings SET
+       take_warning_time_seconds = :takeWarningTimeSeconds,
+       door_close_warning_time_seconds = :doorCloseWarningTimeSeconds,
+       key_return_certification_enabled = :keyReturnCertificationEnabled,
+       return_key_video_enabled = :returnKeyVideoEnabled,
+       key_retrieval_video_enabled = :keyRetrievalVideoEnabled,
+       revision = revision + 1,
+       updated_at_epoch_ms = :now
+     WHERE terminal_id = :id AND revision = :expectedRevision`,
+    {
+      id: req.params.id,
+      takeWarningTimeSeconds: parsed.data.takeWarningTimeSeconds,
+      doorCloseWarningTimeSeconds: parsed.data.doorCloseWarningTimeSeconds,
+      keyReturnCertificationEnabled: parsed.data.keyReturnCertificationEnabled ? 1 : 0,
+      returnKeyVideoEnabled: parsed.data.returnKeyVideoEnabled ? 1 : 0,
+      keyRetrievalVideoEnabled: parsed.data.keyRetrievalVideoEnabled ? 1 : 0,
+      expectedRevision: parsed.data.expectedRevision,
+      now,
+    },
+  );
+  if (result.affectedRows === 0) return conflict(res);
+
+  const [rows] = await pool.execute(
+    `SELECT * FROM terminal_cabinet_settings WHERE terminal_id = :id LIMIT 1`,
+    { id: req.params.id },
+  );
+  return res.json(mapCabinetSettings(rows[0]));
 });
 
 router.post('/', async (req, res) => {
@@ -124,6 +233,7 @@ router.post('/', async (req, res) => {
       vendorDeviceId: parsed.data.vendorDeviceId,
     });
   }
+  await insertDefaultCabinetSettings(pool, id, now);
   await writeAudit({
     eventType: 'TERMINAL_CREATED',
     actorUserId: req.auth.sub,

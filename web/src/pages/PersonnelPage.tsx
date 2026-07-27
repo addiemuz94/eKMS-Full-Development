@@ -1,93 +1,86 @@
-import { useCallback, useEffect, useState, type FormEvent } from 'react'
+import { useCallback, useEffect, useMemo, useState, type FormEvent } from 'react'
 import { api, ApiError } from '../api/client'
-import type { CredentialStatusDto, SiteDto, TerminalDto, UserDto } from '../api/types'
+import type { SiteDto, UserDto } from '../api/types'
+import { Button, LinearProgress } from '../components/ui'
 
-function nfcStatusLabel(status: string | undefined): string {
-  switch (status) {
-    case 'ACTIVE':
-      return 'Active'
-    case 'PENDING_TERMINAL_ENROLLMENT':
-      return 'Pending terminal'
-    case 'NOT_ASSIGNED':
-      return 'Not assigned'
-    default:
-      return status ? status.replaceAll('_', ' ').toLowerCase() : 'Not assigned'
-  }
-}
+type SortKey = 'name' | 'role' | 'site'
+type SortDir = 'asc' | 'desc'
 
 export function PersonnelPage() {
   const [people, setPeople] = useState<UserDto[]>([])
   const [sites, setSites] = useState<SiteDto[]>([])
-  const [terminals, setTerminals] = useState<TerminalDto[]>([])
-  const [cardStatusByUser, setCardStatusByUser] = useState<Record<string, CredentialStatusDto | null>>(
-    {},
-  )
+  const [query, setQuery] = useState('')
+  const [roleFilter, setRoleFilter] = useState('all')
+  const [siteFilter, setSiteFilter] = useState('all')
+  const [sort, setSort] = useState<SortKey>('name')
+  const [dir, setDir] = useState<SortDir>('asc')
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   const [open, setOpen] = useState(false)
   const [editingPerson, setEditingPerson] = useState<UserDto | null>(null)
   const [displayName, setDisplayName] = useState('')
   const [email, setEmail] = useState('')
+  const [staffId, setStaffId] = useState('')
   const [role, setRole] = useState('TECHNICIAN')
   const [siteId, setSiteId] = useState('')
   const [password, setPassword] = useState('')
-
-  const loadCardStatuses = useCallback(async (userRows: UserDto[]) => {
-    const entries = await Promise.all(
-      userRows.map(async (person) => {
-        try {
-          const creds = await api.listUserCredentials(person.id)
-          const nfc = creds.find((c) => c.credentialKind === 'NFC_CARD') ?? null
-          return [person.id, nfc] as const
-        } catch {
-          return [person.id, null] as const
-        }
-      }),
-    )
-    setCardStatusByUser(Object.fromEntries(entries))
-  }, [])
 
   const reload = useCallback(async () => {
     setBusy(true)
     setError(null)
     try {
-      const [userRows, siteRows, terminalRows] = await Promise.all([
-        api.listUsers(),
-        api.listSites(),
-        api.listTerminals(),
-      ])
+      const [userRows, siteRows] = await Promise.all([api.listUsers(), api.listSites()])
       setPeople(userRows)
       setSites(siteRows)
-      setTerminals(terminalRows)
       setSiteId((current) => current || siteRows[0]?.id || '')
-      await loadCardStatuses(userRows)
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'Failed to load personnel')
     } finally {
       setBusy(false)
     }
-  }, [loadCardStatuses])
+  }, [])
 
   useEffect(() => {
     void reload()
   }, [reload])
 
-  useEffect(() => {
-    const onFocus = () => {
-      void reload()
-    }
-    window.addEventListener('focus', onFocus)
-    return () => window.removeEventListener('focus', onFocus)
-  }, [reload])
+  function toggleSort(k: SortKey) {
+    if (sort === k) setDir((d) => (d === 'asc' ? 'desc' : 'asc'))
+    else { setSort(k); setDir('asc') }
+  }
+  const arrow = (k: SortKey) => sort === k ? (dir === 'asc' ? ' ↑' : ' ↓') : ''
+
+  const filtered = useMemo(() => {
+    const q = query.trim().toLowerCase()
+    return people
+      .filter((p) => {
+        const sn = (p.assignedSiteIds ?? []).map((id) => sites.find((s) => s.id === id)?.name ?? '').join(' ')
+        const matchQ = !q || p.displayName.toLowerCase().includes(q) || p.email.toLowerCase().includes(q) || (p.staffId ?? '').toLowerCase().includes(q) || sn.toLowerCase().includes(q)
+        const matchRole = roleFilter === 'all' || p.role === roleFilter
+        const matchSite = siteFilter === 'all' || (p.assignedSiteIds ?? []).includes(siteFilter)
+        return matchQ && matchRole && matchSite
+      })
+      .sort((a, b) => {
+        let av = '', bv = ''
+        if (sort === 'name') { av = a.displayName; bv = b.displayName }
+        else if (sort === 'role') { av = a.role; bv = b.role }
+        else {
+          av = (a.assignedSiteIds ?? []).map((id) => sites.find((s) => s.id === id)?.name ?? '').join()
+          bv = (b.assignedSiteIds ?? []).map((id) => sites.find((s) => s.id === id)?.name ?? '').join()
+        }
+        return dir === 'asc' ? av.localeCompare(bv) : bv.localeCompare(av)
+      })
+  }, [people, sites, query, roleFilter, siteFilter, sort, dir])
 
   function siteLabel(ids?: string[]) {
     if (!ids?.length) return '—'
-    return ids.map((id) => sites.find((site) => site.id === id)?.name ?? id).join(', ')
+    return ids.map((id) => sites.find((s) => s.id === id)?.name ?? id).join(', ')
   }
 
   function resetForm() {
     setDisplayName('')
     setEmail('')
+    setStaffId('')
     setPassword('')
     setRole('TECHNICIAN')
   }
@@ -96,6 +89,7 @@ export function PersonnelPage() {
     setEditingPerson(person)
     setDisplayName(person.displayName)
     setEmail(person.email)
+    setStaffId(person.staffId ?? '')
     setRole(person.role)
     setSiteId(person.assignedSiteIds?.[0] ?? '')
     setPassword('')
@@ -105,23 +99,28 @@ export function PersonnelPage() {
 
   async function onSave(e: FormEvent) {
     e.preventDefault()
+    if (!email.trim() || !email.includes('@')) {
+      setError('Enter a valid account email.')
+      return
+    }
     setBusy(true)
     setError(null)
     try {
+      const payload = {
+        displayName: displayName.trim(),
+        email: email.trim(),
+        role,
+        staffId: staffId.trim() || null,
+        assignedSiteIds: role === 'SUPER_ADMIN' ? [] : siteId ? [siteId] : [],
+      }
       if (editingPerson) {
         await api.updateUser(editingPerson.id, {
-          displayName: displayName.trim(),
-          email: email.trim(),
-          role,
-          assignedSiteIds: role === 'SUPER_ADMIN' ? [] : siteId ? [siteId] : [],
+          ...payload,
           expectedRevision: editingPerson.revision,
         })
       } else {
         await api.createUser({
-          displayName: displayName.trim(),
-          email: email.trim(),
-          role,
-          assignedSiteIds: role === 'SUPER_ADMIN' ? [] : siteId ? [siteId] : [],
+          ...payload,
           password: password.length >= 8 ? password : undefined,
         })
       }
@@ -131,9 +130,7 @@ export function PersonnelPage() {
       await reload()
     } catch (err) {
       if (err instanceof ApiError && err.status === 409) {
-        setError(
-          'This person was changed by someone else since you opened it. Reloading the latest version — please reapply your edit.',
-        )
+        setError('This person was changed by someone else since you opened it. Reloading — please reapply.')
         setOpen(false)
         setEditingPerson(null)
         await reload()
@@ -145,39 +142,17 @@ export function PersonnelPage() {
     }
   }
 
-  async function requestNfcEnrollment(person: UserDto) {
-    setBusy(true)
-    setError(null)
-    try {
-      const unitId = person.assignedSiteIds?.[0]
-      const terminalId =
-        terminals.find((t) => t.siteId === unitId)?.id ?? terminals[0]?.id ?? null
-      await api.requestCredentialEnrollment(person.id, {
-        credentialKind: 'NFC_CARD',
-        terminalId,
-        note: 'Requested from Website',
-      })
-      await reload()
-    } catch (err) {
-      setError(err instanceof ApiError ? err.message : 'Failed to request card enrollment')
-    } finally {
-      setBusy(false)
-    }
-  }
-
   return (
     <section>
       <div className="page-header">
         <div>
           <h1>Personnel Management</h1>
           <p className="muted">
-            Create and review personnel accounts assigned to units. Card enrollment is completed on
-            the terminal.
+            Create technician and vendor accounts for each unit. NFC, fingerprint and face enrollment
+            stay on the physical terminal only — they are not stored in the portal database.
           </p>
         </div>
-        <button
-          className="btn"
-          type="button"
+        <Button
           onClick={() => {
             resetForm()
             setEditingPerson(null)
@@ -185,96 +160,113 @@ export function PersonnelPage() {
           }}
         >
           Add personnel
-        </button>
+        </Button>
       </div>
 
       {error && <div className="error-banner">{error}</div>}
+      {busy && <LinearProgress className="table-busy" label="Loading personnel" />}
 
-      {people.length ? (
+      <div className="toolbar-row">
+        <input
+          className="search"
+          placeholder="Search name, email, staff ID or unit…"
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          style={{ flex: 1 }}
+        />
+        <select value={roleFilter} onChange={(e) => setRoleFilter(e.target.value)} title="Filter by role">
+          <option value="all">All roles</option>
+          <option value="TECHNICIAN">Technician</option>
+          <option value="VENDOR">Vendor</option>
+          <option value="SUPER_ADMIN">Super Admin</option>
+        </select>
+        <select value={siteFilter} onChange={(e) => setSiteFilter(e.target.value)} title="Filter by unit">
+          <option value="all">All units</option>
+          {sites.map((s) => (
+            <option key={s.id} value={s.id}>{s.name}</option>
+          ))}
+        </select>
+      </div>
+
+      {filtered.length ? (
         <div className="data-panel">
           <table className="data-table">
             <thead>
               <tr>
-                <th>Name</th>
+                <th style={{ cursor: 'pointer' }} onClick={() => toggleSort('name')}>Name{arrow('name')}</th>
+                <th>Staff ID</th>
                 <th>Email</th>
-                <th>Role</th>
+                <th style={{ cursor: 'pointer' }} onClick={() => toggleSort('role')}>Role{arrow('role')}</th>
                 <th>Status</th>
-                <th>Units</th>
-                <th>Card enrollment</th>
+                <th style={{ cursor: 'pointer' }} onClick={() => toggleSort('site')}>Units{arrow('site')}</th>
+                <th>Credentials</th>
                 <th className="col-actions">Actions</th>
               </tr>
             </thead>
             <tbody>
-              {people.map((person) => {
-                const card = cardStatusByUser[person.id]
-                return (
-                  <tr key={person.id}>
-                    <td className="cell-title">{person.displayName}</td>
-                    <td>{person.email}</td>
-                    <td>
-                      <span className="badge">{person.role}</span>
-                    </td>
-                    <td>{person.accountStatus || 'ACTIVE'}</td>
-                    <td>{siteLabel(person.assignedSiteIds)}</td>
-                    <td>
-                      <span className="badge">{nfcStatusLabel(card?.enrollmentStatus)}</span>
-                    </td>
-                    <td className="col-actions">
-                      {person.role !== 'SUPER_ADMIN' && (
-                        <>
-                          <button className="btn linkish" type="button" onClick={() => openEdit(person)}>
-                            Edit
-                          </button>
-                          <button
-                            className="btn linkish"
-                            type="button"
-                            disabled={busy || card?.enrollmentStatus === 'ACTIVE'}
-                            onClick={() => void requestNfcEnrollment(person)}
-                          >
-                            Request NFC enrollment
-                          </button>
-                          <button
-                            className="btn linkish"
-                            type="button"
-                            onClick={() =>
-                              void (async () => {
-                                if (!confirm('Move personnel to Recycle Bin?')) return
-                                await api.deleteUser(person.id)
-                                await reload()
-                              })()
-                            }
-                          >
-                            Recycle
-                          </button>
-                        </>
-                      )}
-                    </td>
-                  </tr>
-                )
-              })}
+              {filtered.map((person) => (
+                <tr key={person.id}>
+                  <td className="cell-title">{person.displayName}</td>
+                  <td className="mono">{person.staffId?.trim() || '—'}</td>
+                  <td>{person.email}</td>
+                  <td>
+                    <span className="badge">{person.role}</span>
+                  </td>
+                  <td>{person.accountStatus || 'ACTIVE'}</td>
+                  <td>{siteLabel(person.assignedSiteIds)}</td>
+                  <td>
+                    <span className="badge">Terminal-local only</span>
+                  </td>
+                  <td className="col-actions">
+                    {person.role !== 'SUPER_ADMIN' && (
+                      <div className="row-actions">
+                        <Button variant="link" onClick={() => openEdit(person)}>Edit</Button>
+                        <Button
+                          variant="link"
+                          onClick={() =>
+                            void (async () => {
+                              if (!confirm('Move personnel to Recycle Bin?')) return
+                              await api.deleteUser(person.id)
+                              await reload()
+                            })()
+                          }
+                        >
+                          Recycle
+                        </Button>
+                      </div>
+                    )}
+                  </td>
+                </tr>
+              ))}
             </tbody>
           </table>
         </div>
       ) : (
-        !busy && <div className="empty-state">No personnel loaded.</div>
+        !busy && <div className="empty-state">No personnel match current filters.</div>
       )}
 
       {open && (
-        <div className="dialog-backdrop" onClick={() => setOpen(false)}>
-          <form className="dialog" onClick={(e) => e.stopPropagation()} onSubmit={onSave}>
+        <div className="dialog-backdrop">
+          <form className="dialog" onSubmit={onSave}>
             <h2>{editingPerson ? 'Edit personnel' : 'Add personnel'}</h2>
             <p className="dialog-copy">
-              {editingPerson
-                ? 'Update this account. Password changes are not available here yet.'
-                : 'Create a new operator or admin account for the web and terminal ecosystem.'}
+              Same account can sign in on the web portal and (when server-linked) on the terminal.
             </p>
             <div className="field">
               <label>Display name</label>
               <input value={displayName} onChange={(e) => setDisplayName(e.target.value)} required />
             </div>
             <div className="field">
-              <label>Email</label>
+              <label>Account email</label>
               <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} required />
+            </div>
+            <div className="field">
+              <label>Staff ID (optional)</label>
+              <input
+                value={staffId}
+                onChange={(e) => setStaffId(e.target.value)}
+                placeholder="Employee / external ID"
+              />
             </div>
             <div className="split">
               <div className="field">
@@ -289,10 +281,8 @@ export function PersonnelPage() {
                 <div className="field">
                   <label>Assigned unit</label>
                   <select value={siteId} onChange={(e) => setSiteId(e.target.value)} required>
-                    {sites.map((site) => (
-                      <option key={site.id} value={site.id}>
-                        {site.name}
-                      </option>
+                    {sites.map((s) => (
+                      <option key={s.id} value={s.id}>{s.name}</option>
                     ))}
                   </select>
                 </div>
@@ -310,19 +300,18 @@ export function PersonnelPage() {
               </div>
             )}
             <div className="dialog-actions">
-              <button
-                className="btn secondary"
-                type="button"
+              <Button
+                variant="outlined"
                 onClick={() => {
                   setOpen(false)
                   setEditingPerson(null)
                 }}
               >
                 Cancel
-              </button>
-              <button className="btn" type="submit" disabled={busy}>
+              </Button>
+              <Button type="submit" loading={busy}>
                 {editingPerson ? 'Save changes' : 'Save'}
-              </button>
+              </Button>
             </div>
           </form>
         </div>

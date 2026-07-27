@@ -3,8 +3,11 @@ import type {
   KeyDto,
   ListResponse,
   LoginResponse,
+  RegeneratePairingCodeResponse,
   SiteDto,
+  TerminalCabinetSettingsDto,
   TerminalDto,
+  TerminalRegistrationResponse,
   UserDto,
 } from './types'
 
@@ -176,11 +179,29 @@ export const api = {
   listTerminals: () =>
     request<ListResponse<TerminalDto>>('GET', '/v1/admin/terminals').then((r) => r.items),
   createTerminal: (payload: Record<string, unknown>) =>
-    request<TerminalDto>('POST', '/v1/admin/terminals', payload, { idempotent: true }),
+    request<TerminalRegistrationResponse>('POST', '/v1/admin/terminals', payload, {
+      idempotent: true,
+    }),
   updateTerminal: (id: string, payload: Record<string, unknown>) =>
     request<TerminalDto>('PATCH', `/v1/admin/terminals/${id}`, payload, { idempotent: true }),
   deleteTerminal: (id: string) =>
     request<TerminalDto>('DELETE', `/v1/admin/terminals/${id}`, undefined, { idempotent: true }),
+  regenerateTerminalPairingCode: (id: string) =>
+    request<RegeneratePairingCodeResponse>(
+      'POST',
+      `/v1/admin/terminals/${id}/pairing-code`,
+      {},
+      { idempotent: true },
+    ),
+  getCabinetSettings: (terminalId: string) =>
+    request<TerminalCabinetSettingsDto>('GET', `/v1/admin/terminals/${terminalId}/cabinet-settings`),
+  updateCabinetSettings: (terminalId: string, payload: Record<string, unknown>) =>
+    request<TerminalCabinetSettingsDto>(
+      'PATCH',
+      `/v1/admin/terminals/${terminalId}/cabinet-settings`,
+      payload,
+      { idempotent: true },
+    ),
 
   listUsers: () =>
     request<ListResponse<UserDto>>('GET', '/v1/admin/users').then((r) => r.items),
@@ -251,28 +272,6 @@ export const api = {
   createMultiAuthRule: createPath('/v1/admin/multi-authentication-rules'),
   updateMultiAuthRule: updatePath('/v1/admin/multi-authentication-rules'),
   deleteMultiAuthRule: deletePath('/v1/admin/multi-authentication-rules'),
-
-  listAppointments: listPath('/v1/admin/appointments'),
-  createAppointment: createPath('/v1/admin/appointments'),
-  reviewAppointment: (id: string, payload: Record<string, unknown>) =>
-    request<Record<string, unknown>>('POST', `/v1/admin/appointments/${id}/review`, payload, {
-      idempotent: true,
-    }),
-  updateAppointmentPermissions: (id: string, payload: Record<string, unknown>) =>
-    request<Record<string, unknown>>('PATCH', `/v1/admin/appointments/${id}/permissions`, payload, {
-      idempotent: true,
-    }),
-  deleteAppointment: deletePath('/v1/admin/appointments'),
-
-  listAppointmentReasons: listPath('/v1/admin/appointment-reasons'),
-  createAppointmentReason: createPath('/v1/admin/appointment-reasons'),
-  updateAppointmentReason: updatePath('/v1/admin/appointment-reasons'),
-  deleteAppointmentReason: deletePath('/v1/admin/appointment-reasons'),
-
-  listAppointmentPermissions: listPath('/v1/admin/appointment-permissions'),
-  createAppointmentPermission: createPath('/v1/admin/appointment-permissions'),
-  updateAppointmentPermission: updatePath('/v1/admin/appointment-permissions'),
-  deleteAppointmentPermission: deletePath('/v1/admin/appointment-permissions'),
 
   listSyncConflicts: listPath('/v1/admin/sync-conflicts'),
   resolveSyncConflict: (id: string, payload: Record<string, unknown>) =>

@@ -59,6 +59,41 @@ function mapGrant(row, keyIds) {
   };
 }
 
+function mapCabinetSettings(row) {
+  return {
+    terminalId: row.terminal_id,
+    takeWarningTimeSeconds: Number(row.take_warning_time_seconds),
+    doorCloseWarningTimeSeconds: Number(row.door_close_warning_time_seconds),
+    keyReturnCertificationEnabled: Boolean(row.key_return_certification_enabled),
+    returnKeyVideoEnabled: Boolean(row.return_key_video_enabled),
+    keyRetrievalVideoEnabled: Boolean(row.key_retrieval_video_enabled),
+    revision: Number(row.revision),
+  };
+}
+
+async function loadCabinetSettingsForSync(terminalId) {
+  const [rows] = await pool.execute(
+    `SELECT * FROM terminal_cabinet_settings WHERE terminal_id = :terminalId LIMIT 1`,
+    { terminalId },
+  );
+  if (rows[0]) return mapCabinetSettings(rows[0]);
+  const now = nowMs();
+  await pool.execute(
+    `INSERT INTO terminal_cabinet_settings (
+       terminal_id, take_warning_time_seconds, door_close_warning_time_seconds,
+       key_return_certification_enabled, return_key_video_enabled, key_retrieval_video_enabled,
+       revision, updated_at_epoch_ms
+     ) VALUES (:terminalId, 15, 15, 0, 0, 0, 1, :now)
+     ON DUPLICATE KEY UPDATE terminal_id = terminal_id`,
+    { terminalId, now },
+  );
+  const [created] = await pool.execute(
+    `SELECT * FROM terminal_cabinet_settings WHERE terminal_id = :terminalId LIMIT 1`,
+    { terminalId },
+  );
+  return mapCabinetSettings(created[0]);
+}
+
 function mapTerminal(row) {
   return {
     id: row.id,
@@ -149,6 +184,7 @@ async function buildSnapshot(terminalRow) {
 
   return {
     terminal: mapTerminal(terminalRow),
+    cabinetSettings: await loadCabinetSettingsForSync(terminalId),
     users,
     keys: keyRows.map(mapKey),
     keySlots: slotRows.map(mapSlot),

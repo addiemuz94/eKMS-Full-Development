@@ -473,11 +473,13 @@ class TerminalAdminStore(context: Context) {
 
     /**
      * Replaces local keys/users/grants from a server download snapshot.
-     * Does not overwrite serverAddress / activation toggles already set in Admin Menu.
+     * Merges portal cabinet behavioral settings when present (server wins).
+     * Does not overwrite serverAddress / activationCode (device-local).
      */
     @Synchronized
     fun applyServerSnapshot(snapshot: com.ekms.shared.api.TerminalDownloadSnapshot) {
         val current = readCabinetSettings()
+        val fromServer = snapshot.cabinetSettings
         val mergedSettings = current.copy(
             cabinetName = snapshot.terminal.name.ifBlank { current.cabinetName },
             cabinetId = snapshot.terminal.id.ifBlank { current.cabinetId },
@@ -485,6 +487,17 @@ class TerminalAdminStore(context: Context) {
                 MIN_KEY_NODE_COUNT,
                 MAX_KEY_NODE_COUNT,
             ),
+            takeWarningTimeSeconds = (fromServer?.takeWarningTimeSeconds ?: current.takeWarningTimeSeconds)
+                .coerceIn(1, 300),
+            doorCloseWarningTimeSeconds = (
+                fromServer?.doorCloseWarningTimeSeconds ?: current.doorCloseWarningTimeSeconds
+                ).coerceIn(1, 300),
+            keyReturnCertificationEnabled =
+                fromServer?.keyReturnCertificationEnabled ?: current.keyReturnCertificationEnabled,
+            returnKeyVideoEnabled =
+                fromServer?.returnKeyVideoEnabled ?: current.returnKeyVideoEnabled,
+            keyRetrievalVideoEnabled =
+                fromServer?.keyRetrievalVideoEnabled ?: current.keyRetrievalVideoEnabled,
         )
         saveCabinetSettings(mergedSettings)
 

@@ -12,6 +12,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const IGNORE_ERRNOS = new Set([
   1060, // ER_DUP_FIELDNAME
   1061, // ER_DUP_KEYNAME
+  1062, // ER_DUP_ENTRY (backfill INSERT)
   1826, // ER_FK_DUP_NAME
 ]);
 
@@ -50,6 +51,7 @@ async function migrate() {
   await applySqlFile('004_unit_hierarchy.sql', { ignoreDuplicates: true });
   await applySqlFile('005_credential_enrollment_reference.sql', { ignoreDuplicates: true });
   await applySqlFile('006_registration_and_pairing.sql', { ignoreDuplicates: true });
+  await applySqlFile('007_terminal_cabinet_settings.sql', { ignoreDuplicates: true });
   process.exit(0);
 }
 

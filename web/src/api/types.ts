@@ -16,6 +16,35 @@ export type TerminalDto = {
   serialNumber?: string | null
   configuredSlotCount: number
   connectionState?: string
+  vendorDeviceId?: string | null
+  nodeRows?: number | null
+  nodesPerRow?: number | null
+  latitude?: number | null
+  longitude?: number | null
+  /** True after a terminal redeemed a pairing code successfully. */
+  paired?: boolean
+  revision: number
+}
+
+export type TerminalRegistrationResponse = {
+  terminal: TerminalDto
+  pairingCode: string
+  pairingCodeExpiresAtEpochMillis: number
+}
+
+export type RegeneratePairingCodeResponse = {
+  terminalId: string
+  code: string
+  expiresAtEpochMillis: number
+}
+
+export type TerminalCabinetSettingsDto = {
+  terminalId: string
+  takeWarningTimeSeconds: number
+  doorCloseWarningTimeSeconds: number
+  keyReturnCertificationEnabled: boolean
+  returnKeyVideoEnabled: boolean
+  keyRetrievalVideoEnabled: boolean
   revision: number
 }
 
@@ -26,6 +55,8 @@ export type UserDto = {
   role: string
   assignedSiteIds?: string[]
   accountStatus?: string
+  /** External / employee identifier, distinct from id. */
+  staffId?: string | null
   revision: number
 }
 

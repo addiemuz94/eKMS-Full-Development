@@ -20,9 +20,6 @@ import {
   schedulesRouter,
   namedGroupRouter,
   multiAuthRulesRouter,
-  appointmentReasonsRouter,
-  appointmentsRouter,
-  appointmentPermissionsRouter,
   reportsRouter,
 } from './routes/phase4.js';
 
@@ -92,9 +89,7 @@ admin.use('/schedules', schedulesRouter);
 admin.use('/personnel-groups', namedGroupRouter('personnel_groups', 'PERSONNEL_GROUP'));
 admin.use('/key-groups', namedGroupRouter('key_groups', 'KEY_GROUP'));
 admin.use('/multi-authentication-rules', multiAuthRulesRouter);
-admin.use('/appointment-reasons', appointmentReasonsRouter);
-admin.use('/appointments', appointmentsRouter);
-admin.use('/appointment-permissions', appointmentPermissionsRouter);
+// Appointment Authorization removed — not required by the client.
 
 app.use('/v1/admin', admin);
 

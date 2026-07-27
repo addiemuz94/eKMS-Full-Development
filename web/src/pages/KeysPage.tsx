@@ -1,10 +1,17 @@
-import { useEffect, useState, type FormEvent } from 'react'
+import { useEffect, useMemo, useState, type FormEvent } from 'react'
 import { api, ApiError } from '../api/client'
 import type { KeyDto, SiteDto } from '../api/types'
+import { Button, LinearProgress } from '../components/ui'
+
+type SortDir = 'asc' | 'desc'
 
 export function KeysPage() {
   const [keys, setKeys] = useState<KeyDto[]>([])
   const [sites, setSites] = useState<SiteDto[]>([])
+  const [query, setQuery] = useState('')
+  const [siteFilter, setSiteFilter] = useState('all')
+  const [enrollFilter, setEnrollFilter] = useState<'all' | 'enrolled' | 'not-enrolled'>('all')
+  const [sortDir, setSortDir] = useState<SortDir>('asc')
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   const [open, setOpen] = useState(false)
@@ -30,6 +37,24 @@ export function KeysPage() {
   useEffect(() => {
     void reload()
   }, [])
+
+  const filtered = useMemo(() => {
+    const q = query.trim().toLowerCase()
+    return keys
+      .filter((k) => {
+        const sn = sites.find((s) => s.id === k.siteId)?.name ?? ''
+        const matchQ = !q || k.displayName.toLowerCase().includes(q) || sn.toLowerCase().includes(q)
+        const matchSite = siteFilter === 'all' || k.siteId === siteFilter
+        const enrolled = Boolean(k.fobEnrollmentReference)
+        const matchEnroll = enrollFilter === 'all' || (enrollFilter === 'enrolled' ? enrolled : !enrolled)
+        return matchQ && matchSite && matchEnroll
+      })
+      .sort((a, b) =>
+        sortDir === 'asc'
+          ? a.displayName.localeCompare(b.displayName)
+          : b.displayName.localeCompare(a.displayName),
+      )
+  }, [keys, sites, query, siteFilter, enrollFilter, sortDir])
 
   function openEdit(key: KeyDto) {
     setEditingKey(key)
@@ -60,9 +85,7 @@ export function KeysPage() {
       await reload()
     } catch (err) {
       if (err instanceof ApiError && err.status === 409) {
-        setError(
-          'This key was changed by someone else since you opened it. Reloading the latest version — please reapply your edit.',
-        )
+        setError('This key was changed by someone else since you opened it. Reloading — please reapply.')
         setOpen(false)
         setEditingKey(null)
         await reload()
@@ -81,9 +104,7 @@ export function KeysPage() {
           <h1>Key Settings</h1>
           <p className="muted">Managed keys from the backend. Raw NFC UIDs never appear here.</p>
         </div>
-        <button
-          className="btn"
-          type="button"
+        <Button
           onClick={() => {
             setEditingKey(null)
             setDisplayName('')
@@ -92,12 +113,37 @@ export function KeysPage() {
           disabled={!sites.length}
         >
           Add key
-        </button>
+        </Button>
       </div>
 
       {error && <div className="error-banner">{error}</div>}
+      {busy && <LinearProgress className="table-busy" label="Loading keys" />}
 
-      {keys.length ? (
+      <div className="toolbar-row">
+        <input
+          className="search"
+          placeholder="Search key name or unit…"
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          style={{ flex: 1 }}
+        />
+        <select value={siteFilter} onChange={(e) => setSiteFilter(e.target.value)} title="Filter by unit">
+          <option value="all">All units</option>
+          {sites.map((s) => (
+            <option key={s.id} value={s.id}>{s.name}</option>
+          ))}
+        </select>
+        <select value={enrollFilter} onChange={(e) => setEnrollFilter(e.target.value as 'all' | 'enrolled' | 'not-enrolled')} title="Filter by enrollment">
+          <option value="all">All enrollment</option>
+          <option value="enrolled">Enrolled</option>
+          <option value="not-enrolled">Not enrolled</option>
+        </select>
+        <Button variant="outlined" onClick={() => setSortDir((d) => d === 'asc' ? 'desc' : 'asc')}>
+          Name {sortDir === 'asc' ? '↑' : '↓'}
+        </Button>
+      </div>
+
+      {filtered.length ? (
         <div className="data-panel">
           <table className="data-table">
             <thead>
@@ -109,28 +155,31 @@ export function KeysPage() {
               </tr>
             </thead>
             <tbody>
-              {keys.map((key) => (
+              {filtered.map((key) => (
                 <tr key={key.id}>
                   <td className="cell-title">{key.displayName}</td>
-                  <td>{sites.find((site) => site.id === key.siteId)?.name ?? '—'}</td>
-                  <td>{key.fobEnrollmentReference || 'Not enrolled'}</td>
+                  <td>{sites.find((s) => s.id === key.siteId)?.name ?? '—'}</td>
+                  <td>
+                    {key.fobEnrollmentReference
+                      ? <span className="badge badge-success">Enrolled</span>
+                      : <span className="muted">Not enrolled</span>}
+                  </td>
                   <td className="col-actions">
-                    <button className="btn linkish" type="button" onClick={() => openEdit(key)}>
-                      Edit
-                    </button>
-                    <button
-                      className="btn linkish"
-                      type="button"
-                      onClick={() =>
-                        void (async () => {
-                          if (!confirm('Move key to Recycle Bin?')) return
-                          await api.deleteKey(key.id)
-                          await reload()
-                        })()
-                      }
-                    >
-                      Recycle
-                    </button>
+                    <div className="row-actions">
+                      <Button variant="link" onClick={() => openEdit(key)}>Edit</Button>
+                      <Button
+                        variant="link"
+                        onClick={() =>
+                          void (async () => {
+                            if (!confirm('Move key to Recycle Bin?')) return
+                            await api.deleteKey(key.id)
+                            await reload()
+                          })()
+                        }
+                      >
+                        Recycle
+                      </Button>
+                    </div>
                   </td>
                 </tr>
               ))}
@@ -138,12 +187,12 @@ export function KeysPage() {
           </table>
         </div>
       ) : (
-        !busy && <div className="empty-state">No keys loaded.</div>
+        !busy && <div className="empty-state">No keys match current filters.</div>
       )}
 
       {open && (
-        <div className="dialog-backdrop" onClick={() => setOpen(false)}>
-          <form className="dialog" onClick={(e) => e.stopPropagation()} onSubmit={onSave}>
+        <div className="dialog-backdrop">
+          <form className="dialog" onSubmit={onSave}>
             <h2>{editingKey ? 'Edit key' : 'Add key'}</h2>
             <p className="dialog-copy">Create a managed key record without exposing NFC secrets or biometric material.</p>
             <div className="field">
@@ -153,27 +202,14 @@ export function KeysPage() {
             <div className="field">
               <label>Unit</label>
               <select value={siteId} onChange={(e) => setSiteId(e.target.value)} required>
-                {sites.map((site) => (
-                  <option key={site.id} value={site.id}>
-                    {site.name}
-                  </option>
+                {sites.map((s) => (
+                  <option key={s.id} value={s.id}>{s.name}</option>
                 ))}
               </select>
             </div>
             <div className="dialog-actions">
-              <button
-                className="btn secondary"
-                type="button"
-                onClick={() => {
-                  setOpen(false)
-                  setEditingKey(null)
-                }}
-              >
-                Cancel
-              </button>
-              <button className="btn" type="submit" disabled={busy}>
-                {editingKey ? 'Save changes' : 'Save'}
-              </button>
+              <Button variant="outlined" onClick={() => { setOpen(false); setEditingKey(null) }}>Cancel</Button>
+              <Button type="submit" loading={busy}>{editingKey ? 'Save changes' : 'Save'}</Button>
             </div>
           </form>
         </div>
