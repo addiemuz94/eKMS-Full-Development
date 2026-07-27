@@ -82,7 +82,7 @@ router.post('/', async (req, res) => {
   const schema = z.object({
     displayName: z.string().min(1),
     email: z.string().email(),
-    role: z.enum(['SUPER_ADMIN', 'TECHNICIAN', 'VENDOR']),
+    role: z.enum(['SUPER_ADMIN', 'REGIONAL_ADMIN', 'TECHNICIAN', 'VENDOR']),
     assignedSiteIds: z.array(z.string().uuid()).default([]),
     password: z.string().min(8).optional(),
     staffId: z.string().max(128).nullable().optional(),
@@ -91,7 +91,7 @@ router.post('/', async (req, res) => {
   if (!parsed.success) return badRequest(res, 'Invalid user payload');
 
   if (parsed.data.role !== 'SUPER_ADMIN' && parsed.data.assignedSiteIds.length === 0) {
-    return badRequest(res, 'TECHNICIAN and VENDOR require at least one assigned site');
+    return badRequest(res, 'REGIONAL_ADMIN, TECHNICIAN, and VENDOR require at least one assigned site');
   }
 
   const id = newId();
@@ -145,7 +145,7 @@ router.patch('/:id', async (req, res) => {
   const schema = z.object({
     displayName: z.string().min(1),
     email: z.string().email(),
-    role: z.enum(['SUPER_ADMIN', 'TECHNICIAN', 'VENDOR']),
+    role: z.enum(['SUPER_ADMIN', 'REGIONAL_ADMIN', 'TECHNICIAN', 'VENDOR']),
     assignedSiteIds: z.array(z.string().uuid()).default([]),
     staffId: z.string().max(128).nullable().optional(),
     expectedRevision: z.number().int().nonnegative(),
@@ -153,7 +153,7 @@ router.patch('/:id', async (req, res) => {
   const parsed = schema.safeParse(req.body);
   if (!parsed.success) return badRequest(res, 'Invalid user update');
   if (parsed.data.role !== 'SUPER_ADMIN' && parsed.data.assignedSiteIds.length === 0) {
-    return badRequest(res, 'TECHNICIAN and VENDOR require at least one assigned site');
+    return badRequest(res, 'REGIONAL_ADMIN, TECHNICIAN, and VENDOR require at least one assigned site');
   }
 
   const [existing] = await pool.execute(

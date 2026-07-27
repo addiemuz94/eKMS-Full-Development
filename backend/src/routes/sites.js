@@ -227,4 +227,138 @@ router.delete('/:id', async (req, res) => {
   return res.json(mapSite(rows[0]));
 });
 
+const OFFICE_HOURS_TIME_REGEX = /^([01]\d|2[0-3]):[0-5]\d:[0-5]\d$/;
+
+function mapOfficeHours(row) {
+  return {
+    siteId: row.site_id,
+    openTime: row.open_time,
+    closeTime: row.close_time,
+    timezone: row.timezone,
+    updatedByUserId: row.updated_by_user_id ?? null,
+    updatedAtEpochMillis: Number(row.updated_at_epoch_ms),
+    revision: Number(row.revision),
+  };
+}
+
+async function insertDefaultOfficeHours(connOrPool, siteId, now = nowMs()) {
+  await connOrPool.execute(
+    `INSERT INTO site_office_hours (site_id, open_time, close_time, timezone, revision, updated_at_epoch_ms)
+     VALUES (:siteId, '08:00:00', '17:00:00', 'Asia/Kuala_Lumpur', 1, :now)
+     ON DUPLICATE KEY UPDATE site_id = site_id`,
+    { siteId, now },
+  );
+}
+
+async function loadOfficeHours(siteId) {
+  const [rows] = await pool.execute(
+    `SELECT * FROM site_office_hours WHERE site_id = :siteId LIMIT 1`,
+    { siteId },
+  );
+  if (rows[0]) return mapOfficeHours(rows[0]);
+  await insertDefaultOfficeHours(pool, siteId);
+  const [created] = await pool.execute(
+    `SELECT * FROM site_office_hours WHERE site_id = :siteId LIMIT 1`,
+    { siteId },
+  );
+  return mapOfficeHours(created[0]);
+}
+
+/**
+ * Super Admin may write any site's office hours; Regional Admin only their assigned sites
+ * (per the permission matrix referenced in this phase's spec). NOTE: as of this phase,
+ * `requireSuperAdminOrAllowedTerminalDevice` (the ambient `/v1/admin` gate in index.js) blocks
+ * any REGIONAL_ADMIN-role real user before this handler is ever reached — this check is
+ * forward-prep for when that gate is widened to admit Regional Admin, not something reachable
+ * today. Do not assume a Regional Admin can actually call this endpoint yet; see this phase's
+ * handoff report.
+ */
+async function assertMayWriteOfficeHours(req, siteId) {
+  if (req.auth?.role === 'SUPER_ADMIN') return true;
+  if (req.auth?.role === 'REGIONAL_ADMIN') {
+    const [rows] = await pool.execute(
+      `SELECT 1 FROM user_site_assignments WHERE user_id = :userId AND site_id = :siteId LIMIT 1`,
+      { userId: req.auth.sub, siteId },
+    );
+    return Boolean(rows[0]);
+  }
+  return false;
+}
+
+router.get('/:id/office-hours', async (req, res) => {
+  const [existing] = await pool.execute(
+    `SELECT id FROM sites WHERE id = :id AND lifecycle_state = 'ACTIVE' LIMIT 1`,
+    { id: req.params.id },
+  );
+  if (!existing[0]) return notFound(res, 'Site not found');
+  return res.json(await loadOfficeHours(req.params.id));
+});
+
+router.patch('/:id/office-hours', async (req, res) => {
+  const schema = z.object({
+    openTime: z.string().regex(OFFICE_HOURS_TIME_REGEX, 'openTime must be HH:MM:SS'),
+    closeTime: z.string().regex(OFFICE_HOURS_TIME_REGEX, 'closeTime must be HH:MM:SS'),
+    timezone: z.string().min(1),
+    expectedRevision: z.number().int().nonnegative(),
+  });
+  const parsed = schema.safeParse(req.body);
+  if (!parsed.success) return badRequest(res, 'Invalid office hours update');
+
+  const [existingSite] = await pool.execute(
+    `SELECT id FROM sites WHERE id = :id AND lifecycle_state = 'ACTIVE' LIMIT 1`,
+    { id: req.params.id },
+  );
+  if (!existingSite[0]) return notFound(res, 'Site not found');
+
+  if (!(await assertMayWriteOfficeHours(req, req.params.id))) {
+    return res.status(403).json({ error: 'FORBIDDEN', message: "Not permitted to edit this site's office hours" });
+  }
+
+  await insertDefaultOfficeHours(pool, req.params.id);
+
+  const [existing] = await pool.execute(
+    `SELECT * FROM site_office_hours WHERE site_id = :id LIMIT 1`,
+    { id: req.params.id },
+  );
+  if (!existing[0]) return notFound(res, 'Office hours not found');
+  if (Number(existing[0].revision) !== parsed.data.expectedRevision) return conflict(res);
+
+  const actorUserId = req.auth?.role === 'TERMINAL_DEVICE' ? null : req.auth.sub;
+  const now = nowMs();
+  const [result] = await pool.execute(
+    `UPDATE site_office_hours SET
+       open_time = :openTime,
+       close_time = :closeTime,
+       timezone = :timezone,
+       updated_by_user_id = :actorUserId,
+       revision = revision + 1,
+       updated_at_epoch_ms = :now
+     WHERE site_id = :id AND revision = :expectedRevision`,
+    {
+      id: req.params.id,
+      openTime: parsed.data.openTime,
+      closeTime: parsed.data.closeTime,
+      timezone: parsed.data.timezone,
+      actorUserId,
+      expectedRevision: parsed.data.expectedRevision,
+      now,
+    },
+  );
+  if (result.affectedRows === 0) return conflict(res);
+
+  await writeAudit({
+    eventType: 'SITE_OFFICE_HOURS_UPDATED',
+    actorUserId,
+    siteId: req.params.id,
+    entityType: 'SITE',
+    entityId: req.params.id,
+  });
+
+  const [rows] = await pool.execute(
+    `SELECT * FROM site_office_hours WHERE site_id = :id LIMIT 1`,
+    { id: req.params.id },
+  );
+  return res.json(mapOfficeHours(rows[0]));
+});
+
 export default router;

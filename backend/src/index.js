@@ -13,6 +13,8 @@ import keySlotsRouter from './routes/keySlots.js';
 import accessGrantsRouter from './routes/accessGrants.js';
 import recycleBinRouter from './routes/recycleBin.js';
 import credentialsRouter from './routes/credentials.js';
+import keyCheckoutsRouter from './routes/keyCheckouts.js';
+import vendorPasskeyRequestsRouter from './routes/vendorPasskeyRequests.js';
 import auditRouter from './routes/audit.js';
 import { terminalSyncRouter, syncConflictsRouter } from './routes/sync.js';
 import {
@@ -82,6 +84,8 @@ admin.use('/users', usersRouter);
 admin.use('/keys', keysRouter);
 admin.use('/key-slots', keySlotsRouter);
 admin.use('/access-grants', accessGrantsRouter);
+admin.use('/key-checkouts', keyCheckoutsRouter);
+admin.use('/vendor-passkey-requests', vendorPasskeyRequestsRouter);
 admin.use('/recycle-bin', recycleBinRouter);
 admin.use('/sync-conflicts', syncConflictsRouter);
 admin.use('/event-definitions', eventDefinitionsRouter);

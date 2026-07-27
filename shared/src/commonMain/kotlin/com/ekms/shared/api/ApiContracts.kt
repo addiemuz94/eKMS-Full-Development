@@ -40,6 +40,12 @@ object ApiPaths {
     const val ADMIN_KEYS = "/v1/admin/keys"
     const val ADMIN_KEY_SLOTS = "/v1/admin/key-slots"
     const val ADMIN_ACCESS_GRANTS = "/v1/admin/access-grants"
+    const val ADMIN_KEY_CHECKOUTS = "/v1/admin/key-checkouts"
+    /** Super Admin. {id} is sites.id. GET/PATCH per-site office hours (open/close time + timezone). */
+    const val ADMIN_SITE_OFFICE_HOURS = "/v1/admin/sites/{id}/office-hours"
+    const val ADMIN_VENDOR_PASSKEY_REQUESTS = "/v1/admin/vendor-passkey-requests"
+    const val ADMIN_VENDOR_PASSKEY_REQUEST_APPROVE = "/v1/admin/vendor-passkey-requests/{id}/approve"
+    const val ADMIN_VENDOR_PASSKEY_REQUEST_REJECT = "/v1/admin/vendor-passkey-requests/{id}/reject"
     const val ADMIN_KEY_FOB_ENROLLMENT = "/v1/admin/keys/{keyId}/fob-enrollment"
     const val ADMIN_EVENT_DEFINITIONS = "/v1/admin/event-definitions"
     const val ADMIN_SCHEDULES = "/v1/admin/schedules"
@@ -796,4 +802,160 @@ data class ReportExportResponse(
     val createdAtEpochMillis: Long,
     val downloadPath: String? = null,
     val rowCount: Int = 0,
+)
+
+/**
+ * Phase 1 (Revised) — Regional Admin, checkout records, office hours, vendor passkey. Backend
+ * schema/validation only in this pass; no terminalApp hardware wiring or web UI consumes these
+ * yet (see CLAUDE.md's handoff notes for what each phase still needs).
+ */
+
+/** [status] is only ever OPEN or RETURNED on the stored row — [effectiveStatus] additionally
+ * reports OVERDUE, derived at read time (status == OPEN && dueAtEpochMillis < now), never
+ * stored or cron-flipped. Always read [effectiveStatus] for UI/business-rule purposes; [status]
+ * is the raw persisted value. */
+@Serializable
+enum class KeyCheckoutStatus {
+    OPEN,
+    OVERDUE,
+    RETURNED,
+}
+
+@Serializable
+enum class KeyCheckoutExtensionStatus {
+    PENDING,
+    APPROVED,
+    DENIED,
+}
+
+@Serializable
+data class KeyCheckoutDto(
+    val id: String,
+    val keyId: String,
+    val userId: String,
+    val terminalId: String,
+    val takenAtEpochMillis: Long,
+    val dueAtEpochMillis: Long,
+    val status: KeyCheckoutStatus,
+    val effectiveStatus: KeyCheckoutStatus,
+    val isEmergency: Boolean = false,
+    val emergencyWindowEndsAtEpochMillis: Long? = null,
+    val extensionRequestedAtEpochMillis: Long? = null,
+    val extensionStatus: KeyCheckoutExtensionStatus? = null,
+    val extensionApprovedByUserId: String? = null,
+    val extensionNewDueAtEpochMillis: Long? = null,
+    val returnedAtEpochMillis: Long? = null,
+    val revision: Long,
+)
+
+@Serializable
+data class CreateKeyCheckoutRequest(
+    val keyId: String,
+    val userId: String,
+    val terminalId: String,
+    val takenAtEpochMillis: Long,
+    val dueAtEpochMillis: Long,
+    val isEmergency: Boolean = false,
+    val emergencyWindowEndsAtEpochMillis: Long? = null,
+)
+
+/**
+ * [dueAtEpochMillis] is reused as the effective deadline regardless of source (auto-computed vs.
+ * manually entered) — a deliberate decision, no parallel column. [dueDateSource] is not persisted
+ * on the row; it only labels which path set [dueAtEpochMillis] this time, logged via the
+ * KEY_CHECKOUT_UPDATED/KEY_CHECKOUT_RETURNED audit_events entry this request produces.
+ */
+@Serializable
+enum class DueDateSource {
+    AUTO,
+    MANUAL,
+}
+
+@Serializable
+data class UpdateKeyCheckoutRequest(
+    val dueAtEpochMillis: Long,
+    val dueDateSource: DueDateSource = DueDateSource.AUTO,
+    val status: KeyCheckoutStatus,
+    val returnedAtEpochMillis: Long? = null,
+    val isEmergency: Boolean = false,
+    val emergencyWindowEndsAtEpochMillis: Long? = null,
+    val extensionRequestedAtEpochMillis: Long? = null,
+    val extensionStatus: KeyCheckoutExtensionStatus? = null,
+    val extensionApprovedByUserId: String? = null,
+    val extensionNewDueAtEpochMillis: Long? = null,
+    val expectedRevision: Long,
+)
+
+@Serializable
+data class KeyCheckoutListResponse(val items: List<KeyCheckoutDto> = emptyList())
+
+/** Per-site office hours, including timezone — same per-site granularity as Site's own
+ * province/city fields. Defaults to Asia/Kuala_Lumpur (this system is Malaysia-only, see
+ * web/src/geo/malaysiaLocations.ts), not UTC — flag any site that turns out to need a different
+ * real value. */
+@Serializable
+data class SiteOfficeHoursDto(
+    val siteId: String,
+    /** "HH:MM:SS", 24-hour. */
+    val openTime: String = "08:00:00",
+    /** "HH:MM:SS", 24-hour. */
+    val closeTime: String = "17:00:00",
+    val timezone: String = "Asia/Kuala_Lumpur",
+    val updatedByUserId: String? = null,
+    val updatedAtEpochMillis: Long,
+    val revision: Long = 1,
+)
+
+@Serializable
+data class UpdateSiteOfficeHoursRequest(
+    val openTime: String,
+    val closeTime: String,
+    val timezone: String,
+    val expectedRevision: Long,
+)
+
+/**
+ * Deliberately minimal placeholder — full request/approval UX (notification delivery, mobile
+ * app UI, terminal-side passkey validation) is designed later in the mobileApp phase. No
+ * `expectedRevision`: approve/reject are single state-transition actions guarded by checking
+ * `status == PENDING` at write time, not a general field-level PATCH.
+ */
+@Serializable
+enum class VendorPasskeyRequestStatus {
+    PENDING,
+    APPROVED,
+    REJECTED,
+}
+
+/** [passkeyExpiresAtEpochMillis] is present once approved; the plaintext code itself is never
+ * included here — see [ApproveVendorPasskeyRequestResponse], which shows it exactly once. */
+@Serializable
+data class VendorPasskeyRequestDto(
+    val id: String,
+    val vendorUserId: String,
+    val siteId: String,
+    val requestedAtEpochMillis: Long,
+    val status: VendorPasskeyRequestStatus,
+    val approvedByUserId: String? = null,
+    val approvedAtEpochMillis: Long? = null,
+    val passkeyExpiresAtEpochMillis: Long? = null,
+)
+
+@Serializable
+data class CreateVendorPasskeyRequestRequest(
+    val vendorUserId: String,
+    val siteId: String,
+)
+
+@Serializable
+data class VendorPasskeyRequestListResponse(val items: List<VendorPasskeyRequestDto> = emptyList())
+
+/** [passkeyCode] is a plaintext 4-digit code, shown exactly once — same "shown once" treatment
+ * as terminal pairing codes (RegeneratePairingCodeResponse). Nothing re-reads it afterward. */
+@Serializable
+data class ApproveVendorPasskeyRequestResponse(
+    val id: String,
+    val status: VendorPasskeyRequestStatus = VendorPasskeyRequestStatus.APPROVED,
+    val passkeyCode: String,
+    val passkeyExpiresAtEpochMillis: Long,
 )

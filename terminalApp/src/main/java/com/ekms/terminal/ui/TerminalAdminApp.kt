@@ -1188,7 +1188,9 @@ fun TerminalAdminApp() {
                     }
                     FingerprintEnrollmentScreen(
                         padding = padding,
-                        users = personnelForScreens,
+                        // Vendor may only ever enroll NFC card (permanent rule, not a UI
+                        // suggestion) — hard-excluded from selection here, not just discouraged.
+                        users = personnelForScreens.filterNot { it.role == TerminalUserRole.VENDOR },
                         notice = notice,
                         hardwareState = fingerprintHardwareState,
                         onBack = { route = SuperAdminRoute.DASHBOARD },
@@ -1227,7 +1229,9 @@ fun TerminalAdminApp() {
                     }
                     FaceEnrollmentScreen(
                         padding = padding,
-                        users = personnelForScreens,
+                        // Vendor may only ever enroll NFC card (permanent rule, not a UI
+                        // suggestion) — hard-excluded from selection here, not just discouraged.
+                        users = personnelForScreens.filterNot { it.role == TerminalUserRole.VENDOR },
                         notice = notice,
                         faceProfileStore = faceProfileStore,
                         onBack = { route = SuperAdminRoute.DASHBOARD },
@@ -1725,6 +1729,7 @@ private fun UserDto.toTerminalUser(): TerminalUser {
         UserRole.SUPER_ADMIN -> TerminalUserRole.SUPER_ADMIN
         UserRole.TECHNICIAN -> TerminalUserRole.TECHNICIAN
         UserRole.VENDOR -> TerminalUserRole.VENDOR
+        UserRole.REGIONAL_ADMIN -> TerminalUserRole.REGIONAL_ADMIN
     }
     return TerminalUser(
         id = id,
@@ -1740,6 +1745,7 @@ private fun TerminalUserRole.toUserRole(): UserRole = when (this) {
     TerminalUserRole.SUPER_ADMIN -> UserRole.SUPER_ADMIN
     TerminalUserRole.TECHNICIAN -> UserRole.TECHNICIAN
     TerminalUserRole.VENDOR -> UserRole.VENDOR
+    TerminalUserRole.REGIONAL_ADMIN -> UserRole.REGIONAL_ADMIN
 }
 
 private data class PersonnelSaveResult(val ok: Boolean, val message: String)

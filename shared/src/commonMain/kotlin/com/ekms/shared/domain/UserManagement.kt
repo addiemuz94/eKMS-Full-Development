@@ -58,7 +58,7 @@ object UserManagementPolicy {
         !draft.email.trim().contains("@") -> "Enter a valid email address."
         !knownSiteIds.containsAll(draft.assignedSiteIds) -> "Remove an unknown site assignment."
         draft.role != UserRole.SUPER_ADMIN && draft.assignedSiteIds.isEmpty() ->
-            "Technicians and Vendors must be assigned to at least one site."
+            "Regional Admins, Technicians, and Vendors must be assigned to at least one site."
         else -> null
     }
 
@@ -179,6 +179,14 @@ object SuperAdminDemoData {
             UserCredentialStatus(user.id, CredentialKind.NFC_CARD, CredentialEnrollmentStatus.ACTIVE, "Card assigned"),
             UserCredentialStatus(user.id, CredentialKind.FINGERPRINT, CredentialEnrollmentStatus.PENDING_TERMINAL_ENROLLMENT, "Enroll on Terminal"),
             UserCredentialStatus(user.id, CredentialKind.STATIC_UID_DIGITAL_KEY_PROTOTYPE, CredentialEnrollmentStatus.ACTIVE, "Prototype tag assigned"),
+        )
+        // Portal/oversight role, not a terminal-hardware-login role — demo shape mirrors
+        // Technician's (NFC + fingerprint), since neither is a terminal-hardware constraint
+        // like Vendor's NFC-only rule (see the permanent hard-block in FingerprintEnrollmentScreen/
+        // FaceEnrollmentScreen instead — that's the real enforcement, this is just preview data).
+        UserRole.REGIONAL_ADMIN -> listOf(
+            UserCredentialStatus(user.id, CredentialKind.NFC_CARD, CredentialEnrollmentStatus.ACTIVE, "Card assigned"),
+            UserCredentialStatus(user.id, CredentialKind.FINGERPRINT, CredentialEnrollmentStatus.NOT_ASSIGNED, "Not enrolled"),
         )
         UserRole.TECHNICIAN -> listOf(
             UserCredentialStatus(user.id, CredentialKind.NFC_CARD, CredentialEnrollmentStatus.ACTIVE, "Card assigned"),

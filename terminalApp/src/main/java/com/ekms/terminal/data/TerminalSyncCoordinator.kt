@@ -156,6 +156,7 @@ class TerminalSyncCoordinator(
             UserRole.SUPER_ADMIN -> TerminalUserRole.SUPER_ADMIN
             UserRole.TECHNICIAN -> TerminalUserRole.TECHNICIAN
             UserRole.VENDOR -> TerminalUserRole.VENDOR
+            UserRole.REGIONAL_ADMIN -> TerminalUserRole.REGIONAL_ADMIN
         }
         return TerminalSession(
             userId = profile.id,

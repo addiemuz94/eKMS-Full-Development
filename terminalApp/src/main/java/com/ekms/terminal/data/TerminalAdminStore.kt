@@ -531,6 +531,7 @@ class TerminalAdminStore(context: Context) {
                             com.ekms.shared.domain.UserRole.TECHNICIAN -> TerminalUserRole.TECHNICIAN
                             com.ekms.shared.domain.UserRole.VENDOR -> TerminalUserRole.VENDOR
                             com.ekms.shared.domain.UserRole.SUPER_ADMIN -> TerminalUserRole.SUPER_ADMIN
+                            com.ekms.shared.domain.UserRole.REGIONAL_ADMIN -> TerminalUserRole.REGIONAL_ADMIN
                         },
                         isPreset = false,
                         createdAtEpochMillis = user.lifecycle.createdAtEpochMillis,
@@ -837,6 +838,10 @@ data class TerminalUser(
 
 enum class TerminalUserRole(val label: String) {
     SUPER_ADMIN("Super Admin"),
+    /** Portal/oversight role — see shared.domain.UserRole.REGIONAL_ADMIN. Not assignable from the
+     * terminal's local Enroll User screen (see assignableRoles in TerminalAdminApp.kt); a synced
+     * Regional Admin user still needs a local role value, so it exists here for that mapping. */
+    REGIONAL_ADMIN("Regional Admin"),
     TECHNICIAN("Technician"),
     VENDOR("Vendor"),
 }

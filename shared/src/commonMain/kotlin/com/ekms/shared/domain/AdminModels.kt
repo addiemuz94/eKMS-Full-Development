@@ -6,6 +6,8 @@ import kotlinx.serialization.Serializable
 @Serializable
 enum class UserRole {
     SUPER_ADMIN,
+    /** Multi-site oversight role; uses the same many-to-many `user_site_assignments` model as Technician/Vendor. */
+    REGIONAL_ADMIN,
     TECHNICIAN,
     VENDOR,
 }
@@ -216,4 +218,12 @@ enum class AuditEventType {
     TERMINAL_PAIRED,
     /** A pairing attempt was rejected: wrong code, expired code, already-consumed code, or rate-limited. */
     TERMINAL_PAIRING_FAILED,
+    KEY_CHECKOUT_CREATED,
+    /** A field on an open checkout (e.g. a manually-entered due date) changed without closing it out. */
+    KEY_CHECKOUT_UPDATED,
+    KEY_CHECKOUT_RETURNED,
+    SITE_OFFICE_HOURS_UPDATED,
+    VENDOR_PASSKEY_REQUESTED,
+    VENDOR_PASSKEY_APPROVED,
+    VENDOR_PASSKEY_REJECTED,
 }
