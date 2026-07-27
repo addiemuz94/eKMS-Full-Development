@@ -47,6 +47,32 @@ export async function writeAudit({
   );
 }
 
+/**
+ * Row-level half of Regional Admin's two-layer access control — the other half is the
+ * REGIONAL_ADMIN_ALLOWED_ROUTES allowlist in middleware/auth.js, which controls *which
+ * routes* are reachable at all. This controls *which rows* within those routes: a Regional
+ * Admin may only act on records tied to one of their own `user_site_assignments`. Both layers
+ * are required together; neither alone is sufficient. Super Admin callers should check
+ * `req.auth.role === 'SUPER_ADMIN'` first and skip this entirely (unrestricted, as before).
+ */
+export async function isSiteAssignedToUser(userId, siteId) {
+  const [rows] = await pool.execute(
+    `SELECT 1 FROM user_site_assignments WHERE user_id = :userId AND site_id = :siteId LIMIT 1`,
+    { userId, siteId },
+  );
+  return Boolean(rows[0]);
+}
+
+/** All site ids a user is assigned to — used to scope a Regional Admin's list views down to
+ * their own region when no specific `?siteId=` filter is given. */
+export async function assignedSiteIdsForUser(userId) {
+  const [rows] = await pool.execute(
+    `SELECT site_id FROM user_site_assignments WHERE user_id = :userId`,
+    { userId },
+  );
+  return rows.map((r) => r.site_id);
+}
+
 export function conflict(res, message = 'expectedRevision does not match current revision') {
   return res.status(409).json({ error: 'CONFLICT', message });
 }

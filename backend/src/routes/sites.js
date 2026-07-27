@@ -4,6 +4,7 @@ import pool from '../db.js';
 import {
   badRequest,
   conflict,
+  isSiteAssignedToUser,
   lifecycleFromRow,
   newId,
   notFound,
@@ -265,23 +266,16 @@ async function loadOfficeHours(siteId) {
 }
 
 /**
- * Super Admin may write any site's office hours; Regional Admin only their assigned sites
- * (per the permission matrix referenced in this phase's spec). NOTE: as of this phase,
- * `requireSuperAdminOrAllowedTerminalDevice` (the ambient `/v1/admin` gate in index.js) blocks
- * any REGIONAL_ADMIN-role real user before this handler is ever reached — this check is
- * forward-prep for when that gate is widened to admit Regional Admin, not something reachable
- * today. Do not assume a Regional Admin can actually call this endpoint yet; see this phase's
- * handoff report.
+ * Super Admin may read/write any site's office hours; Regional Admin only their assigned
+ * sites, for both read and write here (unlike some resources, read isn't broader than write
+ * for this one). `requireSuperAdminOrAllowlistedRole` (the ambient `/v1/admin` gate in
+ * index.js) now admits a REGIONAL_ADMIN token to this exact route — that outer gate controls
+ * *which routes* Regional Admin can reach at all; this function controls *which rows* (their
+ * own assigned sites only). Both layers are required together, neither alone is sufficient.
  */
-async function assertMayWriteOfficeHours(req, siteId) {
+async function assertMayAccessOfficeHours(req, siteId) {
   if (req.auth?.role === 'SUPER_ADMIN') return true;
-  if (req.auth?.role === 'REGIONAL_ADMIN') {
-    const [rows] = await pool.execute(
-      `SELECT 1 FROM user_site_assignments WHERE user_id = :userId AND site_id = :siteId LIMIT 1`,
-      { userId: req.auth.sub, siteId },
-    );
-    return Boolean(rows[0]);
-  }
+  if (req.auth?.role === 'REGIONAL_ADMIN') return isSiteAssignedToUser(req.auth.sub, siteId);
   return false;
 }
 
@@ -291,6 +285,9 @@ router.get('/:id/office-hours', async (req, res) => {
     { id: req.params.id },
   );
   if (!existing[0]) return notFound(res, 'Site not found');
+  // Out-of-scope reads as "not found", not "forbidden" — avoids confirming a site's existence
+  // to a Regional Admin who isn't assigned to it.
+  if (!(await assertMayAccessOfficeHours(req, req.params.id))) return notFound(res, 'Site not found');
   return res.json(await loadOfficeHours(req.params.id));
 });
 
@@ -310,7 +307,7 @@ router.patch('/:id/office-hours', async (req, res) => {
   );
   if (!existingSite[0]) return notFound(res, 'Site not found');
 
-  if (!(await assertMayWriteOfficeHours(req, req.params.id))) {
+  if (!(await assertMayAccessOfficeHours(req, req.params.id))) {
     return res.status(403).json({ error: 'FORBIDDEN', message: "Not permitted to edit this site's office hours" });
   }
 

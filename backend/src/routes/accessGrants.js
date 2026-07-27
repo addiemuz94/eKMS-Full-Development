@@ -2,8 +2,10 @@ import { Router } from 'express';
 import { z } from 'zod';
 import pool from '../db.js';
 import {
+  assignedSiteIdsForUser,
   badRequest,
   conflict,
+  isSiteAssignedToUser,
   lifecycleFromRow,
   newId,
   notFound,
@@ -12,6 +14,14 @@ import {
 } from '../util.js';
 
 const router = Router();
+
+/** Same two-layer model as sites.js's office-hours / terminals.js's cabinet-settings checks —
+ * see isSiteAssignedToUser's doc. Regional Admin may only act on grants for their assigned sites. */
+async function assertMayAccessGrantSite(req, siteId) {
+  if (req.auth?.role === 'SUPER_ADMIN') return true;
+  if (req.auth?.role === 'REGIONAL_ADMIN') return isSiteAssignedToUser(req.auth.sub, siteId);
+  return false;
+}
 
 async function keyIdsForGrant(grantId) {
   const [rows] = await pool.execute(
@@ -49,11 +59,25 @@ router.get('/', async (req, res) => {
   const state = req.query.state || 'ACTIVE';
   const siteId = req.query.siteId;
   const userId = req.query.userId;
+
+  if (siteId && req.auth?.role === 'REGIONAL_ADMIN' && !(await isSiteAssignedToUser(req.auth.sub, siteId))) {
+    return res.status(403).json({ error: 'FORBIDDEN', message: 'Not permitted to view grants for this site' });
+  }
+
   let sql = `SELECT * FROM access_grants WHERE lifecycle_state = :state`;
   const params = { state };
   if (siteId) {
     sql += ` AND site_id = :siteId`;
     params.siteId = siteId;
+  } else if (req.auth?.role === 'REGIONAL_ADMIN') {
+    // No specific siteId requested — scope the list down to the Regional Admin's own region
+    // rather than 403ing, same "view everything I'm allowed to see" semantics as a filtered list.
+    const assignedSiteIds = await assignedSiteIdsForUser(req.auth.sub);
+    if (assignedSiteIds.length === 0) return res.json({ items: [] });
+    sql += ` AND site_id IN (${assignedSiteIds.map((_, i) => `:site${i}`).join(', ')})`;
+    assignedSiteIds.forEach((id, i) => {
+      params[`site${i}`] = id;
+    });
   }
   if (userId) {
     sql += ` AND user_id = :userId`;
@@ -73,6 +97,11 @@ router.get('/:id', async (req, res) => {
     id: req.params.id,
   });
   if (!rows[0]) return notFound(res, 'Access grant not found');
+  // Out-of-scope reads as "not found", not "forbidden" — avoids confirming a grant's existence
+  // to a Regional Admin who isn't assigned to its site.
+  if (!(await assertMayAccessGrantSite(req, rows[0].site_id))) {
+    return notFound(res, 'Access grant not found');
+  }
   return res.json(mapGrant(rows[0], await keyIdsForGrant(rows[0].id)));
 });
 
@@ -86,6 +115,10 @@ router.post('/', async (req, res) => {
   });
   const parsed = schema.safeParse(req.body);
   if (!parsed.success) return badRequest(res, 'Invalid access grant payload');
+
+  if (!(await assertMayAccessGrantSite(req, parsed.data.siteId))) {
+    return res.status(403).json({ error: 'FORBIDDEN', message: 'Not permitted to create a grant for this site' });
+  }
 
   const id = newId();
   const now = nowMs();
@@ -144,6 +177,14 @@ router.patch('/:id', async (req, res) => {
     { id: req.params.id },
   );
   if (!existing[0]) return notFound(res, 'Access grant not found');
+  // Out-of-scope reads as "not found" (existing site), but moving a grant INTO an out-of-scope
+  // site is a distinct, explicit write attempt — that gets a real 403 below, not a 404.
+  if (!(await assertMayAccessGrantSite(req, existing[0].site_id))) {
+    return notFound(res, 'Access grant not found');
+  }
+  if (!(await assertMayAccessGrantSite(req, parsed.data.siteId))) {
+    return res.status(403).json({ error: 'FORBIDDEN', message: 'Not permitted to move this grant to that site' });
+  }
   if (Number(existing[0].revision) !== parsed.data.expectedRevision) return conflict(res);
 
   const now = nowMs();

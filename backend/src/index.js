@@ -1,7 +1,7 @@
 import cors from 'cors';
 import dotenv from 'dotenv';
 import express from 'express';
-import { requireAuth, requireSuperAdmin, requireSuperAdminOrAllowedTerminalDevice } from './middleware/auth.js';
+import { requireAuth, requireSuperAdmin, requireSuperAdminOrAllowlistedRole } from './middleware/auth.js';
 import { idempotency } from './middleware/idempotency.js';
 import { login, refresh } from './routes/auth.js';
 import { pairWithCode } from './routes/pairing.js';
@@ -76,7 +76,7 @@ app.post('/v1/auth/refresh', refresh);
 app.post('/v1/terminal/pair-with-code', pairWithCode);
 
 const admin = express.Router();
-admin.use(requireAuth, requireSuperAdminOrAllowedTerminalDevice, idempotency);
+admin.use(requireAuth, requireSuperAdminOrAllowlistedRole, idempotency);
 admin.use('/users/:userId/credentials', credentialsRouter);
 admin.use('/sites', sitesRouter);
 admin.use('/terminals', terminalsRouter);

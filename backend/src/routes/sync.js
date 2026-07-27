@@ -7,7 +7,7 @@ const bootstrapRouter = Router();
 const conflictsRouter = Router();
 
 /** TERMINAL_DEVICE-scoped tokens have no real user behind them — never attribute an audit
- * record's actorUserId to a terminal's own id. See requireSuperAdminOrAllowedTerminalDevice.
+ * record's actorUserId to a terminal's own id. See requireSuperAdminOrAllowlistedRole.
  * (`conflictsRouter` is admin-only and unreachable by terminal tokens, so this only matters
  * for `bootstrapRouter`'s routes.) */
 function actorUserIdFor(req) {

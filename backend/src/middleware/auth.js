@@ -45,18 +45,74 @@ const TERMINAL_DEVICE_ALLOWED_ROUTES = [
 ];
 
 /**
+ * Exact (method, path) allowlist for REGIONAL_ADMIN-scoped real users, mounted under
+ * `/v1/admin` — same structure and same "exhaustive, not assumed" discipline as
+ * TERMINAL_DEVICE_ALLOWED_ROUTES above. Derived from the confirmed 17-item Admin Menu
+ * permission matrix's Regional Admin "Edit" column, by reading the actual route files
+ * (terminals.js's cabinet-settings routes, sites.js's office-hours routes, accessGrants.js,
+ * vendorPasskeyRequests.js) rather than inventing paths.
+ *
+ * This allowlist controls *which routes* a Regional Admin token can reach at all — it does
+ * NOT by itself scope them to their own assigned sites. Every route below additionally
+ * enforces its own site-membership check in-handler (`isSiteAssignedToUser`/
+ * `assignedSiteIdsForUser` in util.js, wrapped per-file as `assertMayAccess*`) against
+ * `user_site_assignments`; both layers are required together, neither is sufficient alone.
+ * Do not widen this list without re-deriving it from the permission matrix.
+ *
+ * Deliberately EXCLUDES:
+ * - `/users` (personnel record CRUD) — the matrix's "Personnel/key access-grant management"
+ *   item was interpreted as grants only, not personnel records themselves (personnel
+ *   registration stays a Super-Admin-driven wizard step). Flagged for confirmation — widen
+ *   this if that interpretation is wrong.
+ * - `DELETE /access-grants/:id` — the matrix only calls for list/create/update.
+ * - `/key-checkouts` (a View-only matrix item, not Edit, and a separate not-yet-made decision).
+ * - All terminal/site CRUD, MAC address, server address, activation code, and everything else
+ *   marked Hidden/Super-Admin-only in the matrix.
+ */
+const REGIONAL_ADMIN_ALLOWED_ROUTES = [
+  // Terminal cabinet behavioral settings — Key node setting, Key Return Certification, return/
+  // retrieval video toggles, Take Warning Time, Key Return (Door-Close) Warning Time all live on
+  // this one route (terminal_cabinet_settings, migration 007).
+  { method: 'GET', pattern: /^\/terminals\/[^/]+\/cabinet-settings$/ },
+  { method: 'PATCH', pattern: /^\/terminals\/[^/]+\/cabinet-settings$/ },
+  // Per-site office hours.
+  { method: 'GET', pattern: /^\/sites\/[^/]+\/office-hours$/ },
+  { method: 'PATCH', pattern: /^\/sites\/[^/]+\/office-hours$/ },
+  // Access grants: list/get/create/update only, not delete.
+  { method: 'GET', pattern: /^\/access-grants$/ },
+  { method: 'GET', pattern: /^\/access-grants\/[^/]+$/ },
+  { method: 'POST', pattern: /^\/access-grants$/ },
+  { method: 'PATCH', pattern: /^\/access-grants\/[^/]+$/ },
+  // Vendor passkey requests: list/get/create/approve/reject.
+  { method: 'GET', pattern: /^\/vendor-passkey-requests$/ },
+  { method: 'GET', pattern: /^\/vendor-passkey-requests\/[^/]+$/ },
+  { method: 'POST', pattern: /^\/vendor-passkey-requests$/ },
+  { method: 'POST', pattern: /^\/vendor-passkey-requests\/[^/]+\/approve$/ },
+  { method: 'POST', pattern: /^\/vendor-passkey-requests\/[^/]+\/reject$/ },
+];
+
+/**
  * Replaces `requireSuperAdmin` ONLY at the `/v1/admin` router's mount point. Real Super
  * Admin users pass through exactly as before (unconditional, unchanged). A TERMINAL_DEVICE
- * token only passes for the exact routes in TERMINAL_DEVICE_ALLOWED_ROUTES; everything else
+ * token only passes for the exact routes in TERMINAL_DEVICE_ALLOWED_ROUTES; a REGIONAL_ADMIN
+ * token only passes for the exact routes in REGIONAL_ADMIN_ALLOWED_ROUTES. Everything else
  * under `/v1/admin` — and all of `/v1/audit` and `/v1/reports`, which still use the plain
- * `requireSuperAdmin` — remains 403 for a terminal token, same least-privilege intent as today.
+ * `requireSuperAdmin` — remains 403 for both, same least-privilege intent as today.
  */
-export function requireSuperAdminOrAllowedTerminalDevice(req, res, next) {
+export function requireSuperAdminOrAllowlistedRole(req, res, next) {
   if (req.auth?.role === 'SUPER_ADMIN') {
     return next();
   }
   if (req.auth?.role === 'TERMINAL_DEVICE') {
     const allowed = TERMINAL_DEVICE_ALLOWED_ROUTES.some(
+      (route) => route.method === req.method && route.pattern.test(req.path),
+    );
+    if (allowed) {
+      return next();
+    }
+  }
+  if (req.auth?.role === 'REGIONAL_ADMIN') {
+    const allowed = REGIONAL_ADMIN_ALLOWED_ROUTES.some(
       (route) => route.method === req.method && route.pattern.test(req.path),
     );
     if (allowed) {
@@ -96,7 +152,7 @@ export function verifyRefreshToken(token) {
 }
 
 /**
- * TERMINAL_DEVICE-scoped tokens (see requireSuperAdminOrAllowedTerminalDevice above).
+ * TERMINAL_DEVICE-scoped tokens (see requireSuperAdminOrAllowlistedRole above).
  * `sub` is a terminals.id, never a users.id — routes that read `req.auth.sub` expecting a
  * user (e.g. audit `actorUserId`) must check `req.auth.role` first. Same secret/algorithm
  * as user tokens, so `requireAuth`/`verifyRefreshToken` need no changes to accept these —

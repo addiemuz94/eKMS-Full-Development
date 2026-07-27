@@ -4,6 +4,7 @@ import pool from '../db.js';
 import {
   badRequest,
   conflict,
+  isSiteAssignedToUser,
   lifecycleFromRow,
   newId,
   notFound,
@@ -16,6 +17,14 @@ const router = Router();
 
 // docs/Key Cabinet Communication Protocol.md §7.1: key node addresses range 1-127.
 const nodeCountSchema = z.number().int().min(1).max(127);
+
+/** Same two-layer model as sites.js's office-hours check — see isSiteAssignedToUser's doc.
+ * Regional Admin may read/write cabinet-settings only for terminals at their assigned sites. */
+async function assertMayAccessCabinetSettings(req, siteId) {
+  if (req.auth?.role === 'SUPER_ADMIN') return true;
+  if (req.auth?.role === 'REGIONAL_ADMIN') return isSiteAssignedToUser(req.auth.sub, siteId);
+  return false;
+}
 
 function mapTerminal(row) {
   return {
@@ -105,10 +114,15 @@ router.get('/:id', async (req, res) => {
 
 router.get('/:id/cabinet-settings', async (req, res) => {
   const [existing] = await pool.execute(
-    `SELECT id FROM terminals WHERE id = :id AND lifecycle_state = 'ACTIVE' LIMIT 1`,
+    `SELECT id, site_id FROM terminals WHERE id = :id AND lifecycle_state = 'ACTIVE' LIMIT 1`,
     { id: req.params.id },
   );
   if (!existing[0]) return notFound(res, 'Terminal not found');
+  // Out-of-scope reads as "not found", not "forbidden" — avoids confirming a terminal's
+  // existence to a Regional Admin who isn't assigned to its site.
+  if (!(await assertMayAccessCabinetSettings(req, existing[0].site_id))) {
+    return notFound(res, 'Terminal not found');
+  }
   return res.json(await loadCabinetSettings(req.params.id));
 });
 
@@ -125,10 +139,14 @@ router.patch('/:id/cabinet-settings', async (req, res) => {
   if (!parsed.success) return badRequest(res, 'Invalid cabinet settings update');
 
   const [existingTerminal] = await pool.execute(
-    `SELECT id FROM terminals WHERE id = :id AND lifecycle_state = 'ACTIVE' LIMIT 1`,
+    `SELECT id, site_id FROM terminals WHERE id = :id AND lifecycle_state = 'ACTIVE' LIMIT 1`,
     { id: req.params.id },
   );
   if (!existingTerminal[0]) return notFound(res, 'Terminal not found');
+
+  if (!(await assertMayAccessCabinetSettings(req, existingTerminal[0].site_id))) {
+    return res.status(403).json({ error: 'FORBIDDEN', message: "Not permitted to edit this terminal's cabinet settings" });
+  }
 
   await insertDefaultCabinetSettings(pool, req.params.id);
 

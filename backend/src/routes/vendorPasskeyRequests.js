@@ -2,9 +2,26 @@ import crypto from 'crypto';
 import { Router } from 'express';
 import { z } from 'zod';
 import pool from '../db.js';
-import { badRequest, conflict, newId, notFound, nowMs, writeAudit } from '../util.js';
+import {
+  assignedSiteIdsForUser,
+  badRequest,
+  conflict,
+  isSiteAssignedToUser,
+  newId,
+  notFound,
+  nowMs,
+  writeAudit,
+} from '../util.js';
 
 const router = Router();
+
+/** Same two-layer model as sites.js/terminals.js/accessGrants.js — see isSiteAssignedToUser's
+ * doc. Regional Admin may only act on vendor passkey requests for their assigned sites. */
+async function assertMayAccessPasskeyRequestSite(req, siteId) {
+  if (req.auth?.role === 'SUPER_ADMIN') return true;
+  if (req.auth?.role === 'REGIONAL_ADMIN') return isSiteAssignedToUser(req.auth.sub, siteId);
+  return false;
+}
 
 // Placeholder duration — no expiry length was specified for this deliberately minimal schema.
 // Chosen to comfortably cover a single vendor site visit, not a short pairing-style window;
@@ -31,12 +48,25 @@ router.get('/', async (req, res) => {
   const { siteId } = req.query;
   const status = req.query.status || 'PENDING';
 
+  if (siteId && req.auth?.role === 'REGIONAL_ADMIN' && !(await isSiteAssignedToUser(req.auth.sub, siteId))) {
+    return res.status(403).json({ error: 'FORBIDDEN', message: 'Not permitted to view requests for this site' });
+  }
+
   let sql = `SELECT * FROM vendor_passkey_requests`;
   const params = {};
   const conditions = [];
   if (siteId) {
     conditions.push(`site_id = :siteId`);
     params.siteId = siteId;
+  } else if (req.auth?.role === 'REGIONAL_ADMIN') {
+    // No specific siteId requested — scope the list down to the Regional Admin's own region
+    // rather than 403ing, same semantics as accessGrants.js's list route.
+    const assignedSiteIds = await assignedSiteIdsForUser(req.auth.sub);
+    if (assignedSiteIds.length === 0) return res.json({ items: [] });
+    conditions.push(`site_id IN (${assignedSiteIds.map((_, i) => `:site${i}`).join(', ')})`);
+    assignedSiteIds.forEach((id, i) => {
+      params[`site${i}`] = id;
+    });
   }
   if (status !== 'ALL') {
     conditions.push(`status = :status`);
@@ -54,6 +84,11 @@ router.get('/:id', async (req, res) => {
     id: req.params.id,
   });
   if (!rows[0]) return notFound(res, 'Vendor passkey request not found');
+  // Out-of-scope reads as "not found", not "forbidden" — avoids confirming a request's
+  // existence to a Regional Admin who isn't assigned to its site.
+  if (!(await assertMayAccessPasskeyRequestSite(req, rows[0].site_id))) {
+    return notFound(res, 'Vendor passkey request not found');
+  }
   return res.json(mapRequest(rows[0]));
 });
 
@@ -64,6 +99,10 @@ router.post('/', async (req, res) => {
   });
   const parsed = schema.safeParse(req.body);
   if (!parsed.success) return badRequest(res, 'Invalid vendor passkey request payload');
+
+  if (!(await assertMayAccessPasskeyRequestSite(req, parsed.data.siteId))) {
+    return res.status(403).json({ error: 'FORBIDDEN', message: 'Not permitted to create a request for this site' });
+  }
 
   const [vendor] = await pool.execute(
     `SELECT id FROM users WHERE id = :id AND role = 'VENDOR' AND lifecycle_state = 'ACTIVE' LIMIT 1`,
@@ -101,6 +140,10 @@ router.post('/:id/approve', async (req, res) => {
     id: req.params.id,
   });
   if (!existing[0]) return notFound(res, 'Vendor passkey request not found');
+  // Out-of-scope reads as "not found" here too, same reasoning as the GET routes above.
+  if (!(await assertMayAccessPasskeyRequestSite(req, existing[0].site_id))) {
+    return notFound(res, 'Vendor passkey request not found');
+  }
   if (existing[0].status !== 'PENDING') {
     return conflict(res, 'Request is no longer pending');
   }
@@ -149,6 +192,9 @@ router.post('/:id/reject', async (req, res) => {
     id: req.params.id,
   });
   if (!existing[0]) return notFound(res, 'Vendor passkey request not found');
+  if (!(await assertMayAccessPasskeyRequestSite(req, existing[0].site_id))) {
+    return notFound(res, 'Vendor passkey request not found');
+  }
   if (existing[0].status !== 'PENDING') {
     return conflict(res, 'Request is no longer pending');
   }

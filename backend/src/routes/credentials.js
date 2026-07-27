@@ -28,7 +28,7 @@ function mapCred(row) {
 }
 
 /** TERMINAL_DEVICE-scoped tokens have no real user behind them — never attribute an audit
- * record's actorUserId to a terminal's own id. See requireSuperAdminOrAllowedTerminalDevice. */
+ * record's actorUserId to a terminal's own id. See requireSuperAdminOrAllowlistedRole. */
 function actorUserIdFor(req) {
   return req.auth?.role === 'TERMINAL_DEVICE' ? null : req.auth.sub;
 }
