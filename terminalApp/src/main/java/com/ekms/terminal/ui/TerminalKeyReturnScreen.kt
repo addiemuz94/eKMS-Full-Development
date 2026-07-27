@@ -16,6 +16,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -206,11 +207,19 @@ fun TerminalKeyReturnScreen(
         )
     }
 
-    // Wrong-slot detection forces full-volume beep on top of the normal 5s-from-door-open
-    // escalation, restoring to whatever beepLoud already was once the wrong-slot clears.
-    LaunchedEffect(beeping, beepLoud, wrongSlotNodeAddress) {
+    // Keyed on `beeping` alone — neither `beepLoud` nor `wrongSlotNodeAddress` may restart
+    // this loop. Same bug as the Take Flow screen: changing beepLoud used to be a
+    // LaunchedEffect key, so the 5s-escalation callback (which flips beepLoud and fires the
+    // voice line together) cancelled and relaunched this coroutine right at that moment.
+    // rememberUpdatedState lets each iteration read the live values without that
+    // cancel/relaunch; wrong-slot detection still forces full-volume beep on top of the
+    // normal 5s-from-door-open escalation, restoring to whatever beepLoud already was once
+    // the wrong-slot clears.
+    val currentBeepLoud by rememberUpdatedState(beepLoud)
+    val currentWrongSlotNodeAddress by rememberUpdatedState(wrongSlotNodeAddress)
+    LaunchedEffect(beeping) {
         while (beeping) {
-            audio.beep(loud = beepLoud || wrongSlotNodeAddress != null)
+            audio.beep(loud = currentBeepLoud || currentWrongSlotNodeAddress != null)
             delay(BEEP_INTERVAL_MILLIS)
         }
     }

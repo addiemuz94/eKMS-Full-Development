@@ -16,6 +16,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -157,9 +158,15 @@ fun TerminalKeyTakeScreen(
         )
     }
 
-    LaunchedEffect(beeping, beepLoud) {
+    // Keyed on `beeping` alone — `beepLoud` must NOT restart this loop. Changing beepLoud
+    // used to be a LaunchedEffect key, so the 5s-escalation callback (which flips beepLoud
+    // and fires the voice line in the same breath) cancelled and relaunched this coroutine
+    // right at that exact moment. rememberUpdatedState lets each iteration read the live
+    // value without that cancel/relaunch.
+    val currentBeepLoud by rememberUpdatedState(beepLoud)
+    LaunchedEffect(beeping) {
         while (beeping) {
-            audio.beep(loud = beepLoud)
+            audio.beep(loud = currentBeepLoud)
             delay(BEEP_INTERVAL_MILLIS)
         }
     }
