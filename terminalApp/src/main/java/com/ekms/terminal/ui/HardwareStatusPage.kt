@@ -28,9 +28,10 @@ import androidx.compose.ui.unit.dp
 import com.ekms.terminal.hardware.CabinetHardwareState
 import com.ekms.terminal.ui.theme.LocalEkmsColors
 import com.ekms.terminal.ui.theme.SoftSuccessOnContainer
-import com.ekms.terminal.ui.theme.SoftSuccessContainer
-import com.ekms.terminal.ui.theme.SoftWarningContainer
 import com.ekms.terminal.ui.theme.SoftWarningOnContainer
+import com.ekms.terminal.ui.theme.SoftTone
+import com.ekms.terminal.ui.theme.SoftToneColors
+import com.ekms.terminal.ui.theme.softToneColors
 import com.ekms.terminal.ui.theme.readout
 
 /**
@@ -141,19 +142,23 @@ fun HardwareStatusPage(
     }
 }
 
+/**
+ * Phase 9B fix: LIKELY/OK now resolve via [softToneColors] instead of referencing
+ * `SoftWarningContainer`/`SoftSuccessContainer` directly (light-mode-only hex, flagged in the
+ * Phase 9A audit). Also wires the `info` semantic token (added in Phase 9A, never connected)
+ * into CHECK's color — it previously fell back to a plain neutral surface. FAIL is untouched:
+ * Material3's own `errorContainer`/`onErrorContainer` were already theme-correct in both modes.
+ */
 @Composable
 internal fun ConnectionHintCard(hint: ConnectionHint) {
-    val container = when (hint.severity) {
-        HintSeverity.LIKELY -> SoftWarningContainer
-        HintSeverity.CHECK -> MaterialTheme.colorScheme.surfaceContainerLow
-        HintSeverity.OK -> SoftSuccessContainer
-        HintSeverity.FAIL -> MaterialTheme.colorScheme.errorContainer
-    }
-    val titleColor = when (hint.severity) {
-        HintSeverity.LIKELY -> SoftWarningOnContainer
-        HintSeverity.CHECK -> MaterialTheme.colorScheme.onSurface
-        HintSeverity.OK -> SoftSuccessOnContainer
-        HintSeverity.FAIL -> MaterialTheme.colorScheme.onErrorContainer
+    val (container, titleColor) = when (hint.severity) {
+        HintSeverity.LIKELY -> softToneColors(SoftTone.WARNING)
+        HintSeverity.CHECK -> softToneColors(SoftTone.INFO)
+        HintSeverity.OK -> softToneColors(SoftTone.SUCCESS)
+        HintSeverity.FAIL -> SoftToneColors(
+            MaterialTheme.colorScheme.errorContainer,
+            MaterialTheme.colorScheme.onErrorContainer,
+        )
     }
     SoftCard(containerColor = container, contentPadding = 14.dp) {
         Text(

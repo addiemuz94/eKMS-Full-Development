@@ -2,6 +2,7 @@ package com.ekms.terminal.ui
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -91,6 +92,8 @@ import com.ekms.terminal.data.TerminalSession
 import com.ekms.terminal.data.TerminalServerCache
 import com.ekms.terminal.data.TerminalSyncCoordinator
 import com.ekms.terminal.data.TerminalSyncOutbox
+import com.ekms.terminal.data.TerminalThemeMode
+import com.ekms.terminal.data.TerminalThemePreferences
 import com.ekms.terminal.data.TerminalUser
 import com.ekms.terminal.data.TerminalUserRole
 import com.ekms.terminal.hardware.CabinetHardwareController
@@ -142,6 +145,24 @@ fun TerminalAdminApp() {
             ?: "terminal-unknown"
     }
 
+    // Phase 9 design-system rework: device-local dark/light preference, same local-only
+    // footing as serverAddress/activationCode (never backend-synced). SYSTEM is the
+    // first-launch default; the corner toggle on TerminalLoginScreen sets an explicit
+    // LIGHT/DARK override from then on.
+    val themePreferences = remember(applicationContext) { TerminalThemePreferences(applicationContext) }
+    var themeMode by remember { mutableStateOf(themePreferences.mode) }
+    val systemInDarkTheme = isSystemInDarkTheme()
+    val isDarkTheme = when (themeMode) {
+        TerminalThemeMode.SYSTEM -> systemInDarkTheme
+        TerminalThemeMode.LIGHT -> false
+        TerminalThemeMode.DARK -> true
+    }
+    val onToggleTheme: () -> Unit = {
+        val next = if (isDarkTheme) TerminalThemeMode.LIGHT else TerminalThemeMode.DARK
+        themeMode = next
+        themePreferences.mode = next
+    }
+
     // Fresh/unpaired terminal: the pairing-code screen replaces standby/login/Admin Menu
     // entirely until a Super Admin-issued 6-digit code has been redeemed — gated on cabinetId
     // alone (not apiClient.isAuthenticated) so a later personnel sign-out, which clears the
@@ -156,7 +177,7 @@ fun TerminalAdminApp() {
         var pairingSubmitting by remember { mutableStateOf(false) }
         var pairingError by remember { mutableStateOf<String?>(null) }
 
-        EkmsTerminalTheme {
+        EkmsTerminalTheme(darkTheme = isDarkTheme) {
             Scaffold(
                 topBar = { TopAppBar(title = { Text("eKMS Terminal · Pairing") }) },
             ) { padding ->
@@ -1027,7 +1048,7 @@ fun TerminalAdminApp() {
     }
 
     if (showStartupDiagnostics) {
-        EkmsTerminalTheme {
+        EkmsTerminalTheme(darkTheme = isDarkTheme) {
             Scaffold(
                 topBar = { TopAppBar(title = { Text("eKMS Terminal · Startup Diagnostics") }) },
             ) { padding ->
@@ -1045,7 +1066,7 @@ fun TerminalAdminApp() {
         return
     }
 
-    EkmsTerminalTheme {
+    EkmsTerminalTheme(darkTheme = isDarkTheme) {
         Scaffold(
             topBar = {
                 TopAppBar(
@@ -1144,6 +1165,8 @@ fun TerminalAdminApp() {
                     null -> TerminalLoginScreen(
                         padding = padding,
                         onSelectMethod = { method -> loginMethod = method },
+                        isDarkTheme = isDarkTheme,
+                        onToggleTheme = onToggleTheme,
                     )
 
                     LoginMethod.PASSWORD -> TerminalPasswordLoginScreen(
@@ -1741,19 +1764,22 @@ fun TerminalAdminApp() {
                 title = { Text(action.title) },
                 text = { Text(action.message) },
                 confirmButton = {
-                    Button(
+                    // Phase 9 design-system pilot: IconActionButton in a real confirm/cancel
+                    // context, per CLAUDE.md Phase 9 scope (pilot screens only this pass).
+                    IconActionButton(
+                        type = ActionButtonType.ACCEPT,
+                        label = "Confirm physical action",
                         onClick = {
                             action.onConfirm()
                             pendingPhysicalAction = null
                         },
-                    ) {
-                        Text("Confirm physical action")
-                    }
+                    )
                 },
                 dismissButton = {
-                    TextButton(onClick = { pendingPhysicalAction = null }) {
-                        Text("Cancel")
-                    }
+                    IconActionButton(
+                        type = ActionButtonType.CANCEL,
+                        onClick = { pendingPhysicalAction = null },
+                    )
                 },
             )
         }

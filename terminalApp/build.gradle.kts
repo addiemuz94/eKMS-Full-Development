@@ -41,6 +41,13 @@ dependencies {
     implementation(libs.androidx.activity.compose)
     implementation(libs.androidx.lifecycle.runtime.ktx)
     implementation(libs.androidx.compose.material3)
+    // Icon glyphs for IconActionButton and the login method tiles (Phase 9 design-system
+    // rework). Started on material-icons-core (Phase 9A), swapped to material-icons-extended
+    // (Phase 9A hardware-bug fix) because Fingerprint/Face/Nfc/VpnKey aren't in core — only
+    // the ~20-icon base set (Close/Check/Add etc.) is. Flagged size tradeoff: extended is a
+    // much larger artifact (bundles the full classic Material icon set, several MB vs core's
+    // near-nothing) — accepted because the specific glyphs the login screen needs live there.
+    implementation(libs.androidx.compose.material.icons.extended)
     implementation(libs.kotlinx.serialization.json)
     implementation(libs.kotlinx.coroutines.android)
     implementation(libs.ktor.client.core)

@@ -59,6 +59,27 @@ import kotlinx.coroutines.delay
  * failed-take / abandoned-take / door-left-open) so the caller can log it;
  * a door-left-open event does not end the flow by itself, since the
  * screen keeps waiting for the door regardless.
+ *
+ * Phase 9E (visual/theme only — no timer/state-transition/hardware-call code touched, given
+ * this screen's two known unresolved hardware bugs, beep-continuity and Take Warning Time/
+ * door-left-open timing): the same [TerminalKeyTakeScreen] instance is reused verbatim for both
+ * the single-key flow (`SuperAdminRoute.KEY_RETRIEVAL`) and the per-node view inside the Key
+ * Menu multi-key queue (`SuperAdminRoute.KEY_MENU`, see `TerminalAdminApp.kt`) — there is no
+ * separate "queued" wrapper UI to reskin, they're the same composable. Door-left-open
+ * (`WaitingForDoorClose(warningExpired = true)`) now passes `strongAttention = true` to
+ * [SoftWaitPanel] (new param, defaults `false`) for a `colors.warning`-bordered card — the same
+ * warning tone [HintSeverity]/[SoftAssistChip] already use, not a new color — since before this
+ * fix that state rendered with the exact same [StatusTone.ATTENTION] look as an ordinary
+ * "still waiting, nothing wrong yet" wait. No numeric countdown/timer display exists anywhere
+ * in this screen to reskin — confirmed by reading the code, not assumed — so none was added.
+ * No manual/fallback demo control exists here either (that's `TerminalKeyReturnScreen`'s
+ * `resolveReturningKey` null-key tap convenience, a Return Flow concept — out of scope here and
+ * untouched). **Flagged, not fixed**: [SoftWaitPanel]'s card (`elevation = 0.dp`, no border by
+ * default) has the same "may blend into the light-mode background" issue Phase 9A found and
+ * fixed in `SoftScanTile` — but `SoftWaitPanel` is also used by `TerminalKeyReturnScreen`
+ * (Return Flow, explicitly off-limits this pass), so fixing its default look here would bleed
+ * into Return Flow's rendering. Left as-is; the new `strongAttention` param only affects the one
+ * state that opts in.
  */
 @Composable
 fun TerminalKeyTakeScreen(
@@ -225,6 +246,11 @@ fun TerminalKeyTakeScreen(
                 else -> null
             },
             assistAttention = true,
+            // Phase 9E: door-left-open (Take Warning Time already expired, door still open) is
+            // the one state that should read as more urgent than an ordinary ATTENTION wait —
+            // purely a presentational read of the same `warningExpired` value the untouched
+            // state machine already computes above, not a new timer or condition.
+            strongAttention = (stage as? TakeStage.WaitingForDoorClose)?.warningExpired == true,
             modifier = Modifier.widthIn(max = 640.dp),
         )
     }

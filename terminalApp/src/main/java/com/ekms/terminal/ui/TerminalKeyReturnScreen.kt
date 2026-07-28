@@ -1,13 +1,19 @@
 package com.ekms.terminal.ui
 
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.HelpOutline
+import androidx.compose.material.icons.filled.VpnKey
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -75,6 +81,44 @@ import kotlinx.coroutines.delay
  * are three genuinely different failure modes (never inserted / inserted
  * but door left open / successful close) and are logged distinctly, never
  * collapsed into one case.
+ *
+ * Phase 9F (visual/theme only — a stricter pass than Take Flow's, given the attemptId-keyed
+ * abandonment-race fix and wrong-slot sweep here are both still only "believed correct by code
+ * review, not hardware-reverified"; no `LaunchedEffect` key, `attemptId` comparison, polling
+ * logic, `CardUidResolver` call, or timing constant was touched — see `git diff` for proof, not
+ * just this claim):
+ * - The wrong-slot card now has a `2.dp` `colorScheme.error`-bordered, `4.dp`-elevated treatment
+ *   (same escalation recipe as Take Flow's `strongAttention`, reusing the already-established
+ *   alarm/danger tone this card's `errorContainer` fill already used — not a new tone tier) plus
+ *   a distinguishing icon: [Icons.Filled.VpnKey] for a confirmed wrong key, [Icons.Filled.HelpOutline]
+ *   for unresolved presence — wording already distinguished the two ("Wrong key" vs "Unrecognized
+ *   item"); the icon is additive, same underlying alarm tone and text for both, per the
+ *   established "equally anomalous" design intent (`connectionHints`' doc, `CardUidResolver`'s
+ *   permanent NFC UID rule).
+ * - **Flagged, not implemented**: the task asked for a "5s-escalation state" reskin analogous to
+ *   Take Flow's door-left-open, but no such visual state exists here to reskin — `beepLoud`
+ *   (the 5s threshold flag) only ever drives `audio.beep(loud = ...)`; it never changes `stage`,
+ *   `title`, `message`, or `assistText` today, unlike Take Flow's `warningExpired`, which was
+ *   already a dedicated, pre-existing stage field with its own render branches before this pass
+ *   touched anything. Making the 5s mark visible would mean adding a brand-new render-time
+ *   condition where none exists — a real, if small, behavior addition, not a reskin of something
+ *   already there. Left untouched and flagged here per the hard constraint's "stop and flag it."
+ * - **No dedicated Success render state exists** — matching Key Take Flow's identical shape,
+ *   a successful return calls `onCompleted()` immediately with no intermediate success screen
+ *   to reskin.
+ * - `checkoutSummary`'s card ("Checked out by X · Ym ago", built in `TerminalAdminApp.kt` from
+ *   `TerminalCheckoutStore`) gets the same light `1.dp` `outlineVariant` border used elsewhere in
+ *   this sweep for visibility in light mode — it was a bare, borderless `SoftCard` before.
+ * - `resolveReturningKey` itself has no presentation to reskin — it's a pure `ManagedKey?`
+ *   lookup, no UI. Its actual on-screen control (the "Simulate key-card return" button) lives in
+ *   `TerminalNfcCardLoginScreen.kt`, a different, unnamed screen — left untouched this pass
+ *   (out of this task's named scope), though it already renders via already-theme-clean
+ *   `SoftWaitPanel`/`SoftTextButton` and so incidentally still benefits from this same pass's
+ *   `SoftWaitPanel` default-visibility fix (see that composable's own doc).
+ * - `SessionIdle` (the continuous-session idle UI) and the Done button live in a separate file,
+ *   `ReturnSessionScreen.kt` — not part of this file's `ReturnStage`, but close enough to this
+ *   same feature (and explicitly named in the task's checklist) that it's treated as in-scope
+ *   too; see that file's own Phase 9F note.
  */
 @Composable
 fun TerminalKeyReturnScreen(
@@ -247,7 +291,13 @@ fun TerminalKeyReturnScreen(
             modifier = Modifier.widthIn(max = 640.dp),
         ) {
             if (checkoutSummary != null && stage !is ReturnStage.Failed && stage !is ReturnStage.Abandoned) {
-                SoftCard(contentPadding = 14.dp) {
+                // Phase 9F: a light border for visibility in light mode — was a bare, borderless
+                // SoftCard before (same class of fix as SoftWaitPanel's default, applied here to
+                // this screen's own secondary card).
+                SoftCard(
+                    contentPadding = 14.dp,
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+                ) {
                     Text(
                         text = checkoutSummary,
                         style = MaterialTheme.typography.bodyMedium,
@@ -259,19 +309,41 @@ fun TerminalKeyReturnScreen(
             }
 
             wrongSlotNodeAddress?.let { wrongNodeAddress ->
-                SoftCard(containerColor = MaterialTheme.colorScheme.errorContainer, contentPadding = 16.dp) {
-                    Text(
-                        text = if (wrongSlotConfirmedKey) {
-                            "Wrong key — node $wrongNodeAddress"
-                        } else {
-                            "Unrecognized item — node $wrongNodeAddress"
-                        },
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.SemiBold,
-                        color = MaterialTheme.colorScheme.onErrorContainer,
-                        textAlign = TextAlign.Center,
+                // Phase 9F: the most urgent card on the screen, matching the hardware's own
+                // red-light/full-volume-beep intensity — a `2.dp` `colorScheme.error` border +
+                // `4.dp` elevation, the same escalation weight Take Flow's `strongAttention`
+                // uses, reusing the alarm/danger tone this card's `errorContainer` fill already
+                // used (not a new tone tier). The icon is the only new visual distinguishing
+                // "Wrong key" from "Unrecognized item" — wording already did; both keep the
+                // identical alarm tone and card treatment, per the established "equally
+                // anomalous" design intent.
+                SoftCard(
+                    containerColor = MaterialTheme.colorScheme.errorContainer,
+                    contentPadding = 16.dp,
+                    elevation = 4.dp,
+                    border = BorderStroke(2.dp, MaterialTheme.colorScheme.error),
+                ) {
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(10.dp, Alignment.CenterHorizontally),
+                        verticalAlignment = Alignment.CenterVertically,
                         modifier = Modifier.fillMaxWidth(),
-                    )
+                    ) {
+                        Icon(
+                            imageVector = if (wrongSlotConfirmedKey) Icons.Filled.VpnKey else Icons.AutoMirrored.Filled.HelpOutline,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.onErrorContainer,
+                        )
+                        Text(
+                            text = if (wrongSlotConfirmedKey) {
+                                "Wrong key — node $wrongNodeAddress"
+                            } else {
+                                "Unrecognized item — node $wrongNodeAddress"
+                            },
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.SemiBold,
+                            color = MaterialTheme.colorScheme.onErrorContainer,
+                        )
+                    }
                     Text(
                         text = if (wrongSlotConfirmedKey) {
                             "That is not the key this scan asked for. Remove it and insert the correct key."

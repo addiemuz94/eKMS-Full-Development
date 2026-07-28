@@ -4,9 +4,6 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.padding
-import androidx.compose.material3.Button
-import androidx.compose.material3.Card
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
@@ -105,6 +102,21 @@ private fun adminMenuFieldMode(role: TerminalUserRole, field: AdminMenuField): A
  * items. Per the follow-up decision, Regional Admin gets partial visibility on this one card —
  * Bootstrap and Download (read/pull-type operations) stay usable; Push and Read (write/mutating,
  * or otherwise not appropriate for this role) are hidden. Super Admin sees all four, unchanged.
+ *
+ * Phase 9D (visual/theme only — [adminMenuFieldMode]'s resolution and the Backend Sync role
+ * split above are both untouched): every card here (read-only fields, the toggle rows, MAC
+ * address, Backend Sync) now uses [SoftCard] instead of a plain M3 `Card`, matching the rest of
+ * the sweep. Deliberately **not** rebuilt on [SoftScanTile]: that component is a tappable
+ * selection tile (icon badge, `onClick`, `listening`/`selected` pulse states) meant for choosing
+ * between a handful of options side by side (Login method, Key Menu) — this screen is a single
+ * scrolling settings *form*, where every row is either a labeled input or a plain value, never a
+ * "pick one of these" choice. Forcing tile semantics onto form fields would be a mismatch, so
+ * the existing [AdminMenuStringField]/[AdminMenuReadOnlyField]/[AdminMenuToggle] row shapes were
+ * kept and just re-skinned. The "Save Admin Menu settings" button is now [IconActionButton]
+ * ([ActionButtonType.ACCEPT]); Bootstrap/Push/Read/Download and "Modify administrator password"
+ * stay plain `OutlinedButton` — already theme-correct via M3 defaults, and none of them is an
+ * ACCEPT/CANCEL/ADD-shaped action (they're standalone triggers/navigation, not a pending edit to
+ * confirm or dismiss), so `IconActionButton` wasn't forced onto them.
  */
 @Composable
 fun TerminalAdminMenuScreen(
@@ -248,11 +260,8 @@ fun TerminalAdminMenuScreen(
             AdminMenuReadOnlyField(label = "Key node setting", value = keyNodeCountText)
         }
         if (modeOf(AdminMenuField.MAC_ADDRESS) != AdminFieldMode.HIDDEN) {
-            Card(modifier = Modifier.fillMaxWidth()) {
-                Column(
-                    modifier = Modifier.padding(16.dp),
-                    verticalArrangement = Arrangement.spacedBy(4.dp),
-                ) {
+            SoftCard(contentPadding = 16.dp) {
+                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                     Text("Ethernet MAC address", fontWeight = FontWeight.SemiBold)
                     Text(macAddress, style = MaterialTheme.typography.bodyMedium.readout())
                 }
@@ -320,11 +329,14 @@ fun TerminalAdminMenuScreen(
         // decision — Bootstrap/Download are read/pull-type operations and stay usable; Push
         // (writes local changes to the server) and Read are hidden, consistent with "never
         // editable" for Regional Admin at the terminal. Super Admin sees all four, unchanged.
-        Card(modifier = Modifier.fillMaxWidth()) {
-            Column(
-                modifier = Modifier.padding(16.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
+        // Phase 9D: SoftCard instead of plain Card (visual only) — the `if (role ==
+        // SUPER_ADMIN)` guard around Push/Read is untouched, still a genuine conditional skip,
+        // not a disabled/greyed pair of buttons. Bootstrap/Download/Push/Read stay
+        // OutlinedButton — already theme-correct via M3 defaults (no color override existed to
+        // fix), and none of the four is an ACCEPT/CANCEL/ADD-shaped action, so IconActionButton
+        // was deliberately not forced onto them (task scope: only "apply theme tokens" here).
+        SoftCard(contentPadding = 16.dp) {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text("Backend synchronization", fontWeight = FontWeight.SemiBold)
                 Text(
                     "Pending offline changes: $pendingOutboxCount. Sign in with a server account, then run sync.",
@@ -348,7 +360,14 @@ fun TerminalAdminMenuScreen(
         }
 
         if (role == TerminalUserRole.SUPER_ADMIN) {
-            Button(
+            // Phase 9D: IconActionButton(ACCEPT) in place of the old plain Button — the same
+            // "confirm this pending settings change" case Office Hours' Save button fit
+            // (Phase 9C). No Cancel button existed before and none is added now — Save + the
+            // shared page-level Back button is this screen's whole action set, same as Office
+            // Hours.
+            IconActionButton(
+                type = ActionButtonType.ACCEPT,
+                label = "Save Admin Menu settings",
                 onClick = {
                     onSave(
                         TerminalCabinetSettings(
@@ -368,9 +387,7 @@ fun TerminalAdminMenuScreen(
                 modifier = Modifier.fillMaxWidth(),
                 enabled = keyNodeCountError == null && takeWarningTimeError == null &&
                     doorCloseWarningTimeError == null && !syncBusy,
-            ) {
-                Text("Save Admin Menu settings")
-            }
+            )
         }
     }
 }
@@ -400,14 +417,16 @@ private fun AdminMenuStringField(
     }
 }
 
-/** [AdminFieldMode.VIEW] rendering shared by every item — current value, no input control. */
+/**
+ * [AdminFieldMode.VIEW] rendering shared by every item — current value, no input control.
+ * Phase 9D: `SoftCard` instead of a plain M3 `Card` — same row-visual-language swap as every
+ * other card on this screen this pass, no functional change (this composable was already only
+ * ever called from a non-HIDDEN branch by every caller).
+ */
 @Composable
 private fun AdminMenuReadOnlyField(label: String, value: String) {
-    Card(modifier = Modifier.fillMaxWidth()) {
-        Column(
-            modifier = Modifier.padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(4.dp),
-        ) {
+    SoftCard(contentPadding = 16.dp) {
+        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
             Text(label, fontWeight = FontWeight.SemiBold)
             Text(
                 value.ifBlank { "Not set" },
@@ -418,6 +437,8 @@ private fun AdminMenuReadOnlyField(label: String, value: String) {
     }
 }
 
+/** Phase 9D: `SoftCard` instead of plain `Card` — the `if (mode == HIDDEN) return` guard above
+ * everything else is untouched, still a genuine early-return with zero composable emission. */
 @Composable
 private fun AdminMenuToggle(
     mode: AdminFieldMode,
@@ -427,11 +448,8 @@ private fun AdminMenuToggle(
     onCheckedChange: (Boolean) -> Unit,
 ) {
     if (mode == AdminFieldMode.HIDDEN) return
-    Card(modifier = Modifier.fillMaxWidth()) {
-        Column(
-            modifier = Modifier.padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
+    SoftCard(contentPadding = 16.dp) {
+        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Text(title, fontWeight = FontWeight.SemiBold)
             Text(description, style = MaterialTheme.typography.bodySmall)
             if (mode == AdminFieldMode.EDIT) {

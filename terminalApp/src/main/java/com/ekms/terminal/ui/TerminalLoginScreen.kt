@@ -11,15 +11,25 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Face
+import androidx.compose.material.icons.filled.Fingerprint
+import androidx.compose.material.icons.filled.Nfc
+import androidx.compose.material.icons.filled.Password
+import androidx.compose.material.icons.filled.VpnKey
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
+import androidx.compose.material3.Switch
+import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
+import com.ekms.terminal.ui.theme.LocalEkmsColors
 
 /** Which method screen to show under [SuperAdminRoute.LOGIN] once a logo is tapped. `null`
  * (handled by the caller, not a case here) means "show [TerminalLoginScreen] itself." */
@@ -53,6 +63,8 @@ enum class LoginMethod {
 fun TerminalLoginScreen(
     padding: PaddingValues,
     onSelectMethod: (LoginMethod) -> Unit,
+    isDarkTheme: Boolean = false,
+    onToggleTheme: (() -> Unit)? = null,
 ) {
     Box(
         modifier = Modifier
@@ -68,7 +80,16 @@ fun TerminalLoginScreen(
                 .padding(24.dp),
             verticalArrangement = Arrangement.spacedBy(14.dp),
         ) {
-            SoftBrandHeader(subtitle = "CAB · Terminal")
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                SoftBrandHeader(subtitle = "CAB · Terminal")
+                if (onToggleTheme != null) {
+                    ThemeModeToggle(isDarkTheme = isDarkTheme, onToggle = onToggleTheme)
+                }
+            }
             Text(
                 text = "Choose how you'd like to sign in.",
                 style = MaterialTheme.typography.bodyMedium,
@@ -82,12 +103,14 @@ fun TerminalLoginScreen(
                 SoftScanTile(
                     title = "Password",
                     description = "Account & password",
+                    icon = Icons.Filled.Password,
                     onClick = { onSelectMethod(LoginMethod.PASSWORD) },
                     modifier = Modifier.weight(1f),
                 )
                 SoftScanTile(
                     title = "Fingerprint",
                     description = "Scan a finger",
+                    icon = Icons.Filled.Fingerprint,
                     onClick = { onSelectMethod(LoginMethod.FINGERPRINT) },
                     modifier = Modifier.weight(1f),
                 )
@@ -99,12 +122,14 @@ fun TerminalLoginScreen(
                 SoftScanTile(
                     title = "Facial Recognition",
                     description = "Look at the camera",
+                    icon = Icons.Filled.Face,
                     onClick = { onSelectMethod(LoginMethod.FACE) },
                     modifier = Modifier.weight(1f),
                 )
                 SoftScanTile(
                     title = "NFC Card",
                     description = "Tap your card",
+                    icon = Icons.Filled.Nfc,
                     onClick = { onSelectMethod(LoginMethod.NFC_CARD) },
                     modifier = Modifier.weight(1f),
                 )
@@ -116,11 +141,47 @@ fun TerminalLoginScreen(
                 SoftScanTile(
                     title = "Passkey",
                     description = "4-digit code",
+                    icon = Icons.Filled.VpnKey,
                     onClick = { onSelectMethod(LoginMethod.PASSKEY) },
                     modifier = Modifier.weight(1f),
                 )
             }
         }
+    }
+}
+
+/**
+ * Corner dark/light control (Phase 9 design-system rework) — a plain [Switch] rather than a
+ * new icon, since sun/moon glyphs live only in the much larger material-icons-extended
+ * artifact and this pass deliberately limits itself to material-icons-core (see
+ * IconActionButton.kt's doc). Placement choice: the login/method-chooser screen's top-right
+ * corner, reachable pre-authentication since this is a cosmetic device preference, not an
+ * admin-gated setting — flagged here so it can be revisited (e.g. moved into Admin Menu)
+ * if that's not the right call.
+ */
+@Composable
+internal fun ThemeModeToggle(
+    isDarkTheme: Boolean,
+    onToggle: () -> Unit,
+) {
+    val colors = LocalEkmsColors.current
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        Text(
+            text = if (isDarkTheme) "Dark" else "Light",
+            style = MaterialTheme.typography.labelMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Switch(
+            checked = isDarkTheme,
+            onCheckedChange = { onToggle() },
+            colors = SwitchDefaults.colors(
+                checkedTrackColor = colors.primary,
+                checkedThumbColor = Color.White,
+            ),
+        )
     }
 }
 

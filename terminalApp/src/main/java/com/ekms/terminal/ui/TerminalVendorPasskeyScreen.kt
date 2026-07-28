@@ -1,15 +1,20 @@
 package com.ekms.terminal.ui
 
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.PaddingValues
-import androidx.compose.material3.Button
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.VpnKey
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -18,8 +23,11 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import com.ekms.shared.api.ApproveVendorPasskeyRequestResponse
 import com.ekms.shared.api.VendorPasskeyRequestDto
@@ -41,6 +49,16 @@ import kotlinx.coroutines.launch
  * Regional Admin: view-only list of pending requests, **no** approve/reject controls — those
  * actions happen on web/mobile only, per the matrix's terminal row for this item ("View only"
  * even though Regional Admin edits it on web).
+ *
+ * Phase 9C (visual/theme only — the `canEdit` gate and the judgment call above are unchanged):
+ * status now renders via [SoftAssistChip] (Pending → attention, Approved → success, Rejected →
+ * neutral) instead of plain text; Approve/Reject are [IconActionButton] ([ActionButtonType.ACCEPT]
+ * / [ActionButtonType.CANCEL]) instead of a filled [androidx.compose.material3.Button] +
+ * [androidx.compose.material3.TextButton] pair — that pairing gave Reject visibly less visual
+ * weight than Approve (plain text vs. a solid fill) despite both being equally real, equally
+ * final actions; both are now the same size/shape, differing only in ACCEPT/CANCEL tone. New
+ * [VendorPasskeyEmptyState] replaces the bare "No vendor passkey requests" text, same
+ * icon+title+message approach as `TerminalKeyMenuScreen`'s `KeyMenuEmptyState` (Phase 9B).
  */
 @Composable
 fun TerminalVendorPasskeyScreen(
@@ -136,7 +154,7 @@ fun TerminalVendorPasskeyScreen(
         if (loading) {
             Text("Loading vendor passkey requests…", style = MaterialTheme.typography.bodyMedium)
         } else if (requests.isEmpty()) {
-            Text("No vendor passkey requests for this site.", style = MaterialTheme.typography.bodyMedium)
+            VendorPasskeyEmptyState()
         } else {
             requests.forEach { request ->
                 SoftCard(contentPadding = 16.dp) {
@@ -146,36 +164,94 @@ fun TerminalVendorPasskeyScreen(
                         // vendor_passkey_requests table doc) and doesn't include a display
                         // name; resolving one is a follow-up, not part of this pass.
                         Text("Vendor ${request.vendorUserId.take(8)}…", fontWeight = FontWeight.SemiBold)
-                        Text("Status: ${request.status}", style = MaterialTheme.typography.bodySmall)
+                        // Phase 9C: SoftAssistChip instead of plain "Status: X" text — reuses
+                        // the same success/attention/neutral tone language every other status
+                        // indicator in the sweep uses, and is theme-correct in both modes via
+                        // Phase 9B's softToneColors fix (not re-litigated here).
+                        SoftAssistChip(
+                            text = when (request.status) {
+                                VendorPasskeyRequestStatus.PENDING -> "Pending"
+                                VendorPasskeyRequestStatus.APPROVED -> "Approved"
+                                VendorPasskeyRequestStatus.REJECTED -> "Rejected"
+                            },
+                            attention = request.status == VendorPasskeyRequestStatus.PENDING,
+                            success = request.status == VendorPasskeyRequestStatus.APPROVED,
+                        )
                         Text(
                             "Requested at epoch ${request.requestedAtEpochMillis}",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                         if (canEdit && request.status == VendorPasskeyRequestStatus.PENDING) {
+                            // Phase 9C: both actions are now IconActionButton — matching size/
+                            // shape, differing only by ACCEPT (filled, success tone) vs. CANCEL
+                            // (outlined, neutral tone). The old Button+TextButton pairing gave
+                            // Reject visibly less visual weight than Approve despite both being
+                            // equally real, final actions; that imbalance is what this fixes.
                             Row(
                                 modifier = Modifier.fillMaxWidth(),
                                 horizontalArrangement = Arrangement.spacedBy(8.dp),
                             ) {
-                                Button(
+                                IconActionButton(
+                                    type = ActionButtonType.ACCEPT,
+                                    label = "Approve",
                                     onClick = { approve(request.id) },
-                                    enabled = busyRequestId == null,
                                     modifier = Modifier.weight(1f),
-                                ) {
-                                    Text("Approve")
-                                }
-                                TextButton(
+                                    enabled = busyRequestId == null,
+                                )
+                                IconActionButton(
+                                    type = ActionButtonType.CANCEL,
+                                    label = "Reject",
                                     onClick = { reject(request.id) },
-                                    enabled = busyRequestId == null,
                                     modifier = Modifier.weight(1f),
-                                ) {
-                                    Text("Reject")
-                                }
+                                    enabled = busyRequestId == null,
+                                )
                             }
                         }
                     }
                 }
             }
+        }
+    }
+}
+
+/**
+ * Phase 9C: replaces the old bare `Text("No vendor passkey requests...")` with an actual
+ * designed empty state — same icon+title+message shape as `TerminalKeyMenuScreen`'s
+ * `KeyMenuEmptyState` (Phase 9B), same `MaterialTheme.colorScheme` tokens, no hardcoded colors.
+ */
+@Composable
+private fun VendorPasskeyEmptyState() {
+    SoftCard(contentPadding = 28.dp) {
+        Column(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(56.dp)
+                    .clip(RoundedCornerShape(18.dp))
+                    .background(MaterialTheme.colorScheme.surfaceContainerHigh),
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(
+                    imageVector = Icons.Filled.VpnKey,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            Text(
+                text = "No pending requests",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.SemiBold,
+            )
+            Text(
+                text = "There are no vendor passkey requests for this site right now.",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                textAlign = TextAlign.Center,
+            )
         }
     }
 }

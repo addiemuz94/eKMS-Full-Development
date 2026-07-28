@@ -117,39 +117,60 @@ fun TerminalOfficeHoursScreen(
             Text("Loading office hours…", style = MaterialTheme.typography.bodyMedium)
         } else if (current != null) {
             if (canEdit) {
-                OutlinedTextField(
-                    value = openTime,
-                    onValueChange = { openTime = it },
-                    modifier = Modifier.fillMaxWidth(),
-                    label = { Text("Open time (HH:MM:SS)") },
-                    singleLine = true,
-                    isError = openTimeError != null,
-                    supportingText = { Text(openTimeError ?: "24-hour, e.g. 08:00:00.") },
-                )
-                OutlinedTextField(
-                    value = closeTime,
-                    onValueChange = { closeTime = it },
-                    modifier = Modifier.fillMaxWidth(),
-                    label = { Text("Close time (HH:MM:SS)") },
-                    singleLine = true,
-                    isError = closeTimeError != null,
-                    supportingText = { Text(closeTimeError ?: "24-hour, e.g. 17:00:00.") },
-                )
-                OutlinedTextField(
-                    value = timezone,
-                    onValueChange = { timezone = it },
-                    modifier = Modifier.fillMaxWidth(),
-                    label = { Text("Timezone") },
-                    singleLine = true,
-                    supportingText = { Text("IANA timezone name, e.g. Asia/Kuala_Lumpur.") },
-                )
-                SoftPrimaryButton(
-                    text = "Save office hours",
+                // Phase 9C: fields now share the same SoftCard-wrapped-form pattern as, e.g.,
+                // HardwareStatusPage's connect fields — a purely visual/spacing consistency
+                // change (12dp inter-field spacing was already inherited from TerminalPage's
+                // own Column before; this just groups them into one card + adds that spacing
+                // explicitly so it survives being one card content block instead of three
+                // separate top-level page items).
+                SoftCard(contentPadding = 16.dp) {
+                    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                        OutlinedTextField(
+                            value = openTime,
+                            onValueChange = { openTime = it },
+                            modifier = Modifier.fillMaxWidth(),
+                            label = { Text("Open time (HH:MM:SS)") },
+                            singleLine = true,
+                            isError = openTimeError != null,
+                            supportingText = { Text(openTimeError ?: "24-hour, e.g. 08:00:00.") },
+                        )
+                        OutlinedTextField(
+                            value = closeTime,
+                            onValueChange = { closeTime = it },
+                            modifier = Modifier.fillMaxWidth(),
+                            label = { Text("Close time (HH:MM:SS)") },
+                            singleLine = true,
+                            isError = closeTimeError != null,
+                            supportingText = { Text(closeTimeError ?: "24-hour, e.g. 17:00:00.") },
+                        )
+                        OutlinedTextField(
+                            value = timezone,
+                            onValueChange = { timezone = it },
+                            modifier = Modifier.fillMaxWidth(),
+                            label = { Text("Timezone") },
+                            singleLine = true,
+                            supportingText = { Text("IANA timezone name, e.g. Asia/Kuala_Lumpur.") },
+                        )
+                    }
+                }
+                // Phase 9C: IconActionButton(ACCEPT) in place of the old SoftPrimaryButton —
+                // a genuine "confirm this pending edit" action, the same case Key Menu's
+                // confirm button fit in Phase 9B. There's no separate Cancel action on this
+                // screen (only Save + the page-level Back button, which is shared nav, not a
+                // modal counterpart), so no CANCEL button was added — inventing one would be a
+                // functional change, out of scope for a styling pass.
+                IconActionButton(
+                    type = ActionButtonType.ACCEPT,
+                    label = "Save office hours",
                     onClick = ::save,
+                    modifier = Modifier.fillMaxWidth(),
                     enabled = !saving && openTimeError == null && closeTimeError == null && timezone.isNotBlank(),
-                    loading = saving,
                 )
             } else {
+                // Phase 9C audit: already visually distinguishable from edit mode at a glance —
+                // bordered/labeled OutlinedTextFields (+ now IconActionButton) above read as an
+                // editable form; this branch is plain label/value text with no input chrome at
+                // all inside a card, the standard Material read-only pattern. Left unchanged.
                 SoftCard(contentPadding = 16.dp) {
                     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         AdminMenuReadOnlyValue(label = "Open time", value = openTime)

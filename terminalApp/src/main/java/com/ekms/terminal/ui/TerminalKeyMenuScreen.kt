@@ -1,18 +1,25 @@
 package com.ekms.terminal.ui
 
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.VpnKey
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -24,7 +31,10 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import com.ekms.shared.domain.KeySlot
 import com.ekms.shared.domain.ManagedKey
@@ -42,6 +52,16 @@ import com.ekms.terminal.ui.theme.StatusTone
  * Unlike the cabinet grid (which enumerates every physical node address, assigned or not),
  * this screen only ever shows the specific keys the user may take — node addresses are an
  * implementation detail here, not something a Technician/Vendor needs to see.
+ *
+ * Phase 9B: applies the Phase 9A design-system pattern to this screen. [SoftSegmented] needed
+ * no changes — it already resolved every color via `MaterialTheme.colorScheme`, confirmed by
+ * reading it rather than assumed. Grid tiles ([KeyMenuBox]) now use [SoftScanTile] (extended
+ * with a `selected` param rather than forked); the confirm button uses [IconActionButton]
+ * ([ActionButtonType.ACCEPT]); the empty state ([KeyMenuEmptyState]) replaces a bare `Text` with
+ * an icon+message card. [KeyMenuList] (the List Display alternative) is intentionally
+ * untouched — it already used the theme-aware [StatusRingCard], and list-style rows are a
+ * different affordance from tiles by design, same as [TerminalKeyRetrievalScreen]'s own list
+ * view.
  */
 @Composable
 fun TerminalKeyMenuScreen(
@@ -89,17 +109,16 @@ fun TerminalKeyMenuScreen(
                 style = MaterialTheme.typography.headlineSmall,
                 fontWeight = FontWeight.SemiBold,
             )
-            Text(
-                text = if (selectableKeys.isEmpty()) {
-                    "No keys are currently assigned to your account."
-                } else {
-                    "Select one or more keys, then confirm to take them one at a time."
-                },
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
 
-            if (selectableKeys.isNotEmpty()) {
+            if (selectableKeys.isEmpty()) {
+                KeyMenuEmptyState()
+            } else {
+                Text(
+                    text = "Select one or more keys, then confirm to take them one at a time.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+
                 SoftSegmented(
                     leftLabel = "Layout Display",
                     rightLabel = "List Display",
@@ -124,8 +143,12 @@ fun TerminalKeyMenuScreen(
                     )
                 }
 
-                SoftPrimaryButton(
-                    text = if (selectedKeyIds.isEmpty()) {
+                // Phase 9B: IconActionButton(ACCEPT) in place of the old SoftPrimaryButton —
+                // this is exactly the "confirm a pending selection" case IconActionButton's
+                // ACCEPT type was designed for (see IconActionButton.kt).
+                IconActionButton(
+                    type = ActionButtonType.ACCEPT,
+                    label = if (selectedKeyIds.isEmpty()) {
                         "Select a key to continue"
                     } else {
                         "Take ${selectedKeyIds.size} key" + if (selectedKeyIds.size == 1) "" else "s"
@@ -134,9 +157,51 @@ fun TerminalKeyMenuScreen(
                         val chosen = selectableKeys.filter { it.id in selectedKeyIds }
                         if (chosen.isNotEmpty()) onConfirmSelection(chosen)
                     },
+                    modifier = Modifier.fillMaxWidth(),
                     enabled = selectedKeyIds.isNotEmpty(),
                 )
             }
+        }
+    }
+}
+
+/**
+ * Phase 9B: replaces the old bare `Text("No keys are currently assigned...")` with an actual
+ * designed empty state (icon + title + message), same tokens as the rest of the screen — no
+ * hardcoded colors, everything from `MaterialTheme.colorScheme`.
+ */
+@Composable
+private fun KeyMenuEmptyState() {
+    SoftCard(contentPadding = 28.dp) {
+        Column(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(56.dp)
+                    .clip(RoundedCornerShape(18.dp))
+                    .background(MaterialTheme.colorScheme.surfaceContainerHigh),
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(
+                    imageVector = Icons.Filled.VpnKey,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            Text(
+                text = "No keys assigned",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.SemiBold,
+            )
+            Text(
+                text = "No keys are currently assigned to your account. Contact a Super Admin if this seems wrong.",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                textAlign = TextAlign.Center,
+            )
         }
     }
 }
@@ -167,7 +232,14 @@ private fun KeyMenuGrid(
     }
 }
 
-/** "Medium-sized selection box" — bigger than the cabinet grid's compact node cells, name-first. */
+/**
+ * Phase 9B: rebuilt on [SoftScanTile] (extended with `selected`, see its own doc) instead of
+ * the plain [StatusRingCard] this used before — brings the Phase 9A icon+label/border/elevation
+ * tile language to the Key Menu grid. `taken` isn't a new SoftScanTile param: a taken key is
+ * shown (not hidden) but non-interactive (`onClick = null`) and dimmed via a plain
+ * [androidx.compose.ui.draw.alpha] modifier at the call site — simpler than adding a third
+ * visual state to the shared component for a state specific to this one screen.
+ */
 @Composable
 private fun KeyMenuBox(
     key: ManagedKey,
@@ -176,32 +248,20 @@ private fun KeyMenuBox(
     onToggle: (ManagedKey) -> Unit,
 ) {
     val selectable = !taken
-    StatusRingCard(
-        tone = when {
-            taken -> StatusTone.INACTIVE
-            selected -> StatusTone.ATTENTION
-            else -> StatusTone.NORMAL
+    SoftScanTile(
+        title = key.displayName,
+        description = when {
+            taken -> "Taken"
+            selected -> "Selected"
+            else -> "Available"
         },
+        icon = Icons.Filled.VpnKey,
+        selected = selected,
         onClick = if (selectable) { { onToggle(key) } } else null,
-        contentPadding = 16.dp,
-        modifier = Modifier.heightIn(min = 96.dp),
-    ) {
-        if (selected) {
-            Text(
-                text = "Selected",
-                style = MaterialTheme.typography.labelSmall,
-                fontWeight = FontWeight.SemiBold,
-            )
-        } else if (taken) {
-            Text(text = "Taken", style = MaterialTheme.typography.labelSmall)
-        }
-        Text(
-            text = key.displayName,
-            style = MaterialTheme.typography.titleMedium,
-            fontWeight = FontWeight.Medium,
-            maxLines = 3,
-        )
-    }
+        modifier = Modifier
+            .heightIn(min = 96.dp)
+            .alpha(if (taken) 0.55f else 1f),
+    )
 }
 
 @Composable

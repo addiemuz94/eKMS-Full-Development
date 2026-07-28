@@ -6,6 +6,7 @@ import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
@@ -25,6 +26,7 @@ import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -37,18 +39,19 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.compositeOver
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.ekms.terminal.ui.theme.StatusTone
 import com.ekms.terminal.ui.theme.readout
-import com.ekms.terminal.ui.theme.SoftSuccessContainer
-import com.ekms.terminal.ui.theme.SoftSuccessOnContainer
-import com.ekms.terminal.ui.theme.SoftWarningContainer
-import com.ekms.terminal.ui.theme.SoftWarningOnContainer
 import com.ekms.terminal.ui.theme.OutfitFontFamily
 import com.ekms.terminal.ui.theme.LocalEkmsColors
+import com.ekms.terminal.ui.theme.EkmsColors
+import com.ekms.terminal.ui.theme.SoftTone
+import com.ekms.terminal.ui.theme.softToneColors
 
 private val SoftCardShape = RoundedCornerShape(22.dp)
 private val SoftChipShape = RoundedCornerShape(17.dp)
@@ -60,6 +63,11 @@ fun SoftCard(
     onClick: (() -> Unit)? = null,
     containerColor: Color = MaterialTheme.colorScheme.surface,
     contentPadding: Dp = 18.dp,
+    // Both default to the prior look (flat, no border) so every existing SoftCard call site
+    // is unaffected — only call sites that explicitly need visible depth (e.g. SoftScanTile,
+    // see its "light mode cards invisible" hardware-bug fix) pass non-default values.
+    elevation: Dp = 0.dp,
+    border: BorderStroke? = null,
     content: @Composable ColumnScope.() -> Unit,
 ) {
     Card(
@@ -78,7 +86,8 @@ fun SoftCard(
             ),
         shape = SoftCardShape,
         colors = CardDefaults.cardColors(containerColor = containerColor),
-        elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
+        elevation = CardDefaults.cardElevation(defaultElevation = elevation),
+        border = border,
     ) {
         Column(modifier = Modifier.padding(contentPadding), content = content)
     }
@@ -128,11 +137,55 @@ fun SoftBrandHeader(
     }
 }
 
+/**
+ * Hardware bug fix (Phase 9A pilot, found on a real F7G18P screenshot pass):
+ * 1. [icon] is now a real [ImageVector] (Fingerprint/Face/Nfc/VpnKey/Password-style glyphs
+ *    from material-icons-extended — those specific icons aren't in material-icons-core, see
+ *    build.gradle.kts's dependency-swap comment) instead of a single-letter text fallback.
+ * 2. The icon badge's container no longer hardcodes `Color.White` — that literal ignored dark
+ *    mode entirely (a fixed white box regardless of theme), which is the root cause of the
+ *    "blank/wrong-looking square in dark mode" bug. It now uses
+ *    [androidx.compose.material3.ColorScheme.primaryContainer], which Theme.kt already derives
+ *    per-mode from the current [EkmsColors] tokens.
+ * 3. The outer card itself gets an explicit [border] + small [elevation] (SoftCard's own
+ *    defaults stay flat/borderless for every other call site — see SoftCard's doc) — without
+ *    this, the not-listening state's `containerColor` (surface/panel) sat almost exactly on
+ *    top of the screen's own background color in light mode and was effectively invisible.
+ * 4. Light-mode-only polish (Phase 9A follow-up, dark confirmed good on hardware and must not
+ *    regress): the resting (non-`listening`) fill used literal `colorScheme.surface`, which
+ *    Material3's `Card` auto-tints toward `surfaceTint` (`primary`) based on `elevation` —
+ *    but that automatic tonal-elevation overlay is a real, documented M3 behavior difference
+ *    that reads as barely perceptible in light theme at the same elevation that gives dark
+ *    theme genuine depth. Light mode's resting fill is now an explicit, deliberately-weaker
+ *    tint than the icon badge/`listening` state's `primaryContainer`, so the badge stays a
+ *    visually distinct accent chip rather than blending into the card — see [restingContainerColorFor].
+ *    Dark mode's resting fill is untouched (still the literal `colorScheme.surface` that
+ *    already looks right there).
+ * 5. [selected] (Phase 9B, added for `TerminalKeyMenuScreen`'s multi-select key tiles) —
+ *    a persistent highlighted state, distinct from [listening]'s transient pulse-while-scanning
+ *    animation: stronger `primary`-tinted border + `primaryContainer` fill, no animation. A
+ *    tile can be `selected` without `listening` (the Key Menu case) or vice versa (the login
+ *    screen case) — the two are independent, never combined by any current call site.
+ */
+private fun restingContainerColorFor(colors: EkmsColors, scheme: androidx.compose.material3.ColorScheme): Color =
+    if (colors.isDark) {
+        // Unchanged from before this fix — Material3's own tonal-elevation overlay already
+        // gives this the right amount of depth in dark theme; do not touch.
+        scheme.surface
+    } else {
+        // A softer tint than primaryContainer's 0.12f (used by the badge/`listening` state)
+        // so the badge remains visually distinct from the card it sits on, instead of both
+        // resolving to the exact same color.
+        colors.primary.copy(alpha = 0.08f).compositeOver(colors.panel)
+    }
+
 @Composable
 fun SoftScanTile(
     title: String,
     description: String,
+    icon: ImageVector,
     listening: Boolean = false,
+    selected: Boolean = false,
     onClick: (() -> Unit)? = null,
     modifier: Modifier = Modifier,
 ) {
@@ -156,32 +209,45 @@ fun SoftScanTile(
     SoftCard(
         modifier = modifier.scale(pulseScale),
         onClick = onClick,
-        containerColor = if (listening) {
+        containerColor = if (listening || selected) {
             MaterialTheme.colorScheme.primaryContainer
         } else {
-            MaterialTheme.colorScheme.surface
+            restingContainerColorFor(colors, MaterialTheme.colorScheme)
         },
         contentPadding = 16.dp,
+        elevation = 3.dp,
+        border = if (selected) {
+            BorderStroke(2.dp, colors.primary)
+        } else {
+            BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
+        },
     ) {
         Box(
             modifier = Modifier
                 .size(44.dp)
                 .clip(RoundedCornerShape(14.dp))
-                .background(Color.White.copy(alpha = 0.75f))
+                .background(MaterialTheme.colorScheme.primaryContainer)
                 .align(Alignment.CenterHorizontally),
             contentAlignment = Alignment.Center,
         ) {
-            Text(
-                text = title.take(1),
-                color = colors.primary,
-                fontWeight = FontWeight.SemiBold,
-                style = MaterialTheme.typography.titleMedium,
+            Icon(
+                imageVector = icon,
+                contentDescription = null,
+                tint = colors.primary,
             )
         }
         Spacer(modifier = Modifier.height(10.dp))
         Text(
             text = title,
             style = MaterialTheme.typography.titleSmall,
+            // Explicit rather than relying on Card's contentColorFor(containerColor)
+            // auto-resolution: that only matches when containerColor is exactly one of
+            // ColorScheme's named roles (e.g. the literal `surface` dark mode still passes),
+            // and light mode's resting fill above is now a custom blended Color that won't
+            // match any role — leaving this implicit would leave the title's color undefined
+            // in light mode. onSurface resolves to the same textPrimary token this already
+            // rendered with before, in both modes, so this is a no-visual-change safety fix.
+            color = MaterialTheme.colorScheme.onSurface,
             fontWeight = FontWeight.SemiBold,
             textAlign = TextAlign.Center,
             modifier = Modifier.fillMaxWidth(),
@@ -230,22 +296,26 @@ fun SoftPrimaryButton(
     }
 }
 
+/**
+ * Phase 9B fix: background/foreground now resolve via [softToneColors] instead of referencing
+ * `SoftSuccessContainer`/`SoftWarningContainer` directly — those are light-mode-only hex with
+ * no dark-mode counterpart (flagged during the Phase 9A audit). Signature unchanged so every
+ * existing call site (across `TerminalAdminApp.kt`, `StartupDiagnosticsScreen.kt`,
+ * `HardwareStatusPage.kt`, `TerminalPasskeyLoginScreen.kt`) keeps compiling as-is.
+ */
 @Composable
 fun SoftAssistChip(
     text: String,
     attention: Boolean = false,
     success: Boolean = false,
 ) {
-    val background = when {
-        success -> SoftSuccessContainer
-        attention -> SoftWarningContainer
-        else -> MaterialTheme.colorScheme.surfaceContainerHigh
+    val tone = when {
+        success -> softToneColors(SoftTone.SUCCESS)
+        attention -> softToneColors(SoftTone.WARNING)
+        else -> null
     }
-    val foreground = when {
-        success -> SoftSuccessOnContainer
-        attention -> SoftWarningOnContainer
-        else -> MaterialTheme.colorScheme.onSurfaceVariant
-    }
+    val background = tone?.container ?: MaterialTheme.colorScheme.surfaceContainerHigh
+    val foreground = tone?.onContainer ?: MaterialTheme.colorScheme.onSurfaceVariant
     Text(
         text = text,
         color = foreground,
@@ -332,6 +402,25 @@ fun SoftNavTile(
     }
 }
 
+/**
+ * Phase 9F fix: the default look (no border, `0.dp` elevation) had the same "may blend into the
+ * light-mode background" issue Phase 9A found and fixed in [SoftScanTile] — flagged rather than
+ * fixed in Phase 9E because [strongAttention] (added that pass) only opted in for one state;
+ * every other call site (`TerminalKeyReturnScreen`, `TerminalNfcCardLoginScreen`,
+ * `TerminalFingerprintLoginScreen`, and this screen's own non-urgent states) still had the
+ * unfixed default. The default itself is now a visible `1.dp` `outlineVariant` border + `3.dp`
+ * elevation (the same recipe `SoftScanTile` uses). `strongAttention`'s `2.dp` `colors.warning`
+ * border + `4.dp` elevation stays deliberately stronger than that new default in both width and
+ * color, so Key Take Flow's door-left-open state still reads as more urgent than an ordinary
+ * wait, not just equally-bordered.
+ *
+ * @param strongAttention Added in Phase 9E — when `true`, escalates beyond the (now-visible)
+ * default border/elevation using `colors.warning` — reusing the existing warning tone, not a
+ * new color — for the one state that needs to read as more urgent than an ordinary
+ * [StatusTone.ATTENTION] wait (Key Take Flow's door-left-open warning: the door is physically
+ * open and the timer already expired, not just "still waiting normally"). Only
+ * `TerminalKeyTakeScreen` passes `true` today.
+ */
 @Composable
 fun SoftWaitPanel(
     tone: StatusTone,
@@ -340,6 +429,7 @@ fun SoftWaitPanel(
     showProgress: Boolean = false,
     assistText: String? = null,
     assistAttention: Boolean = false,
+    strongAttention: Boolean = false,
     modifier: Modifier = Modifier,
 ) {
     val colors = LocalEkmsColors.current
@@ -347,6 +437,12 @@ fun SoftWaitPanel(
         modifier = modifier,
         containerColor = MaterialTheme.colorScheme.surface,
         contentPadding = 28.dp,
+        elevation = if (strongAttention) 4.dp else 3.dp,
+        border = if (strongAttention) {
+            BorderStroke(2.dp, colors.warning)
+        } else {
+            BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
+        },
     ) {
         Column(
             modifier = Modifier.fillMaxWidth(),
