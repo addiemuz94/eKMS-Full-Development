@@ -1,6 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import L from 'leaflet'
 import 'leaflet/dist/leaflet.css'
+import 'leaflet.markercluster'
+import 'leaflet.markercluster/dist/MarkerCluster.css'
+import 'leaflet.markercluster/dist/MarkerCluster.Default.css'
 import type { SiteDto } from '../api/types'
 import { MALAYSIA_BOUNDS, latLngForSite } from '../geo/malaysiaLocations'
 
@@ -30,7 +33,7 @@ export function MalaysiaUnitsMap({ sites }: Props) {
   const [mapError, setMapError] = useState<string | null>(null)
   const mapEl = useRef<HTMLDivElement | null>(null)
   const mapRef = useRef<L.Map | null>(null)
-  const markersRef = useRef<L.LayerGroup | null>(null)
+  const markersRef = useRef<L.MarkerClusterGroup | null>(null)
   const icons = useMemo(() => makeIcons(), [])
 
   const points = useMemo(
@@ -69,7 +72,10 @@ export function MalaysiaUnitsMap({ sites }: Props) {
       }).addTo(map)
 
       map.fitBounds(MALAYSIA_BOUNDS, { padding: [24, 24] })
-      markersRef.current = L.layerGroup().addTo(map)
+      markersRef.current = L.markerClusterGroup({
+        showCoverageOnHover: false,
+        maxClusterRadius: 50,
+      }).addTo(map)
       mapRef.current = map
 
       // Leaflet needs a invalidate after layout settles (common white/grey map cause).
@@ -116,7 +122,9 @@ export function MalaysiaUnitsMap({ sites }: Props) {
 
   useEffect(() => {
     if (!selected || !mapRef.current) return
-    mapRef.current.panTo([selected.lat, selected.lng], { animate: true })
+    const map = mapRef.current
+    const targetZoom = Math.min(map.getMaxZoom(), Math.max(map.getZoom(), 11))
+    map.flyTo([selected.lat, selected.lng], targetZoom, { animate: true })
   }, [selected])
 
   return (

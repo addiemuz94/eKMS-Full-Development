@@ -178,6 +178,7 @@ export function PersonnelPage() {
           <option value="all">All roles</option>
           <option value="TECHNICIAN">Technician</option>
           <option value="VENDOR">Vendor</option>
+          <option value="REGIONAL_ADMIN">Regional Admin</option>
           <option value="SUPER_ADMIN">Super Admin</option>
         </select>
         <select value={siteFilter} onChange={(e) => setSiteFilter(e.target.value)} title="Filter by unit">
@@ -274,6 +275,7 @@ export function PersonnelPage() {
                 <select value={role} onChange={(e) => setRole(e.target.value)}>
                   <option value="TECHNICIAN">TECHNICIAN</option>
                   <option value="VENDOR">VENDOR</option>
+                  <option value="REGIONAL_ADMIN">REGIONAL_ADMIN</option>
                   <option value="SUPER_ADMIN">SUPER_ADMIN</option>
                 </select>
               </div>

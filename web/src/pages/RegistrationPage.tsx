@@ -827,6 +827,7 @@ function StepPersonnel({ unit }: { unit: SiteDto }) {
               <select value={role} onChange={(e) => setRole(e.target.value)}>
                 <option value="TECHNICIAN">TECHNICIAN</option>
                 <option value="VENDOR">VENDOR</option>
+                <option value="REGIONAL_ADMIN">REGIONAL_ADMIN</option>
                 <option value="SUPER_ADMIN">SUPER_ADMIN</option>
               </select>
             </div>
