@@ -127,6 +127,7 @@ class TerminalAdminStore(context: Context) {
                 username = user.username,
                 role = user.role,
                 requiresPasswordChange = false,
+                assignedSiteIds = user.assignedSiteIds,
             ),
         )
     }
@@ -163,6 +164,7 @@ class TerminalAdminStore(context: Context) {
                 username = user.username,
                 role = user.role,
                 requiresPasswordChange = false,
+                assignedSiteIds = user.assignedSiteIds,
             ),
         )
     }
@@ -181,7 +183,8 @@ class TerminalAdminStore(context: Context) {
                     .put("displayName", person.displayName)
                     .put("username", person.username)
                     .put("role", person.role.name)
-                    .put("createdAtEpochMillis", person.createdAtEpochMillis),
+                    .put("createdAtEpochMillis", person.createdAtEpochMillis)
+                    .put("assignedSiteIds", JSONArray(person.assignedSiteIds.toList())),
             )
         }
         preferences.edit().putString(KEY_CACHED_PERSONNEL, array.toString()).apply()
@@ -214,6 +217,7 @@ class TerminalAdminStore(context: Context) {
                     val role = runCatching {
                         TerminalUserRole.valueOf(item.getString("role"))
                     }.getOrDefault(TerminalUserRole.TECHNICIAN)
+                    val siteIds = item.optJSONArray("assignedSiteIds")
                     add(
                         TerminalUser(
                             id = item.getString("id"),
@@ -222,6 +226,11 @@ class TerminalAdminStore(context: Context) {
                             role = role,
                             isPreset = false,
                             createdAtEpochMillis = item.optLong("createdAtEpochMillis", 0L),
+                            assignedSiteIds = if (siteIds == null) {
+                                emptySet()
+                            } else {
+                                (0 until siteIds.length()).mapTo(mutableSetOf()) { siteIds.getString(it) }
+                            },
                         ),
                     )
                 }
@@ -537,6 +546,7 @@ class TerminalAdminStore(context: Context) {
                         createdAtEpochMillis = user.lifecycle.createdAtEpochMillis,
                         passwordSalt = "",
                         passwordHash = "",
+                        assignedSiteIds = user.assignedSiteIds,
                     )
                 },
         )
@@ -571,6 +581,7 @@ class TerminalAdminStore(context: Context) {
     }
 
     private fun readUsers(): List<TerminalUser> = decodeArray(KEY_USERS) { item ->
+        val siteIds = item.optJSONArray("assignedSiteIds")
         TerminalUser(
             id = item.getString("id"),
             displayName = item.getString("displayName"),
@@ -580,6 +591,11 @@ class TerminalAdminStore(context: Context) {
             createdAtEpochMillis = item.getLong("createdAtEpochMillis"),
             passwordSalt = item.getString("passwordSalt"),
             passwordHash = item.getString("passwordHash"),
+            assignedSiteIds = if (siteIds == null) {
+                emptySet()
+            } else {
+                (0 until siteIds.length()).mapTo(mutableSetOf()) { siteIds.getString(it) }
+            },
         )
     }
 
@@ -594,7 +610,8 @@ class TerminalAdminStore(context: Context) {
                     .put("role", user.role.name)
                     .put("createdAtEpochMillis", user.createdAtEpochMillis)
                     .put("passwordSalt", user.passwordSalt)
-                    .put("passwordHash", user.passwordHash),
+                    .put("passwordHash", user.passwordHash)
+                    .put("assignedSiteIds", JSONArray(user.assignedSiteIds.toList())),
             )
         }
         preferences.edit().putString(KEY_USERS, items.toString()).apply()
@@ -834,6 +851,11 @@ data class TerminalUser(
     val createdAtEpochMillis: Long,
     internal val passwordSalt: String = "",
     internal val passwordHash: String = "",
+    /** Phase 7 (item 14): mirrors the backend's `user_site_assignments`, threaded through from
+     * whichever server sync populated this record (bootstrap/download snapshot or the personnel
+     * list cache) — empty for purely-local records (the preset Super Admin, or a locally-created
+     * Technician/Vendor with no server concept), which is correct, not a gap. */
+    val assignedSiteIds: Set<String> = emptySet(),
 )
 
 enum class TerminalUserRole(val label: String) {
@@ -871,9 +893,23 @@ data class TerminalSession(
     val role: TerminalUserRole,
     val requiresPasswordChange: Boolean,
     val serverAuthenticated: Boolean = false,
+    /** Phase 7 (item 14, Regional Admin's own site-assignment view). Populated for every login
+     * method (password, personnel-card NFC, fingerprint, face) via [TerminalUser.assignedSiteIds]
+     * / the server login profile — empty for the preset Super Admin, who isn't site-restricted. */
+    val assignedSiteIds: Set<String> = emptySet(),
 ) {
     val isSuperAdmin: Boolean
         get() = role == TerminalUserRole.SUPER_ADMIN
+
+    /**
+     * Phase 3: Super Admin and Regional Admin route to, and may use, the same admin shell for
+     * now — Phase 7's 17-item permission matrix is what eventually differentiates what Regional
+     * Admin can/can't edit once there; until that lands, this deliberately treats the two roles
+     * identically rather than inventing a partial restriction ahead of that design. Use this
+     * (not [isSuperAdmin]) for "does this session belong in the admin shell at all" checks.
+     */
+    val isAdminTier: Boolean
+        get() = role == TerminalUserRole.SUPER_ADMIN || role == TerminalUserRole.REGIONAL_ADMIN
 }
 
 sealed class StoreResult<out T> {

@@ -6,14 +6,18 @@ import com.ekms.shared.api.ApiPaths
 import com.ekms.shared.api.AuthClientType
 import com.ekms.shared.api.CompleteCredentialEnrollmentRequest
 import com.ekms.shared.api.CreateAdminUserRequest
+import com.ekms.shared.api.CreateKeyCheckoutRequest
 import com.ekms.shared.api.CredentialStatusDto
 import com.ekms.shared.api.CredentialStatusListResponse
+import com.ekms.shared.api.KeyCheckoutDto
 import com.ekms.shared.api.LoginRequest
 import com.ekms.shared.api.LoginResponse
+import com.ekms.shared.api.ApproveVendorPasskeyRequestResponse
 import com.ekms.shared.api.RefreshTokenRequest
 import com.ekms.shared.api.RevokeCredentialEnrollmentRequest
 import com.ekms.shared.api.SiteDto
 import com.ekms.shared.api.SiteListResponse
+import com.ekms.shared.api.SiteOfficeHoursDto
 import com.ekms.shared.api.TerminalBootstrapRequest
 import com.ekms.shared.api.TerminalBootstrapResponse
 import com.ekms.shared.api.TerminalDto
@@ -22,8 +26,12 @@ import com.ekms.shared.api.TerminalPairingResponse
 import com.ekms.shared.api.TerminalSyncAckResponse
 import com.ekms.shared.api.TerminalSyncPushRequest
 import com.ekms.shared.api.TerminalSyncPushResponse
+import com.ekms.shared.api.UpdateKeyCheckoutRequest
+import com.ekms.shared.api.UpdateSiteOfficeHoursRequest
 import com.ekms.shared.api.UserDto
 import com.ekms.shared.api.UserListResponse
+import com.ekms.shared.api.VendorPasskeyRequestDto
+import com.ekms.shared.api.VendorPasskeyRequestListResponse
 import com.ekms.shared.domain.AuditEvent
 import com.ekms.shared.sync.OfflineChange
 import io.ktor.client.HttpClient
@@ -298,6 +306,115 @@ class TerminalApiClient(context: Context) {
                 body = null,
                 authenticated = true,
                 idempotent = false,
+            ),
+        )
+    }
+
+    /** Item 15. Both roles' allowlist admits this (Super Admin unconditionally; Regional Admin
+     * per `REGIONAL_ADMIN_ALLOWED_ROUTES` in backend `middleware/auth.js`, scoped server-side to
+     * their own assigned sites via `isSiteAssignedToUser`) — the terminal screen only decides
+     * whether to render Save, not whether the call itself is allowed. */
+    suspend fun getOfficeHours(siteId: String): SiteOfficeHoursDto {
+        ensureBaseUrl()
+        return decode(
+            send(
+                method = HttpMethod.Get,
+                path = ApiPaths.ADMIN_SITE_OFFICE_HOURS.replace("{id}", siteId),
+                body = null,
+                authenticated = true,
+                idempotent = false,
+            ),
+        )
+    }
+
+    suspend fun updateOfficeHours(siteId: String, request: UpdateSiteOfficeHoursRequest): SiteOfficeHoursDto {
+        ensureBaseUrl()
+        return decode(
+            send(
+                method = HttpMethod.Patch,
+                path = ApiPaths.ADMIN_SITE_OFFICE_HOURS.replace("{id}", siteId),
+                body = json.encodeToString(request),
+                authenticated = true,
+                idempotent = true,
+            ),
+        )
+    }
+
+    /**
+     * Phase 5. Fired on each key's successful take — see `TerminalAdminApp.handleTakeFlowOutcome`.
+     * Callers must treat a failure here as non-blocking (the physical take already succeeded) and
+     * fall back to logging a local `KEY_CHECKOUT_SYNC_FAILED` event instead of surfacing an error
+     * to the operator.
+     */
+    suspend fun createKeyCheckout(request: CreateKeyCheckoutRequest): KeyCheckoutDto {
+        ensureBaseUrl()
+        return decode(
+            send(
+                method = HttpMethod.Post,
+                path = ApiPaths.ADMIN_KEY_CHECKOUTS,
+                body = json.encodeToString(request),
+                authenticated = true,
+                idempotent = true,
+            ),
+        )
+    }
+
+    /** Phase 5. Close-out call fired on successful return — same non-blocking contract as [createKeyCheckout]. */
+    suspend fun closeKeyCheckout(id: String, request: UpdateKeyCheckoutRequest): KeyCheckoutDto {
+        ensureBaseUrl()
+        return decode(
+            send(
+                method = HttpMethod.Patch,
+                path = "${ApiPaths.ADMIN_KEY_CHECKOUTS}/$id",
+                body = json.encodeToString(request),
+                authenticated = true,
+                idempotent = true,
+            ),
+        )
+    }
+
+    /** Item 16. `status` defaults server-side to PENDING when omitted (see `vendorPasskeyRequests.js`). */
+    suspend fun listVendorPasskeyRequests(siteId: String? = null, status: String? = null): List<VendorPasskeyRequestDto> {
+        ensureBaseUrl()
+        val params = buildList {
+            if (!siteId.isNullOrBlank()) add("siteId=$siteId")
+            if (!status.isNullOrBlank()) add("status=$status")
+        }
+        val query = if (params.isEmpty()) "" else "?" + params.joinToString("&")
+        return decode<VendorPasskeyRequestListResponse>(
+            send(
+                method = HttpMethod.Get,
+                path = "${ApiPaths.ADMIN_VENDOR_PASSKEY_REQUESTS}$query",
+                body = null,
+                authenticated = true,
+                idempotent = false,
+            ),
+        ).items
+    }
+
+    /** Super Admin only, per this phase's flagged judgment call — see [com.ekms.terminal.ui.TerminalVendorPasskeyScreen]'s doc. */
+    suspend fun approveVendorPasskeyRequest(id: String): ApproveVendorPasskeyRequestResponse {
+        ensureBaseUrl()
+        return decode(
+            send(
+                method = HttpMethod.Post,
+                path = ApiPaths.ADMIN_VENDOR_PASSKEY_REQUEST_APPROVE.replace("{id}", id),
+                body = "{}",
+                authenticated = true,
+                idempotent = true,
+            ),
+        )
+    }
+
+    suspend fun rejectVendorPasskeyRequest(id: String): VendorPasskeyRequestDto {
+        ensureBaseUrl()
+        return decode(
+            send(
+                method = HttpMethod.Post,
+                path = ApiPaths.ADMIN_VENDOR_PASSKEY_REQUEST_REJECT.replace("{id}", id),
+                body = "{}",
+                authenticated = true,
+                idempotent = true,
             ),
         )
     }

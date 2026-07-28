@@ -19,9 +19,11 @@ import java.util.concurrent.Executors
  * real delay between attempts (`shared` is Kotlin Multiplatform and has no cross-platform sleep
  * primitive available to a plain blocking call; see [R503FingerprintProtocol]'s class doc).
  *
- * Scope: enrollment + template management only, matching terminalApp's current feature — no
- * runtime fingerprint-based login/matching is wired up here. [R503FingerprintProtocol.verifyTemplateOnce]/
- * [R503FingerprintProtocol.autoIdentify] exist for future use but have no caller from this class yet.
+ * Scope: enrollment + template management, plus login identification via [identifyFingerprint]
+ * (Phase 3) — [R503FingerprintProtocol.autoIdentify] previously had zero callers anywhere in this
+ * codebase; this is the first. [R503FingerprintProtocol.verifyTemplateOnce] (verify against one
+ * already-known slot, as opposed to searching the whole library) still has no caller — it isn't
+ * needed for a login flow that doesn't yet know which user it's looking for.
  */
 class FingerprintHardwareController(
     private val onStateChanged: (FingerprintHardwareState) -> Unit,
@@ -29,6 +31,12 @@ class FingerprintHardwareController(
     companion object {
         private const val FINGER_DETECTION_TIMEOUT_MILLIS = 10_000L
         private const val FINGER_DETECTION_POLL_INTERVAL_MILLIS = 250L
+
+        /** The R503's on-device library holds 200 slots (0-199) — see the `require` bounds on
+         * [R503FingerprintProtocol.autoIdentify]. Searching the full range is what makes this a
+         * true "identify," not "verify against one known slot" (that's [enrollFingerprint]'s
+         * one-time enrollment-side duplicate check, a different call). */
+        private const val FINGERPRINT_LIBRARY_SIZE = 200
     }
 
     private val mainHandler = Handler(Looper.getMainLooper())
@@ -148,6 +156,69 @@ class FingerprintHardwareController(
         }
     }
 
+    /**
+     * Fingerprint login: waits for a finger, then runs the R503's own AutoIdentify (search the
+     * whole 0-199 library) rather than verifying against one already-known slot — this is the
+     * first caller of [R503FingerprintProtocol.autoIdentify] anywhere in this codebase; it
+     * previously existed at the protocol layer with zero callers. Returns the matched
+     * template ID only — mapping that back to a userId is the caller's job (see
+     * [FingerprintTemplateStore.userIdForTemplate]), same separation [enrollFingerprint] already
+     * has between "sensor-side template ID" and "which person" via [FingerprintTemplateStore].
+     */
+    fun identifyFingerprint(
+        onProgress: (String) -> Unit,
+        onOutcome: (FingerprintIdentifyOutcome) -> Unit,
+    ) {
+        publish(currentState.copy(busy = true, message = "Preparing fingerprint sensor…"))
+        worker.execute {
+            try {
+                val link = ensureConnectedOnWorker()
+                mainHandler.post { onProgress("Place a finger on the sensor…") }
+
+                val detected = waitForFinger(
+                    link,
+                    FINGER_DETECTION_TIMEOUT_MILLIS,
+                    FINGER_DETECTION_POLL_INTERVAL_MILLIS,
+                )
+                if (!detected) {
+                    val message = "No finger detected within 10 seconds."
+                    publish(currentState.copy(busy = false, message = message))
+                    mainHandler.post { onOutcome(FingerprintIdentifyOutcome.Failed(message)) }
+                    return@execute
+                }
+
+                mainHandler.post { onProgress("Checking fingerprint…") }
+                val result = link.autoIdentify(startTemplateId = 0, templateCount = FINGERPRINT_LIBRARY_SIZE)
+                val confirmationCode = result.confirmationCode
+                val matchedTemplateId = result.matchedTemplateId
+
+                when {
+                    confirmationCode == 0x00 && matchedTemplateId != null -> {
+                        publish(currentState.copy(busy = false, message = "Fingerprint matched template $matchedTemplateId."))
+                        mainHandler.post { onOutcome(FingerprintIdentifyOutcome.Matched(matchedTemplateId)) }
+                    }
+
+                    confirmationCode == 0x09 -> {
+                        val message = "Fingerprint not recognized."
+                        publish(currentState.copy(busy = false, message = message))
+                        mainHandler.post { onOutcome(FingerprintIdentifyOutcome.NoMatch) }
+                    }
+
+                    else -> {
+                        val message = "Identification failed: " +
+                            R503FingerprintProtocol.confirmationCodeDescription(confirmationCode ?: -1)
+                        publish(currentState.copy(busy = false, message = message))
+                        mainHandler.post { onOutcome(FingerprintIdentifyOutcome.Failed(message)) }
+                    }
+                }
+            } catch (error: Exception) {
+                val message = "Identification failed: ${error.detail()}"
+                publish(currentState.copy(busy = false, message = message))
+                mainHandler.post { onOutcome(FingerprintIdentifyOutcome.Failed(message)) }
+            }
+        }
+    }
+
     /** Deletes one template slot from the sensor's own library (0x0C) — used by revoke. */
     fun deleteTemplate(templateId: Int, onOutcome: (success: Boolean, message: String) -> Unit) {
         publish(currentState.copy(busy = true, message = "Deleting template $templateId…"))
@@ -242,4 +313,13 @@ data class FingerprintHardwareState(
 sealed interface FingerprintEnrollmentOutcome {
     data class Success(val templateId: Int) : FingerprintEnrollmentOutcome
     data class Failed(val message: String) : FingerprintEnrollmentOutcome
+}
+
+sealed interface FingerprintIdentifyOutcome {
+    data class Matched(val templateId: Int) : FingerprintIdentifyOutcome
+    /** A clean "not recognized" result (R503 confirmation code 0x09) — never fall through to
+     * another login method silently; the caller must show this explicitly and let the user
+     * retry or pick a different method themselves. */
+    data object NoMatch : FingerprintIdentifyOutcome
+    data class Failed(val message: String) : FingerprintIdentifyOutcome
 }

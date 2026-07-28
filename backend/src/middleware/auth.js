@@ -33,6 +33,13 @@ export function requireSuperAdmin(req, res, next) {
  * Do not widen it (e.g. to a whole sub-router) without re-checking that file — a
  * TERMINAL_DEVICE token must never reach site/terminal/key CRUD, permissions, recycle
  * bin, sync-conflict resolution, or any other admin surface beyond exactly this set.
+ *
+ * Phase 5 addition: the original `key_checkouts` work (Phase 1) described this table as
+ * "TERMINAL_DEVICE- and SUPER_ADMIN-only reachable" in its own comments, but never actually
+ * added an allowlist entry — confirmed by reading this file before touching it, not assumed.
+ * Added exactly what Phase 5's terminal-side checkout sync calls (create on take, close-out on
+ * return, office-hours read to compute the deadline) — no GET/list on key-checkouts, the
+ * terminal never needs to list them, only create/close the ones it creates itself.
  */
 const TERMINAL_DEVICE_ALLOWED_ROUTES = [
   { method: 'GET', pattern: /^\/sites$/ },
@@ -42,6 +49,9 @@ const TERMINAL_DEVICE_ALLOWED_ROUTES = [
   { method: 'GET', pattern: /^\/users\/[^/]+\/credentials$/ },
   { method: 'POST', pattern: /^\/users\/[^/]+\/credentials\/complete$/ },
   { method: 'POST', pattern: /^\/users\/[^/]+\/credentials\/revoke$/ },
+  { method: 'GET', pattern: /^\/sites\/[^/]+\/office-hours$/ },
+  { method: 'POST', pattern: /^\/key-checkouts$/ },
+  { method: 'PATCH', pattern: /^\/key-checkouts\/[^/]+$/ },
 ];
 
 /**
@@ -66,8 +76,10 @@ const TERMINAL_DEVICE_ALLOWED_ROUTES = [
  *   this if that interpretation is wrong.
  * - `DELETE /access-grants/:id` — the matrix only calls for list/create/update.
  * - `/key-checkouts` (a View-only matrix item, not Edit, and a separate not-yet-made decision).
- * - All terminal/site CRUD, MAC address, server address, activation code, and everything else
- *   marked Hidden/Super-Admin-only in the matrix.
+ * - Site/terminal CRUD (create/update/delete), MAC address, server address, activation code, and
+ *   everything else marked Hidden/Super-Admin-only in the matrix. `GET /sites` and
+ *   `GET /sites/:id` ARE included (added in the item-14 site-name follow-up) — but read-only,
+ *   list/get only; site create/update/delete stay excluded.
  */
 const REGIONAL_ADMIN_ALLOWED_ROUTES = [
   // Terminal cabinet behavioral settings — Key node setting, Key Return Certification, return/
@@ -89,6 +101,11 @@ const REGIONAL_ADMIN_ALLOWED_ROUTES = [
   { method: 'POST', pattern: /^\/vendor-passkey-requests$/ },
   { method: 'POST', pattern: /^\/vendor-passkey-requests\/[^/]+\/approve$/ },
   { method: 'POST', pattern: /^\/vendor-passkey-requests\/[^/]+\/reject$/ },
+  // Sites: read-only (list/get), added for the terminal's item-14 site-name display — NOT
+  // create/update/delete. sites.js's own handlers additionally scope both of these to the
+  // Regional Admin's own assigned sites; this allowlist only controls reachability.
+  { method: 'GET', pattern: /^\/sites$/ },
+  { method: 'GET', pattern: /^\/sites\/[^/]+$/ },
 ];
 
 /**

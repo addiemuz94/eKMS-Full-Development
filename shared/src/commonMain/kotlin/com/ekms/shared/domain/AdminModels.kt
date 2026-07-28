@@ -222,6 +222,11 @@ enum class AuditEventType {
     /** A field on an open checkout (e.g. a manually-entered due date) changed without closing it out. */
     KEY_CHECKOUT_UPDATED,
     KEY_CHECKOUT_RETURNED,
+    /** Terminal-local only: the backend `key_checkouts` create/close-out call failed (offline, timeout,
+     * server error, etc). The physical take/return itself already succeeded and is never blocked on this —
+     * see Phase 5's non-blocking sync contract in `TerminalAdminApp.handleTakeFlowOutcome`/
+     * `handleReturnFlowOutcome`. Distinct from KEY_CHECKOUT_CREATED/UPDATED/RETURNED, which imply success. */
+    KEY_CHECKOUT_SYNC_FAILED,
     SITE_OFFICE_HOURS_UPDATED,
     VENDOR_PASSKEY_REQUESTED,
     VENDOR_PASSKEY_APPROVED,

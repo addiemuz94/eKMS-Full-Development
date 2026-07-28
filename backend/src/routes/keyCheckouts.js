@@ -82,6 +82,11 @@ router.post('/', async (req, res) => {
     dueAtEpochMillis: z.number().int().positive(),
     isEmergency: z.boolean().default(false),
     emergencyWindowEndsAtEpochMillis: z.number().int().positive().nullable().optional(),
+    // Not stored — same "log which path set it via audit_events, no parallel column" decision
+    // already applied to the PATCH route's dueDateSource. Phase 5 adds the EMERGENCY case here:
+    // the close-to-deadline decision (auto-computed close time / manually entered / marked
+    // emergency) happens once at take time, which is exactly this route.
+    dueDateSource: z.enum(['AUTO', 'MANUAL', 'EMERGENCY']).default('AUTO'),
   });
   const parsed = schema.safeParse(req.body);
   if (!parsed.success) return badRequest(res, 'Invalid key checkout payload');
@@ -127,6 +132,7 @@ router.post('/', async (req, res) => {
     terminalId: parsed.data.terminalId,
     entityType: 'KEY_CHECKOUT',
     entityId: id,
+    detail: `dueDateSource=${parsed.data.dueDateSource}`,
   });
 
   const [rows] = await pool.execute(`SELECT * FROM key_checkouts WHERE id = :id`, { id });

@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { z } from 'zod';
 import pool from '../db.js';
 import {
+  assignedSiteIdsForUser,
   badRequest,
   conflict,
   isSiteAssignedToUser,
@@ -56,6 +57,25 @@ const upsertSchema = z.object({
 
 router.get('/', async (req, res) => {
   const state = req.query.state || 'ACTIVE';
+
+  // Regional Admin: read-only, and scoped to their own assigned sites — added alongside the
+  // Phase 7 follow-up that needed real site names for the terminal's site-assignment display.
+  // Super Admin (and any other future caller of this route) is unrestricted, as before.
+  if (req.auth?.role === 'REGIONAL_ADMIN') {
+    const assignedSiteIds = await assignedSiteIdsForUser(req.auth.sub);
+    if (assignedSiteIds.length === 0) return res.json({ items: [] });
+    const placeholders = assignedSiteIds.map((_, i) => `:site${i}`).join(', ');
+    const params = { state };
+    assignedSiteIds.forEach((id, i) => {
+      params[`site${i}`] = id;
+    });
+    const [rows] = await pool.execute(
+      `SELECT * FROM sites WHERE lifecycle_state = :state AND id IN (${placeholders}) ORDER BY name ASC`,
+      params,
+    );
+    return res.json({ items: rows.map(mapSite) });
+  }
+
   const [rows] = await pool.execute(
     `SELECT * FROM sites WHERE lifecycle_state = :state ORDER BY name ASC`,
     { state },
@@ -68,6 +88,12 @@ router.get('/:id', async (req, res) => {
     id: req.params.id,
   });
   if (!rows[0]) return notFound(res, 'Site not found');
+  // Out-of-scope reads as "not found", not "forbidden" — same reasoning as every other
+  // Regional-Admin-scoped GET added in the earlier follow-up (avoids confirming a site's
+  // existence to a Regional Admin who isn't assigned to it).
+  if (req.auth?.role === 'REGIONAL_ADMIN' && !(await isSiteAssignedToUser(req.auth.sub, req.params.id))) {
+    return notFound(res, 'Site not found');
+  }
   return res.json(mapSite(rows[0]));
 });
 

@@ -57,7 +57,10 @@ import android.hardware.camera2.CameraManager
 import android.provider.Settings
 import android.util.Log
 import com.ekms.shared.api.CreateAdminUserRequest
+import com.ekms.shared.api.CreateKeyCheckoutRequest
+import com.ekms.shared.api.KeyCheckoutStatus
 import com.ekms.shared.api.SiteDto
+import com.ekms.shared.api.UpdateKeyCheckoutRequest
 import com.ekms.shared.api.UserDto
 import com.ekms.shared.domain.AccessGrant
 import com.ekms.shared.domain.AuditEventType
@@ -73,6 +76,8 @@ import com.ekms.shared.domain.Terminal
 import com.ekms.shared.domain.UserRole
 import com.ekms.shared.protocol.KeyCabinetLink.Companion.MAX_KEY_NODE_ADDRESS
 import com.ekms.terminal.data.AuthOutcome
+import com.ekms.terminal.data.CheckoutDeadlineChoice
+import com.ekms.terminal.data.CheckoutDeadlinePolicy
 import com.ekms.terminal.data.StoreResult
 import com.ekms.terminal.data.TerminalAccessGrant
 import com.ekms.terminal.data.TerminalAdminSnapshot
@@ -198,7 +203,26 @@ fun TerminalAdminApp() {
     }
 
     var route by remember { mutableStateOf(SuperAdminRoute.LOGIN) }
+    // Phase 3 login rework: which of the 5 method screens to show under SuperAdminRoute.LOGIN.
+    // null means "show the method-chooser (TerminalLoginScreen) itself."
+    var loginMethod by remember { mutableStateOf<LoginMethod?>(null) }
     var session by remember { mutableStateOf<TerminalSession?>(null) }
+
+    // Single source of truth for post-login routing, reused across every login method (password,
+    // personnel-card NFC, fingerprint, face) instead of repeating this when-block at each call
+    // site — Phase 3 explicitly requires Super Admin and Regional Admin to land on the same
+    // destination, and quadruplicating this decision is exactly how a future role gets missed
+    // in one copy but not the others (see TerminalSession.isAdminTier's doc for why this isn't
+    // just `isSuperAdmin` anymore). Declared this early (rather than near applyAuthSession,
+    // where it's also used) so every closure further down in this function — including the
+    // public-card-reader callback, which is defined before applyAuthSession — can reference it;
+    // Kotlin resolves local function references by source order, not by when a closure actually
+    // runs, so a later declaration isn't visible to an earlier-written deferred callback.
+    fun postLoginRoute(authenticated: TerminalSession): SuperAdminRoute = when {
+        authenticated.requiresPasswordChange -> SuperAdminRoute.CHANGE_PASSWORD
+        authenticated.isAdminTier -> SuperAdminRoute.DASHBOARD
+        else -> SuperAdminRoute.KEY_MENU
+    }
     var snapshot by remember { mutableStateOf(store.snapshot()) }
     var hardwareState by remember { mutableStateOf(CabinetHardwareState()) }
     var syncBusy by remember { mutableStateOf(false) }
@@ -258,6 +282,15 @@ fun TerminalAdminApp() {
     var takeFlow by remember { mutableStateOf<TakeFlow?>(null) }
     var multiKeyQueue by remember { mutableStateOf<MultiKeyTakeQueue?>(null) }
     var multiKeyQueuePending by remember { mutableStateOf(false) }
+    // Phase 5: the once-per-session close-to-deadline decision. checkoutDeadlineResolving covers
+    // the brief office-hours fetch at the very start of takeKey()/beginMultiKeyTake() (before
+    // either single-key or multi-key hardware sequences begin); pendingCheckoutDecision covers the
+    // blocking manual-entry/Emergency screen when that fetch determines Auto isn't safe. Both are
+    // cross-cutting the same way ReturnFlow's AwaitingCertification/DoorOpen/SessionIdle states
+    // are — rendered ahead of `route` in the outer `when` below, regardless of which route
+    // (KEY_RETRIEVAL or KEY_MENU) triggered them.
+    var checkoutDeadlineResolving by remember { mutableStateOf(false) }
+    var pendingCheckoutDecision by remember { mutableStateOf<PendingCheckoutDecision?>(null) }
     var returnFlow by remember { mutableStateOf<ReturnFlow?>(null) }
     var passwordChangeReturnRoute by remember { mutableStateOf(SuperAdminRoute.DASHBOARD) }
     var serverPersonnel by remember { mutableStateOf(store.cachedPersonnel()) }
@@ -293,6 +326,17 @@ fun TerminalAdminApp() {
         }
     }
 
+    // Phase 5: office-hours fetch + CheckoutDeadlinePolicy, run once at the start of a take
+    // session (single or multi-key), never per key. A failed fetch (offline, server error) is
+    // deliberately treated the same as "already past close" — CheckoutDeadlinePolicy.computeDeadline
+    // already does this for a null officeHours — rather than blocking the take entirely, so an
+    // operator can still proceed via manual entry or Emergency even with no backend reachable.
+    suspend fun resolveCheckoutDeadline(): Pair<CheckoutDeadlinePolicy.DeadlineDecision, String> {
+        val officeHours = runCatching { apiClient.getOfficeHours(retrievalTerminal.siteId) }.getOrNull()
+        val decision = CheckoutDeadlinePolicy.computeDeadline(officeHours, System.currentTimeMillis())
+        return decision to (officeHours?.timezone ?: "Asia/Kuala_Lumpur")
+    }
+
     // Key Take Flow (CLAUDE.md "Terminal App UX Baseline (Production)" §1):
     // the availability check below (no slot -> not selectable) is the same
     // one the grid already enforces before ever calling this; entering
@@ -305,7 +349,22 @@ fun TerminalAdminApp() {
             notice = "${key.displayName} is not assigned to a cabinet slot."
             return
         }
-        takeFlow = TakeFlow(key, slot)
+        checkoutDeadlineResolving = true
+        scope.launch {
+            val (decision, timezone) = resolveCheckoutDeadline()
+            checkoutDeadlineResolving = false
+            when (decision) {
+                is CheckoutDeadlinePolicy.DeadlineDecision.Auto ->
+                    takeFlow = TakeFlow(key, slot, CheckoutDeadlineChoice.auto(decision.dueAtEpochMillis))
+
+                is CheckoutDeadlinePolicy.DeadlineDecision.NeedsDecision ->
+                    pendingCheckoutDecision = PendingCheckoutDecision(
+                        closeAtEpochMillis = decision.closeAtEpochMillis,
+                        timezone = timezone,
+                        resume = { choice -> takeFlow = TakeFlow(key, slot, choice) },
+                    )
+            }
+        }
     }
 
     // Key Menu multi-key sequential Take Flow: confirming a selection first lights every
@@ -321,24 +380,45 @@ fun TerminalAdminApp() {
             notice = "None of the selected keys are assigned to a cabinet slot."
             return
         }
-        multiKeyQueuePending = true
-        hardwareController.beginMultiKeyRedLightSequence(
-            nodeAddresses = pairs.map { (_, slot) -> slot.nodeAddress },
-            onReady = {
-                multiKeyQueuePending = false
-                multiKeyQueue = MultiKeyTakeQueue(pairs)
-            },
-            onFailure = { message ->
-                multiKeyQueuePending = false
-                notice = message
-            },
-        )
+
+        fun startQueue(deadline: CheckoutDeadlineChoice) {
+            multiKeyQueuePending = true
+            hardwareController.beginMultiKeyRedLightSequence(
+                nodeAddresses = pairs.map { (_, slot) -> slot.nodeAddress },
+                onReady = {
+                    multiKeyQueuePending = false
+                    multiKeyQueue = MultiKeyTakeQueue(pairs, checkoutDeadline = deadline)
+                },
+                onFailure = { message ->
+                    multiKeyQueuePending = false
+                    notice = message
+                },
+            )
+        }
+
+        checkoutDeadlineResolving = true
+        scope.launch {
+            val (decision, timezone) = resolveCheckoutDeadline()
+            checkoutDeadlineResolving = false
+            when (decision) {
+                is CheckoutDeadlinePolicy.DeadlineDecision.Auto ->
+                    startQueue(CheckoutDeadlineChoice.auto(decision.dueAtEpochMillis))
+
+                is CheckoutDeadlinePolicy.DeadlineDecision.NeedsDecision ->
+                    pendingCheckoutDecision = PendingCheckoutDecision(
+                        closeAtEpochMillis = decision.closeAtEpochMillis,
+                        timezone = timezone,
+                        resume = { choice -> startQueue(choice) },
+                    )
+            }
+        }
     }
 
-    fun handleTakeFlowOutcome(outcome: TakeFlowOutcome) {
+    fun handleTakeFlowOutcome(outcome: TakeFlowOutcome, deadline: CheckoutDeadlineChoice) {
         val actorUserId = session?.userId
         when (outcome) {
             is TakeFlowOutcome.Success -> {
+                val takenAtEpochMillis = System.currentTimeMillis()
                 // Return Flow reads this back via checkoutStore.find(keyId) to show who has
                 // the key and since when, and to know what to close out on return — the
                 // minimal local stand-in described in TerminalCheckoutStore's doc.
@@ -347,10 +427,50 @@ fun TerminalAdminApp() {
                         keyId = outcome.key.id,
                         userId = actorUserId,
                         terminalId = retrievalTerminal.id,
-                        takenAtEpochMillis = System.currentTimeMillis(),
+                        takenAtEpochMillis = takenAtEpochMillis,
                     ),
                 )
                 store.logEvent(AuditEventType.KEY_TAKEN, actorUserId, RecordType.KEY, outcome.key.id)
+
+                // Phase 5: real backend key_checkouts row, fired non-blocking — the physical take
+                // already succeeded above and must never be undone or delayed by this call. A
+                // failure (offline, demo/non-backend key or user id, server error) is logged
+                // locally only, never surfaced to the operator.
+                if (actorUserId == null) {
+                    store.logEvent(
+                        AuditEventType.KEY_CHECKOUT_SYNC_FAILED,
+                        null,
+                        RecordType.KEY,
+                        outcome.key.id,
+                        "No signed-in user id to attribute the checkout to.",
+                    )
+                } else {
+                    scope.launch {
+                        try {
+                            val created = apiClient.createKeyCheckout(
+                                CreateKeyCheckoutRequest(
+                                    keyId = outcome.key.id,
+                                    userId = actorUserId,
+                                    terminalId = retrievalTerminal.id,
+                                    takenAtEpochMillis = takenAtEpochMillis,
+                                    dueAtEpochMillis = deadline.dueAtEpochMillis,
+                                    isEmergency = deadline.isEmergency,
+                                    emergencyWindowEndsAtEpochMillis = deadline.emergencyWindowEndsAtEpochMillis,
+                                    dueDateSource = deadline.source,
+                                ),
+                            )
+                            checkoutStore.attachBackendInfo(outcome.key.id, created)
+                        } catch (error: Exception) {
+                            store.logEvent(
+                                AuditEventType.KEY_CHECKOUT_SYNC_FAILED,
+                                actorUserId,
+                                RecordType.KEY,
+                                outcome.key.id,
+                                error.message ?: "Checkout create sync failed.",
+                            )
+                        }
+                    }
+                }
             }
 
             is TakeFlowOutcome.Failed ->
@@ -507,8 +627,51 @@ fun TerminalAdminApp() {
             is ReturnFlowOutcome.Success -> {
                 outcome.key?.let { returnedKey ->
                     takenKeyIds = takenKeyIds - returnedKey.id
-                    checkoutStore.close(returnedKey.id)
+                    val closedRecord = checkoutStore.close(returnedKey.id)
                     returnSessionReturnedKeyNames = returnSessionReturnedKeyNames + returnedKey.displayName
+
+                    // Phase 5: backend close-out, fired non-blocking — same contract as the
+                    // take-side create call above. Requires both a backendCheckoutId (the create
+                    // sync must have succeeded) and a backendDueAtEpochMillis to pass the route's
+                    // required dueAtEpochMillis through unchanged rather than silently rewriting
+                    // it; either being null means the create sync never actually completed.
+                    val backendCheckoutId = closedRecord?.backendCheckoutId
+                    val backendRevision = closedRecord?.backendRevision
+                    val backendDueAtEpochMillis = closedRecord?.backendDueAtEpochMillis
+                    if (backendCheckoutId != null && backendRevision != null && backendDueAtEpochMillis != null) {
+                        val returnedAtEpochMillis = System.currentTimeMillis()
+                        scope.launch {
+                            try {
+                                apiClient.closeKeyCheckout(
+                                    backendCheckoutId,
+                                    UpdateKeyCheckoutRequest(
+                                        dueAtEpochMillis = backendDueAtEpochMillis,
+                                        status = KeyCheckoutStatus.RETURNED,
+                                        returnedAtEpochMillis = returnedAtEpochMillis,
+                                        isEmergency = closedRecord.backendIsEmergency,
+                                        emergencyWindowEndsAtEpochMillis = closedRecord.backendEmergencyWindowEndsAtEpochMillis,
+                                        expectedRevision = backendRevision,
+                                    ),
+                                )
+                            } catch (error: Exception) {
+                                store.logEvent(
+                                    AuditEventType.KEY_CHECKOUT_SYNC_FAILED,
+                                    actorUserId,
+                                    RecordType.KEY,
+                                    returnedKey.id,
+                                    error.message ?: "Checkout close-out sync failed.",
+                                )
+                            }
+                        }
+                    } else {
+                        store.logEvent(
+                            AuditEventType.KEY_CHECKOUT_SYNC_FAILED,
+                            actorUserId,
+                            RecordType.KEY,
+                            returnedKey.id,
+                            "No backend checkout id to close out — the create sync likely never succeeded.",
+                        )
+                    }
                 }
                 store.logEvent(AuditEventType.KEY_RETURNED, actorUserId, RecordType.KEY, outcome.key?.id)
             }
@@ -564,11 +727,8 @@ fun TerminalAdminApp() {
                         is StoreResult.Success -> {
                             session = result.value
                             notice = null
-                            route = when {
-                                result.value.requiresPasswordChange -> SuperAdminRoute.CHANGE_PASSWORD
-                                result.value.isSuperAdmin -> SuperAdminRoute.DASHBOARD
-                                else -> SuperAdminRoute.KEY_MENU
-                            }
+                            loginMethod = null
+                            route = postLoginRoute(result.value)
                         }
 
                         is StoreResult.Error -> notice = result.message
@@ -724,6 +884,7 @@ fun TerminalAdminApp() {
         session = null
         capturedFob = null
         notice = null
+        loginMethod = null
         route = SuperAdminRoute.LOGIN
     }
 
@@ -733,21 +894,13 @@ fun TerminalAdminApp() {
                 session = outcome.session
                 notice = "Signed in to ${apiClient.baseUrl}."
                 refreshServerPersonnel()
-                route = when {
-                    outcome.session.requiresPasswordChange -> SuperAdminRoute.CHANGE_PASSWORD
-                    outcome.session.isSuperAdmin -> SuperAdminRoute.DASHBOARD
-                    else -> SuperAdminRoute.KEY_MENU
-                }
+                route = postLoginRoute(outcome.session)
             }
 
             is AuthOutcome.Local -> {
                 session = outcome.session
                 notice = outcome.serverWarning
-                route = when {
-                    outcome.session.requiresPasswordChange -> SuperAdminRoute.CHANGE_PASSWORD
-                    outcome.session.isSuperAdmin -> SuperAdminRoute.DASHBOARD
-                    else -> SuperAdminRoute.KEY_MENU
-                }
+                route = postLoginRoute(outcome.session)
             }
 
             is AuthOutcome.Failed -> notice = outcome.message
@@ -788,11 +941,11 @@ fun TerminalAdminApp() {
 
     fun openAdmin(routeToOpen: SuperAdminRoute) {
         val activeSession = session
-        if (activeSession?.isSuperAdmin == true) {
+        if (activeSession?.isAdminTier == true) {
             notice = null
             route = routeToOpen
         } else {
-            notice = "Only the signed-in Super Admin may open this area."
+            notice = "Only a signed-in Super Admin or Regional Admin may open this area."
             route = SuperAdminRoute.LOGIN
         }
     }
@@ -909,12 +1062,13 @@ fun TerminalAdminApp() {
             },
         ) { padding ->
             val activeReturnFlow = returnFlow
+            val activePendingCheckoutDecision = pendingCheckoutDecision
             when {
                 // Section 3 (key return) is reached directly from the login/home
                 // screen by a key-card swipe, never through a menu — so it takes
                 // over here regardless of `route`, and returns to whatever route
                 // was already showing once it completes.
-                activeReturnFlow is ReturnFlow.AwaitingCertification -> TerminalLoginScreen(
+                activeReturnFlow is ReturnFlow.AwaitingCertification -> TerminalPasswordLoginScreen(
                     padding = padding,
                     onAccountLogin = { username, password ->
                         when (val result = store.authenticate(username, password)) {
@@ -962,13 +1116,95 @@ fun TerminalAdminApp() {
                     onDone = { endReturnSession() },
                 )
 
-                else -> when (route) {
-                SuperAdminRoute.LOGIN -> TerminalLoginScreen(
+                // Phase 5: the once-per-session checkout deadline decision. Cross-cutting for the
+                // same reason the ReturnFlow branches above are — takeKey() fires from
+                // KEY_RETRIEVAL, beginMultiKeyTake() fires from KEY_MENU, and this must intercept
+                // either regardless of `route`, before that route's own takeFlow/multiKeyQueue
+                // rendering ever runs.
+                checkoutDeadlineResolving -> TerminalPage(padding) {
+                    HeaderCard(
+                        title = "Preparing checkout",
+                        description = "Checking today's office hours…",
+                    )
+                }
+
+                activePendingCheckoutDecision != null -> TerminalCloseToDeadlineScreen(
                     padding = padding,
-                    onAccountLogin = { username, password -> runServerLogin(username, password) },
-                    loginError = notice,
-                    onKeyCardSwiped = { startKeyCardReturn() },
+                    closeAtEpochMillis = activePendingCheckoutDecision.closeAtEpochMillis,
+                    timezone = activePendingCheckoutDecision.timezone,
+                    nowEpochMillis = { System.currentTimeMillis() },
+                    onResolved = { choice ->
+                        pendingCheckoutDecision = null
+                        activePendingCheckoutDecision.resume(choice)
+                    },
                 )
+
+                else -> when (route) {
+                SuperAdminRoute.LOGIN -> when (loginMethod) {
+                    null -> TerminalLoginScreen(
+                        padding = padding,
+                        onSelectMethod = { method -> loginMethod = method },
+                    )
+
+                    LoginMethod.PASSWORD -> TerminalPasswordLoginScreen(
+                        padding = padding,
+                        onAccountLogin = { username, password -> runServerLogin(username, password) },
+                        loginError = notice,
+                        onBack = { loginMethod = null },
+                    )
+
+                    LoginMethod.NFC_CARD -> TerminalNfcCardLoginScreen(
+                        padding = padding,
+                        onBack = { loginMethod = null },
+                        onSimulateKeyCardTap = { startKeyCardReturn() },
+                    )
+
+                    LoginMethod.FINGERPRINT -> TerminalFingerprintLoginScreen(
+                        padding = padding,
+                        onBack = { loginMethod = null },
+                        onIdentify = fingerprintHardwareController::identifyFingerprint,
+                        onMatched = { templateId ->
+                            val userId = fingerprintTemplateStore.userIdForTemplate(templateId)
+                            if (userId == null) {
+                                notice = "Fingerprint matched a template with no linked personnel record."
+                            } else {
+                                when (val result = store.authenticateByUserId(userId)) {
+                                    is StoreResult.Success -> {
+                                        session = result.value
+                                        notice = null
+                                        loginMethod = null
+                                        route = postLoginRoute(result.value)
+                                    }
+
+                                    is StoreResult.Error -> notice = result.message
+                                }
+                            }
+                        },
+                    )
+
+                    LoginMethod.FACE -> TerminalFaceLoginScreen(
+                        padding = padding,
+                        faceProfileStore = faceProfileStore,
+                        onBack = { loginMethod = null },
+                        onMatched = { userId, _, _ ->
+                            when (val result = store.authenticateByUserId(userId)) {
+                                is StoreResult.Success -> {
+                                    session = result.value
+                                    notice = null
+                                    loginMethod = null
+                                    route = postLoginRoute(result.value)
+                                }
+
+                                is StoreResult.Error -> notice = result.message
+                            }
+                        },
+                    )
+
+                    LoginMethod.PASSKEY -> TerminalPasskeyLoginScreen(
+                        padding = padding,
+                        onBack = { loginMethod = null },
+                    )
+                }
 
                 SuperAdminRoute.CHANGE_PASSWORD -> ChangePasswordScreen(
                     padding = padding,
@@ -993,12 +1229,12 @@ fun TerminalAdminApp() {
 
                 SuperAdminRoute.DASHBOARD -> {
                     val activeSession = session
-                    if (activeSession?.isSuperAdmin != true) {
+                    if (activeSession?.isAdminTier != true) {
                         LaunchedEffect(Unit) {
                             route = SuperAdminRoute.LOGIN
                         }
                         TerminalPage(padding) {
-                            SuperAdminNoticeCard("Your Super Admin session has ended. Returning to sign-in…")
+                            SuperAdminNoticeCard("Your session has ended. Returning to sign-in…")
                         }
                     } else {
                         SuperAdminDashboardScreen(
@@ -1015,6 +1251,8 @@ fun TerminalAdminApp() {
                             onOpenKeyRetrieval = { openAdmin(SuperAdminRoute.KEY_RETRIEVAL) },
                             onOpenAdminMenu = { openAdmin(SuperAdminRoute.ADMIN_MENU) },
                             onOpenHardware = { openAdmin(SuperAdminRoute.HARDWARE) },
+                            onOpenOfficeHours = { openAdmin(SuperAdminRoute.OFFICE_HOURS) },
+                            onOpenVendorPasskey = { openAdmin(SuperAdminRoute.VENDOR_PASSKEY) },
                             onSignOut = ::signOut,
                         )
                     }
@@ -1247,6 +1485,7 @@ fun TerminalAdminApp() {
 
                 SuperAdminRoute.ACCESS_GRANTS -> AccessGrantsScreen(
                     padding = padding,
+                    role = session?.role ?: TerminalUserRole.SUPER_ADMIN,
                     users = personnelForScreens.filterNot {
                         it.isPreset || it.role == TerminalUserRole.SUPER_ADMIN
                     },
@@ -1288,6 +1527,9 @@ fun TerminalAdminApp() {
 
                 SuperAdminRoute.ADMIN_MENU -> TerminalAdminMenuScreen(
                     padding = padding,
+                    role = session?.role ?: TerminalUserRole.SUPER_ADMIN,
+                    assignedSiteIds = session?.assignedSiteIds ?: emptySet(),
+                    onLoadSites = { apiClient.listSites() },
                     settings = snapshot.cabinetSettings,
                     highestRegisteredNodeAddress = retrievalSlots
                         .filter { it.managedKeyId != null }
@@ -1387,6 +1629,25 @@ fun TerminalAdminApp() {
                     },
                 )
 
+                SuperAdminRoute.OFFICE_HOURS -> TerminalOfficeHoursScreen(
+                    padding = padding,
+                    role = session?.role ?: TerminalUserRole.SUPER_ADMIN,
+                    siteId = retrievalTerminal.siteId,
+                    onBack = { route = SuperAdminRoute.DASHBOARD },
+                    onLoad = { siteId -> apiClient.getOfficeHours(siteId) },
+                    onSave = { siteId, request -> apiClient.updateOfficeHours(siteId, request) },
+                )
+
+                SuperAdminRoute.VENDOR_PASSKEY -> TerminalVendorPasskeyScreen(
+                    padding = padding,
+                    role = session?.role ?: TerminalUserRole.SUPER_ADMIN,
+                    siteId = retrievalTerminal.siteId,
+                    onBack = { route = SuperAdminRoute.DASHBOARD },
+                    onLoad = { siteId -> apiClient.listVendorPasskeyRequests(siteId = siteId) },
+                    onApprove = { id -> apiClient.approveVendorPasskeyRequest(id) },
+                    onReject = { id -> apiClient.rejectVendorPasskeyRequest(id) },
+                )
+
                 SuperAdminRoute.KEY_RETRIEVAL -> {
                     val activeSession = session
                     val activeTakeFlow = takeFlow
@@ -1401,7 +1662,7 @@ fun TerminalAdminApp() {
                             onPollRemoval = hardwareController::pollForKeyRemoval,
                             onWaitForDoorClose = hardwareController::waitForDoorCloseAfterTake,
                             onKeyRemoved = { takenKeyIds = takenKeyIds + activeTakeFlow.key.id },
-                            onEvent = ::handleTakeFlowOutcome,
+                            onEvent = { outcome -> handleTakeFlowOutcome(outcome, activeTakeFlow.checkoutDeadline) },
                             onCompleted = { takeFlow = null },
                         )
                     } else {
@@ -1412,9 +1673,9 @@ fun TerminalAdminApp() {
                             slots = retrievalSlots,
                             takenKeyIds = takenKeyIds,
                             videoRecordingEnabled = snapshot.cabinetSettings.keyRetrievalVideoEnabled,
-                            backLabel = if (activeSession?.isSuperAdmin == true) "Back to dashboard" else "Sign out",
+                            backLabel = if (activeSession?.isAdminTier == true) "Back to dashboard" else "Sign out",
                             onBack = {
-                                if (activeSession?.isSuperAdmin == true) {
+                                if (activeSession?.isAdminTier == true) {
                                     route = SuperAdminRoute.DASHBOARD
                                 } else {
                                     signOut()
@@ -1440,7 +1701,7 @@ fun TerminalAdminApp() {
                                 onPollRemoval = hardwareController::pollForKeyRemoval,
                                 onWaitForDoorClose = hardwareController::waitForDoorCloseAfterTake,
                                 onKeyRemoved = { takenKeyIds = takenKeyIds + currentKey.id },
-                                onEvent = ::handleTakeFlowOutcome,
+                                onEvent = { outcome -> handleTakeFlowOutcome(outcome, activeQueue.checkoutDeadline) },
                                 onCompleted = {
                                     val next = activeQueue.advanced()
                                     multiKeyQueue = next
@@ -1543,6 +1804,8 @@ private fun SuperAdminDashboardScreen(
     onOpenKeyRetrieval: () -> Unit,
     onOpenAdminMenu: () -> Unit,
     onOpenHardware: () -> Unit,
+    onOpenOfficeHours: () -> Unit,
+    onOpenVendorPasskey: () -> Unit,
     onSignOut: () -> Unit,
 ) {
     TerminalPage(padding) {
@@ -1614,6 +1877,13 @@ private fun SuperAdminDashboardScreen(
             SoftNavTile(label = "Admin Menu", onClick = onOpenAdminMenu, modifier = Modifier.weight(1f))
             SoftNavTile(label = "Hardware", onClick = onOpenHardware, modifier = Modifier.weight(1f))
         }
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            SoftNavTile(label = "Office hours", onClick = onOpenOfficeHours, modifier = Modifier.weight(1f))
+            SoftNavTile(label = "Vendor passkey", onClick = onOpenVendorPasskey, modifier = Modifier.weight(1f))
+        }
 
         SoftCard(contentPadding = 14.dp) {
             Text(
@@ -1628,8 +1898,19 @@ private fun SuperAdminDashboardScreen(
 }
 
 @Composable
+/**
+ * Phase 7 (item 13). [role] == SUPER_ADMIN keeps this screen exactly as it was before this
+ * phase — full grant/revoke. Any other role reaching this screen (only REGIONAL_ADMIN can, per
+ * [com.ekms.terminal.data.TerminalSession.isAdminTier]) gets the same lists with no grant/revoke
+ * controls — a read-only "preassigned list" per the matrix. Site-scoping is structurally already
+ * correct here without extra code: this screen only ever shows [keys]/[grants] belonging to
+ * *this* physical terminal's own site (there is no cross-site data reachable from a single
+ * terminal's local grant store to begin with — unlike the backend's `/v1/admin/access-grants`,
+ * which can be queried across sites and needed `isSiteAssignedToUser` for exactly that reason).
+ */
 private fun AccessGrantsScreen(
     padding: PaddingValues,
+    role: TerminalUserRole,
     users: List<TerminalUser>,
     keys: List<TerminalKey>,
     grants: List<TerminalAccessGrant>,
@@ -1638,6 +1919,7 @@ private fun AccessGrantsScreen(
     onGrant: (String, String) -> Unit,
     onRevoke: (String) -> Unit,
 ) {
+    val canEdit = role == TerminalUserRole.SUPER_ADMIN
     var selectedUserId by remember(users) { mutableStateOf(users.firstOrNull()?.id.orEmpty()) }
     val selectedUser = users.firstOrNull { it.id == selectedUserId }
     val userGrants = grants.filter { it.userId == selectedUserId }
@@ -1648,7 +1930,11 @@ private fun AccessGrantsScreen(
         BackButton(onBack)
         HeaderCard(
             title = "Permission Settings",
-            description = "Bind only the exact keys enrolled personnel may take. A grant here is separate from the personnel record, matching Permission Settings on the web portal.",
+            description = if (canEdit) {
+                "Bind only the exact keys enrolled personnel may take. A grant here is separate from the personnel record, matching Permission Settings on the web portal."
+            } else {
+                "View-only: which exact keys enrolled personnel may take. Edit permissions on the web portal."
+            },
         )
         notice?.let { message -> SuperAdminNoticeCard(message) }
 
@@ -1665,22 +1951,24 @@ private fun AccessGrantsScreen(
             Text((selectedUser?.let { it.displayName + " · " + it.role.label } ?: "Select personnel") + " · change")
         }
 
-        Text("Unauthorized keys", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-        if (keys.isEmpty()) {
-            Text("No key has been enrolled yet.")
-        } else if (availableKeys.isEmpty()) {
-            Text("Every enrolled key is already granted to this personnel.")
-        }
-        availableKeys.forEach { key ->
-            Card(modifier = Modifier.fillMaxWidth()) {
-                Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text(key.displayName + "\nBox " + key.boxAddress + " · Node " + key.nodeAddress)
-                    Button(
-                        onClick = { onGrant(selectedUserId, key.id) },
-                        modifier = Modifier.fillMaxWidth(),
-                        enabled = selectedUserId.isNotBlank(),
-                    ) {
-                        Text("Bind exact key")
+        if (canEdit) {
+            Text("Unauthorized keys", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+            if (keys.isEmpty()) {
+                Text("No key has been enrolled yet.")
+            } else if (availableKeys.isEmpty()) {
+                Text("Every enrolled key is already granted to this personnel.")
+            }
+            availableKeys.forEach { key ->
+                Card(modifier = Modifier.fillMaxWidth()) {
+                    Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text(key.displayName + "\nBox " + key.boxAddress + " · Node " + key.nodeAddress)
+                        Button(
+                            onClick = { onGrant(selectedUserId, key.id) },
+                            modifier = Modifier.fillMaxWidth(),
+                            enabled = selectedUserId.isNotBlank(),
+                        ) {
+                            Text("Bind exact key")
+                        }
                     }
                 }
             }
@@ -1692,12 +1980,21 @@ private fun AccessGrantsScreen(
         }
         userGrants.forEach { grant ->
             val key = keys.firstOrNull { it.id == grant.keyId }
-            Card(modifier = Modifier.fillMaxWidth()) {
-                Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text(key?.displayName ?: "Unavailable key")
-                    TextButton(onClick = { onRevoke(grant.id) }, modifier = Modifier.fillMaxWidth()) {
-                        Text("Remove permission")
+            if (canEdit) {
+                Card(modifier = Modifier.fillMaxWidth()) {
+                    Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text(key?.displayName ?: "Unavailable key")
+                        TextButton(onClick = { onRevoke(grant.id) }, modifier = Modifier.fillMaxWidth()) {
+                            Text("Remove permission")
+                        }
                     }
+                }
+            } else {
+                Card(modifier = Modifier.fillMaxWidth()) {
+                    Text(
+                        key?.displayName ?: "Unavailable key",
+                        modifier = Modifier.padding(16.dp),
+                    )
                 }
             }
         }
@@ -1738,6 +2035,7 @@ private fun UserDto.toTerminalUser(): TerminalUser {
         role = mappedRole,
         isPreset = false,
         createdAtEpochMillis = 0L,
+        assignedSiteIds = assignedSiteIds,
     )
 }
 
@@ -2880,6 +3178,10 @@ private enum class SuperAdminRoute {
     KEY_MENU,
     ADMIN_MENU,
     HARDWARE,
+    /** Phase 7, item 15 — see [TerminalOfficeHoursScreen]. */
+    OFFICE_HOURS,
+    /** Phase 7, item 16 — see [TerminalVendorPasskeyScreen]. */
+    VENDOR_PASSKEY,
 }
 
 private data class CapturedFob(
@@ -2962,7 +3264,20 @@ private fun activeReturnFlowAttemptId(flow: ReturnFlow?): Long? =
 private const val SESSION_IDLE_TIMEOUT_MILLIS = 20_000L
 
 /** Key Take Flow (CLAUDE.md "Terminal App UX Baseline (Production)" §1) in-progress state; see `TerminalKeyTakeScreen`. */
-private data class TakeFlow(val key: ManagedKey, val slot: KeySlot)
+private data class TakeFlow(val key: ManagedKey, val slot: KeySlot, val checkoutDeadline: CheckoutDeadlineChoice)
+
+/**
+ * Phase 5. The single/multi-key take session is paused here when [CheckoutDeadlinePolicy]
+ * determines Auto isn't safe (comfortably-before-close doesn't hold, or the office-hours fetch
+ * itself failed). `resume` is whichever continuation closure applies (single-key take vs. the
+ * multi-key red-light sequence) — carries the already-resolved key/slot(s) so
+ * `TerminalCloseToDeadlineScreen` doesn't need to know which mode triggered it.
+ */
+private data class PendingCheckoutDecision(
+    val closeAtEpochMillis: Long,
+    val timezone: String,
+    val resume: (CheckoutDeadlineChoice) -> Unit,
+)
 
 /**
  * Key Menu multi-key sequential Take Flow: the confirmed, ordered queue of keys to take one
@@ -2975,6 +3290,7 @@ private data class TakeFlow(val key: ManagedKey, val slot: KeySlot)
  */
 private data class MultiKeyTakeQueue(
     val items: List<Pair<ManagedKey, KeySlot>>,
+    val checkoutDeadline: CheckoutDeadlineChoice,
     val currentIndex: Int = 0,
 ) {
     val current: Pair<ManagedKey, KeySlot> get() = items[currentIndex]

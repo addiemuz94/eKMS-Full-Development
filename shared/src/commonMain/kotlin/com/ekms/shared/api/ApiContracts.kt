@@ -848,6 +848,24 @@ data class KeyCheckoutDto(
     val revision: Long,
 )
 
+/**
+ * [CreateKeyCheckoutRequest.dueAtEpochMillis]/[UpdateKeyCheckoutRequest.dueAtEpochMillis] is
+ * reused as the effective deadline regardless of source (auto-computed vs. manually entered vs.
+ * emergency) — a deliberate decision, no parallel column. [DueDateSource] is not persisted on the
+ * row; it only labels which path set the deadline this time, logged via the corresponding
+ * audit_events entry (`KEY_CHECKOUT_CREATED` on create, `KEY_CHECKOUT_UPDATED`/
+ * `KEY_CHECKOUT_RETURNED` on update). [EMERGENCY] is a Phase 5 addition — the close-to-deadline
+ * decision only ever happens once, at take time (`CreateKeyCheckoutRequest`); the backend's
+ * `PATCH /key-checkouts/:id` route still only accepts AUTO/MANUAL, since return/close-out never
+ * re-decides emergency status.
+ */
+@Serializable
+enum class DueDateSource {
+    AUTO,
+    MANUAL,
+    EMERGENCY,
+}
+
 @Serializable
 data class CreateKeyCheckoutRequest(
     val keyId: String,
@@ -857,19 +875,8 @@ data class CreateKeyCheckoutRequest(
     val dueAtEpochMillis: Long,
     val isEmergency: Boolean = false,
     val emergencyWindowEndsAtEpochMillis: Long? = null,
+    val dueDateSource: DueDateSource = DueDateSource.AUTO,
 )
-
-/**
- * [dueAtEpochMillis] is reused as the effective deadline regardless of source (auto-computed vs.
- * manually entered) — a deliberate decision, no parallel column. [dueDateSource] is not persisted
- * on the row; it only labels which path set [dueAtEpochMillis] this time, logged via the
- * KEY_CHECKOUT_UPDATED/KEY_CHECKOUT_RETURNED audit_events entry this request produces.
- */
-@Serializable
-enum class DueDateSource {
-    AUTO,
-    MANUAL,
-}
 
 @Serializable
 data class UpdateKeyCheckoutRequest(

@@ -35,15 +35,18 @@ import java.util.concurrent.atomic.AtomicBoolean
  * gate was removed after live hardware testing showed it unreliable against the frame-pump's
  * polling interval — see [ActiveHeadTurnLivenessChallenge]'s class doc for the full reasoning.
  *
- * Scope: enrollment only. No verification/login matching is wired here — [FaceVerificationSession]
- * from the tester was deliberately not ported, same "enrollment only" scope Part B's fingerprint
- * work already established.
+ * Scope: enrollment, plus login matching (Phase 3) via [startLogin]/[cancelLogin] — the tester's
+ * own [FaceVerificationSession] was never ported (deliberately, matching Part B's fingerprint
+ * "enrollment only" scope at the time); this is a new implementation built directly against this
+ * codebase's [FaceProfileStore]/[FaceTemplateEnrollmentSession], reusing the same camera/model/
+ * liveness/embedding-extraction pipeline enrollment already uses rather than a second one.
  */
 class FaceCameraController(
     context: Context,
     private val faceProfileStore: FaceProfileStore,
     private val onPhaseChanged: (FaceEnrollmentPhase) -> Unit,
     private val onFacesDetected: (frameWidth: Int, frameHeight: Int, faces: List<FaceDetectionOverlayView.DetectedFace>) -> Unit,
+    private val onLoginPhaseChanged: (FaceLoginPhase) -> Unit = {},
 ) {
     companion object {
         const val RGB_CAMERA_ID = "1"
@@ -52,6 +55,27 @@ class FaceCameraController(
         private const val EDGE_MARGIN_PX = 8f
         private const val YUNET_FACE_VALUE_COUNT = 15
         private const val LIVENESS_PASS_VALID_MILLIS = 60_000L
+
+        /** Fewer than enrollment's 5-sample average, favoring login speed over the extra
+         * robustness a larger average buys: 2 gives some smoothing against a single bad frame
+         * (motion blur, a momentarily imperfect angle) while adding only about one more
+         * frame-pump interval (~350ms) of latency than a single sample would. */
+        const val LOGIN_REQUIRED_SAMPLES = 2
+
+        /**
+         * **TEMPORARY, UNCALIBRATED VALUE — requires real calibration with real enrolled users
+         * during the hardware test phase, same as this file's RGB-only-liveness tradeoff.**
+         * SFace-style embeddings are compared via cosine similarity; same-person pairs are
+         * commonly reported around 0.35-0.4+ on standard face-verification benchmarks (the
+         * threshold OpenCV's own SFace sample/documentation suggests as a starting point for
+         * `FaceRecognizerSF.match(..., FaceRecognizerSF_FR_COSINE)`), with different-person pairs
+         * well below that. 0.40 is picked as a deliberately conservative starting point — fewer
+         * false accepts at the cost of more false rejects — appropriate for a security-relevant
+         * login gate, not derived from this device's actual camera/lighting/sensor behavior,
+         * which can only be established by testing against this project's real enrolled users on
+         * real hardware. Do not treat this as a finished, validated value.
+         */
+        const val FACE_MATCH_SIMILARITY_THRESHOLD = 0.40f
     }
 
     private data class FaceCandidate(
@@ -68,6 +92,7 @@ class FaceCameraController(
     private var faceEngine: OpenCvFaceEngine? = null
     private var landmarker: MediaPipeFaceLandmarkerEngine? = null
     private var enrollmentSession: FaceTemplateEnrollmentSession? = null
+    private var loginSession: FaceTemplateEnrollmentSession? = null
 
     private var cameraThread: HandlerThread? = null
     private var cameraHandler: Handler? = null
@@ -87,6 +112,13 @@ class FaceCameraController(
         private set(value) {
             field = value
             mainHandler.post { onPhaseChanged(value) }
+        }
+
+    @Volatile
+    var loginPhase: FaceLoginPhase = FaceLoginPhase.Idle
+        private set(value) {
+            field = value
+            mainHandler.post { onLoginPhaseChanged(value) }
         }
 
     /** Starts a camera background thread. Call once when the hosting screen appears. */
@@ -141,6 +173,7 @@ class FaceCameraController(
 
     fun detachSurface() {
         cancel()
+        cancelLogin()
         runCatching { captureSession?.stopRepeating() }
         captureSession?.close()
         captureSession = null
@@ -208,6 +241,41 @@ class FaceCameraController(
         }
     }
 
+    /**
+     * Begins face login: same liveness challenge instance and same model/embedding pipeline as
+     * enrollment, but captures [LOGIN_REQUIRED_SAMPLES] samples (fewer than enrollment's 5, for
+     * login speed) into their own [loginSession] rather than an enrollment one, and — once
+     * captured — compares the resulting template against every locally-enrolled profile instead
+     * of saving it. Mutually exclusive with [startEnrollment]/[phase]; this screen and
+     * `FaceEnrollmentScreen` are never shown at the same time, so the two flows never actually
+     * run concurrently against the shared camera/executor.
+     */
+    fun startLogin() {
+        loginSession = FaceTemplateEnrollmentSession(requiredSamples = LOGIN_REQUIRED_SAMPLES)
+        lastLivenessPassedAtMillis = null
+        loginPhase = FaceLoginPhase.LoadingModels
+        executor.execute {
+            try {
+                if (faceEngine == null) faceEngine = OpenCvFaceEngine.create(appContext)
+                if (landmarker == null) landmarker = MediaPipeFaceLandmarkerEngine.create(appContext)
+                val update = livenessChallenge.start(System.currentTimeMillis())
+                loginPhase = FaceLoginPhase.Liveness(update.message)
+            } catch (error: Exception) {
+                loginPhase = FaceLoginPhase.Failed("Could not load face models: ${error.detail()}")
+            }
+        }
+    }
+
+    fun cancelLogin() {
+        loginSession?.reset()
+        loginSession = null
+        livenessChallenge.cancel()
+        lastLivenessPassedAtMillis = null
+        if (loginPhase !is FaceLoginPhase.Failed) {
+            loginPhase = FaceLoginPhase.Idle
+        }
+    }
+
     /** Full teardown for when the owning screen leaves composition. */
     fun close() {
         detachSurface()
@@ -228,7 +296,9 @@ class FaceCameraController(
     fun submitFrame(bitmap: Bitmap) {
         val engine = faceEngine
         val currentPhase = phase
-        val processable = currentPhase is FaceEnrollmentPhase.Liveness || currentPhase is FaceEnrollmentPhase.Enrolling
+        val currentLoginPhase = loginPhase
+        val processable = currentPhase is FaceEnrollmentPhase.Liveness || currentPhase is FaceEnrollmentPhase.Enrolling ||
+            currentLoginPhase is FaceLoginPhase.Liveness || currentLoginPhase is FaceLoginPhase.Capturing
         if (engine == null || !processable || !frameBusy.compareAndSet(false, true)) {
             bitmap.recycle()
             return
@@ -258,8 +328,18 @@ class FaceCameraController(
                     is FaceEnrollmentPhase.Enrolling -> handleEnrollmentFrame(engine, bgr, candidates)
                     else -> {}
                 }
+                when (loginPhase) {
+                    is FaceLoginPhase.Liveness -> handleLoginLivenessFrame(bitmap)
+                    is FaceLoginPhase.Capturing -> handleLoginCaptureFrame(engine, bgr, candidates)
+                    else -> {}
+                }
             } catch (error: Exception) {
-                phase = FaceEnrollmentPhase.Failed("Face processing failed: ${error.detail()}")
+                if (phase is FaceEnrollmentPhase.Liveness || phase is FaceEnrollmentPhase.Enrolling) {
+                    phase = FaceEnrollmentPhase.Failed("Face processing failed: ${error.detail()}")
+                }
+                if (loginPhase is FaceLoginPhase.Liveness || loginPhase is FaceLoginPhase.Capturing) {
+                    loginPhase = FaceLoginPhase.Failed("Face processing failed: ${error.detail()}")
+                }
             } finally {
                 faceMat?.release()
                 bgr?.release()
@@ -337,6 +417,120 @@ class FaceCameraController(
         }
     }
 
+    /**
+     * Runs on [executor]. Thin login-side twin of [handleLivenessFrame] — same
+     * [livenessChallenge] instance and the same state-machine logic, just publishing to
+     * [loginPhase] instead of [phase] since the two flows have different published phase types.
+     */
+    private fun handleLoginLivenessFrame(bitmap: Bitmap) {
+        val engine = landmarker ?: return
+        val summary = engine.inspect(bitmap)
+        val nowMillis = System.currentTimeMillis()
+
+        val update = if (summary.hasExactlyOneFace && summary.headTurnScore != null) {
+            livenessChallenge.consume(summary.headTurnScore, nowMillis)
+        } else {
+            livenessChallenge.consume(null, nowMillis)
+        }
+
+        when (update.state) {
+            ActiveHeadTurnLivenessChallenge.State.PASSED -> {
+                lastLivenessPassedAtMillis = nowMillis
+                loginPhase = FaceLoginPhase.Capturing(
+                    capturedSamples = 0,
+                    requiredSamples = LOGIN_REQUIRED_SAMPLES,
+                    message = "Liveness passed. Hold one clear face still.",
+                )
+            }
+
+            ActiveHeadTurnLivenessChallenge.State.FAILED -> {
+                loginPhase = FaceLoginPhase.Failed(update.message)
+            }
+
+            else -> {
+                loginPhase = FaceLoginPhase.Liveness(update.message)
+            }
+        }
+    }
+
+    /** Runs on [executor]. `bgr` is owned by [submitFrame]'s caller and released there — do not
+     * release it here. Mirrors [handleEnrollmentFrame]'s capture logic exactly, but once complete
+     * compares the built template against every enrolled profile instead of saving it. */
+    private fun handleLoginCaptureFrame(engine: OpenCvFaceEngine, bgr: Mat, candidates: List<FaceCandidate>) {
+        val session = loginSession ?: return
+
+        val passedAt = lastLivenessPassedAtMillis
+        if (passedAt == null || System.currentTimeMillis() - passedAt > LIVENESS_PASS_VALID_MILLIS) {
+            loginPhase = FaceLoginPhase.Failed("Liveness result expired. Start again.")
+            return
+        }
+
+        if (candidates.size != 1) {
+            val issue = if (candidates.isEmpty()) "No face detected." else "Multiple faces detected."
+            loginPhase = FaceLoginPhase.Capturing(session.progress().capturedSamples, session.progress().requiredSamples, "$issue Keep exactly one face in view.")
+            return
+        }
+
+        val candidate = candidates.first()
+        if (!isFaceSuitable(candidate)) {
+            loginPhase = FaceLoginPhase.Capturing(session.progress().capturedSamples, session.progress().requiredSamples, "Move closer and keep your full face centred in view.")
+            return
+        }
+
+        val embedding = embeddingExtractor.extract(engine.recognizer, bgr, candidate.yuNetFace)
+        val progress = session.addSample(embedding)
+
+        if (progress.isComplete) {
+            val liveTemplate = session.buildTemplate()
+            loginSession = null
+            val match = findBestFaceMatch(liveTemplate)
+            loginPhase = if (match != null) {
+                FaceLoginPhase.Matched(match.userId, match.profile, match.similarity)
+            } else {
+                FaceLoginPhase.NoMatch
+            }
+        } else {
+            loginPhase = FaceLoginPhase.Capturing(progress.capturedSamples, progress.requiredSamples, "Sample ${progress.capturedSamples}/${progress.requiredSamples} captured. Hold still for the next sample…")
+        }
+    }
+
+    private data class FaceMatch(val userId: String, val profile: FaceProfileStore.FaceProfile, val similarity: Float)
+
+    /**
+     * Compares [liveEmbedding] against every locally-enrolled profile on this terminal
+     * ([FaceProfileStore] is local-only by policy, so this is already correctly scoped to just
+     * this device — no backend fetch). The best match above [FACE_MATCH_SIMILARITY_THRESHOLD]
+     * wins; otherwise no match, never a "closest guess."
+     */
+    private fun findBestFaceMatch(liveEmbedding: FloatArray): FaceMatch? {
+        var best: FaceMatch? = null
+        for (profileId in faceProfileStore.listProfileIds()) {
+            val profile = faceProfileStore.load(profileId) ?: continue
+            val similarity = cosineSimilarity(liveEmbedding, profile.embedding)
+            if (best == null || similarity > best.similarity) {
+                best = FaceMatch(profileId, profile, similarity)
+            }
+        }
+        return best?.takeIf { it.similarity >= FACE_MATCH_SIMILARITY_THRESHOLD }
+    }
+
+    /** Both [FaceTemplateEnrollmentSession.buildTemplate] outputs (live and stored) are already
+     * L2-normalized, so this reduces to a plain dot product in practice — computed as full
+     * cosine similarity anyway rather than assuming that invariant holds forever. */
+    private fun cosineSimilarity(a: FloatArray, b: FloatArray): Float {
+        if (a.size != b.size || a.isEmpty()) return -1f
+        var dot = 0f
+        var normA = 0f
+        var normB = 0f
+        for (i in a.indices) {
+            dot += a[i] * b[i]
+            normA += a[i] * a[i]
+            normB += b[i] * b[i]
+        }
+        val denominator = kotlin.math.sqrt(normA) * kotlin.math.sqrt(normB)
+        return if (denominator > 0f) dot / denominator else -1f
+    }
+
     private fun isFaceSuitable(candidate: FaceCandidate): Boolean {
         val face = candidate.overlayFace
         val width = face.right - face.left
@@ -381,4 +575,17 @@ sealed interface FaceEnrollmentPhase {
     data class Enrolling(val capturedSamples: Int, val requiredSamples: Int, val message: String) : FaceEnrollmentPhase
     data class Succeeded(val profile: FaceProfileStore.FaceProfile) : FaceEnrollmentPhase
     data class Failed(val message: String) : FaceEnrollmentPhase
+}
+
+sealed interface FaceLoginPhase {
+    data object Idle : FaceLoginPhase
+    data object LoadingModels : FaceLoginPhase
+    data class Liveness(val message: String) : FaceLoginPhase
+    data class Capturing(val capturedSamples: Int, val requiredSamples: Int, val message: String) : FaceLoginPhase
+    data class Matched(val userId: String, val profile: FaceProfileStore.FaceProfile, val similarity: Float) : FaceLoginPhase
+    /** A clean "no match" result (best similarity below the threshold, or no profiles enrolled at
+     * all) — never fall through to another login method silently; the caller must show this
+     * explicitly and let the user retry or pick a different method themselves. */
+    data object NoMatch : FaceLoginPhase
+    data class Failed(val message: String) : FaceLoginPhase
 }

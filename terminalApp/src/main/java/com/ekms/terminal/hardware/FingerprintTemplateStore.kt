@@ -21,6 +21,13 @@ class FingerprintTemplateStore(context: Context) {
 
     fun enrollmentFor(userId: String): FingerprintEnrollmentSummary? = readRecord(userId)
 
+    /** Reverse lookup for fingerprint login: the R503 module identifies a template slot, not a
+     * user, so the caller needs this to map a matched [templateId] back to the enrolled userId. */
+    fun userIdForTemplate(templateId: Int): String? =
+        enrolledUserIds().firstNotNullOfOrNull { userId ->
+            readRecord(userId)?.takeIf { it.templateId == templateId }?.userId
+        }
+
     fun save(userId: String, templateId: Int, nowEpochMillis: Long): FingerprintEnrollmentSummary {
         val summary = FingerprintEnrollmentSummary(
             userId = userId,

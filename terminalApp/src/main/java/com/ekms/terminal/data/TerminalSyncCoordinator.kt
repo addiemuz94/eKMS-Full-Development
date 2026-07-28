@@ -165,6 +165,7 @@ class TerminalSyncCoordinator(
             role = role,
             requiresPasswordChange = false,
             serverAuthenticated = true,
+            assignedSiteIds = profile.assignedSiteIds,
         )
     }
 }

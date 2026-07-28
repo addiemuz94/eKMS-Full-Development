@@ -16,33 +16,44 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.saveable.rememberSaveable
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
-import com.ekms.terminal.data.TerminalAdminStore
+
+/** Which method screen to show under [SuperAdminRoute.LOGIN] once a logo is tapped. `null`
+ * (handled by the caller, not a case here) means "show [TerminalLoginScreen] itself." */
+enum class LoginMethod {
+    PASSWORD,
+    FINGERPRINT,
+    FACE,
+    NFC_CARD,
+    PASSKEY,
+}
 
 /**
- * Smart Key Cabinet User Manual V2.1, Section 1 — Login (soft Material 3).
+ * Smart Key Cabinet User Manual V2.1, Section 1 — Login method selection (Phase 3 rework).
  *
- * All five entry methods remain visible: personnel card, key card, account/
- * password, Face Recognition, Fingerprint Recognition. Behaviour unchanged —
- * only presentation follows the soft M3 mockup.
+ * All five entry methods from the manual are represented as selectable logos — Password,
+ * Fingerprint, Facial Recognition, NFC Card, Passkey — tapping one navigates to that method's
+ * own dedicated screen ([TerminalPasswordLoginScreen], [TerminalFingerprintLoginScreen],
+ * [TerminalFaceLoginScreen], [TerminalNfcCardLoginScreen], [TerminalPasskeyLoginScreen]).
+ *
+ * The old single-screen layout's ambient "Personnel"/"Key card" tiles are gone from here, but
+ * the underlying ambient NFC detection they represented is completely unchanged: the public
+ * card reader listens for both personnel-card and key-card swipes for as long as
+ * `route == SuperAdminRoute.LOGIN`, regardless of which of these five method screens (or this
+ * chooser) happens to be on screen — see `TerminalAdminApp.kt`'s `cardReaderShouldBeActive`,
+ * untouched by this rework. The old screen's manual "Key card" tap tile (a hardware-free
+ * testing convenience for simulating a key-card return with no reader attached, see
+ * `resolveReturningKey`'s doc) has no home among these five method logos and was dropped —
+ * real key-card returns are unaffected since they never depended on that tile.
  */
 @Composable
 fun TerminalLoginScreen(
     padding: PaddingValues,
-    onAccountLogin: (username: String, password: String) -> Unit,
-    loginError: String?,
-    onKeyCardSwiped: (() -> Unit)? = null,
+    onSelectMethod: (LoginMethod) -> Unit,
 ) {
-    var username by rememberSaveable { mutableStateOf(TerminalAdminStore.SUPER_ADMIN_USERNAME) }
-    var password by rememberSaveable { mutableStateOf("") }
-
     Box(
         modifier = Modifier
             .fillMaxSize()
@@ -59,7 +70,7 @@ fun TerminalLoginScreen(
         ) {
             SoftBrandHeader(subtitle = "CAB · Terminal")
             Text(
-                text = "Ready when you are — swipe a card or sign in.",
+                text = "Choose how you'd like to sign in.",
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -69,64 +80,52 @@ fun TerminalLoginScreen(
                 horizontalArrangement = Arrangement.spacedBy(10.dp),
             ) {
                 SoftScanTile(
-                    title = "Personnel",
-                    description = "Listening…",
-                    listening = true,
+                    title = "Password",
+                    description = "Account & password",
+                    onClick = { onSelectMethod(LoginMethod.PASSWORD) },
                     modifier = Modifier.weight(1f),
                 )
                 SoftScanTile(
-                    title = "Key card",
-                    description = "Return a key",
-                    onClick = onKeyCardSwiped,
+                    title = "Fingerprint",
+                    description = "Scan a finger",
+                    onClick = { onSelectMethod(LoginMethod.FINGERPRINT) },
                     modifier = Modifier.weight(1f),
                 )
             }
-
-            Text(
-                text = "or use account",
-                style = MaterialTheme.typography.labelMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.align(Alignment.CenterHorizontally),
-            )
-
-            SoftCard(contentPadding = 16.dp) {
-                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                    SoftFilledField(
-                        value = username,
-                        onValueChange = { username = it },
-                        label = "Account",
-                    )
-                    SoftFilledField(
-                        value = password,
-                        onValueChange = { password = it },
-                        label = "Password",
-                        password = true,
-                    )
-                    if (loginError != null) {
-                        Text(
-                            text = loginError,
-                            color = MaterialTheme.colorScheme.error,
-                            style = MaterialTheme.typography.bodySmall,
-                        )
-                    }
-                    SoftPrimaryButton(
-                        text = "Login",
-                        onClick = { onAccountLogin(username, password) },
-                        enabled = username.isNotBlank() && password.isNotBlank(),
-                    )
-                }
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                SoftScanTile(
+                    title = "Facial Recognition",
+                    description = "Look at the camera",
+                    onClick = { onSelectMethod(LoginMethod.FACE) },
+                    modifier = Modifier.weight(1f),
+                )
+                SoftScanTile(
+                    title = "NFC Card",
+                    description = "Tap your card",
+                    onClick = { onSelectMethod(LoginMethod.NFC_CARD) },
+                    modifier = Modifier.weight(1f),
+                )
             }
-
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                SoftAssistChip(text = "Face · soon")
-                SoftAssistChip(text = "Fingerprint · soon")
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                SoftScanTile(
+                    title = "Passkey",
+                    description = "4-digit code",
+                    onClick = { onSelectMethod(LoginMethod.PASSKEY) },
+                    modifier = Modifier.weight(1f),
+                )
             }
         }
     }
 }
 
 @Composable
-private fun SoftFilledField(
+internal fun SoftFilledField(
     value: String,
     onValueChange: (String) -> Unit,
     label: String,
