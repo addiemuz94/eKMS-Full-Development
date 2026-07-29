@@ -87,5 +87,15 @@ data class CheckoutDeadlineChoice(
             dueAtEpochMillis = CheckoutDeadlinePolicy.emergencyDueAtEpochMillis(nowEpochMillis),
             source = DueDateSource.EMERGENCY,
         )
+
+        /**
+         * Migration 009 follow-up: a passkey-authenticated take's due time was already fixed at
+         * key-access-request approval time (`passkeyExpiresAtEpochMillis`) — never recomputed
+         * from office hours (AUTO) and never operator-entered (MANUAL/EMERGENCY). Callers must
+         * NOT route through [CheckoutDeadlinePolicy.computeDeadline] or
+         * `TerminalCloseToDeadlineScreen` for this case; this factory is the entire "decision."
+         */
+        fun passkeyRequest(dueAtEpochMillis: Long) =
+            CheckoutDeadlineChoice(dueAtEpochMillis, DueDateSource.PASSKEY_REQUEST)
     }
 }

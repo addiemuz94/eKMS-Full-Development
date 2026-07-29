@@ -24,16 +24,19 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 
 /**
- * Passkey login — **UI shell only, deliberately not functional this phase.** Shows a 4-digit
- * entry field and a clear "not yet available" state instead of any real validation. Full
- * request/approval/validation is deferred to the mobileApp phase per earlier project decisions
- * (see `backend`'s `vendor_passkey_requests` table) — this screen never reads or calls that
- * table's `passkey_code`, on purpose; building against it now would be building ahead of the
- * actual designed flow.
+ * Passkey login — wired to the real backend as of migration 009's follow-up phase.
+ * `POST /v1/terminal/passkey-login` (unauthenticated, see `TerminalApiClient.passkeyLogin`)
+ * validates the submitted 4-digit code against an approved, not-yet-expired
+ * `key_access_requests` row and returns a KEY_ACCESS_SESSION-scoped token plus the exact
+ * approved key(s)/site/expiry. This screen itself stays presentation-only, same as
+ * [TerminalPasswordLoginScreen] — the actual call, session resolution, and routing into the
+ * take flow for the approved key(s) all live in `TerminalAdminApp`'s [onSubmit] callback.
  */
 @Composable
 fun TerminalPasskeyLoginScreen(
     padding: PaddingValues,
+    onSubmit: (code: String) -> Unit,
+    loginError: String?,
     onBack: () -> Unit,
 ) {
     var code by rememberSaveable { mutableStateOf("") }
@@ -56,20 +59,30 @@ fun TerminalPasskeyLoginScreen(
                         style = MaterialTheme.typography.headlineSmall,
                         fontWeight = FontWeight.SemiBold,
                     )
+                    Text(
+                        text = "Enter the 4-digit code from your approved key access request.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
                     OutlinedTextField(
                         value = code,
                         onValueChange = { input -> code = input.filter { it.isDigit() }.take(4) },
                         modifier = Modifier.fillMaxWidth(),
                         label = { Text("4-digit code") },
                         singleLine = true,
-                        enabled = false,
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword),
                     )
-                    SoftAssistChip(text = "Not yet available", attention = true)
-                    Text(
-                        text = "Vendor passkey sign-in is coming in a future update. Use another method for now.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    if (loginError != null) {
+                        Text(
+                            text = loginError,
+                            color = MaterialTheme.colorScheme.error,
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                    }
+                    SoftPrimaryButton(
+                        text = "Sign in",
+                        onClick = { onSubmit(code) },
+                        enabled = code.length == 4,
                     )
                 }
             }

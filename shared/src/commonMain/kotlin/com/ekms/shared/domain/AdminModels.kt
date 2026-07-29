@@ -228,7 +228,20 @@ enum class AuditEventType {
      * `handleReturnFlowOutcome`. Distinct from KEY_CHECKOUT_CREATED/UPDATED/RETURNED, which imply success. */
     KEY_CHECKOUT_SYNC_FAILED,
     SITE_OFFICE_HOURS_UPDATED,
+    /** Still emitted by the live, deployed vendor_passkey_requests flow (Phase 7) — unchanged. */
     VENDOR_PASSKEY_REQUESTED,
     VENDOR_PASSKEY_APPROVED,
     VENDOR_PASSKEY_REJECTED,
+    /** Region-routed, multi-key, Technician+Vendor request (migration 009) — additive alongside
+     * the VENDOR_PASSKEY_* events above, not a rename of them. See key_access_requests. */
+    KEY_ACCESS_REQUEST_REQUESTED,
+    KEY_ACCESS_REQUEST_APPROVED,
+    KEY_ACCESS_REQUEST_REJECTED,
+    /** A terminal-side passkey-login attempt (`POST /v1/terminal/passkey-login`) succeeded,
+     * issuing a KEY_ACCESS_SESSION-scoped token — see signKeyAccessSessionToken in
+     * backend/src/middleware/auth.js. */
+    KEY_ACCESS_SESSION_STARTED,
+    /** A terminal-side passkey-login attempt was rejected: wrong/expired/wrong-site passkey, or
+     * an unknown terminalId. */
+    KEY_ACCESS_SESSION_LOGIN_FAILED,
 }

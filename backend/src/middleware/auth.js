@@ -95,12 +95,24 @@ const REGIONAL_ADMIN_ALLOWED_ROUTES = [
   { method: 'GET', pattern: /^\/access-grants\/[^/]+$/ },
   { method: 'POST', pattern: /^\/access-grants$/ },
   { method: 'PATCH', pattern: /^\/access-grants\/[^/]+$/ },
-  // Vendor passkey requests: list/get/create/approve/reject.
+  // Vendor passkey requests: list/get/create/approve/reject. Kept unchanged — still the live
+  // route backing terminalApp's deployed Phase 7 Vendor Passkey screen.
   { method: 'GET', pattern: /^\/vendor-passkey-requests$/ },
   { method: 'GET', pattern: /^\/vendor-passkey-requests\/[^/]+$/ },
   { method: 'POST', pattern: /^\/vendor-passkey-requests$/ },
   { method: 'POST', pattern: /^\/vendor-passkey-requests\/[^/]+\/approve$/ },
   { method: 'POST', pattern: /^\/vendor-passkey-requests\/[^/]+\/reject$/ },
+  // Key access requests (migration 009) — an ADDITIVE, more general mechanism alongside the
+  // vendor-passkey-requests above, not a replacement (see the design-choice note at the top of
+  // 009_regions_and_key_access_requests.sql): list/get/create/approve/reject.
+  // Route-reachability only — keyAccessRequests.js additionally scopes every one of these to
+  // the Regional Admin's own assigned REGIONS (via each request's site's region_id), not
+  // assigned Sites, per isRegionAssignedToUser in util.js.
+  { method: 'GET', pattern: /^\/key-access-requests$/ },
+  { method: 'GET', pattern: /^\/key-access-requests\/[^/]+$/ },
+  { method: 'POST', pattern: /^\/key-access-requests$/ },
+  { method: 'POST', pattern: /^\/key-access-requests\/[^/]+\/approve$/ },
+  { method: 'POST', pattern: /^\/key-access-requests\/[^/]+\/reject$/ },
   // Sites: read-only (list/get), added for the terminal's item-14 site-name display — NOT
   // create/update/delete. sites.js's own handlers additionally scope both of these to the
   // Regional Admin's own assigned sites; this allowlist only controls reachability.
@@ -109,12 +121,39 @@ const REGIONAL_ADMIN_ALLOWED_ROUTES = [
 ];
 
 /**
+ * Exact (method, path) allowlist for TECHNICIAN/VENDOR-scoped real users, mounted under
+ * `/v1/admin` — same structure/discipline as the other two allowlists above. Added for
+ * migration 009 (regions + generalized key-access-requests): a Technician/Vendor now files
+ * their own key-access request through mobileApp's (not-yet-built, per that pass's own scope)
+ * request form, so their token needs to reach exactly this one route family — nothing else
+ * under `/v1/admin`. Row-level scoping (a Technician/Vendor may only see/create their OWN
+ * requests, never someone else's, and can never approve/reject) is enforced in
+ * keyAccessRequests.js itself, not here — same two-layer split as every other role.
+ */
+const TECHNICIAN_VENDOR_ALLOWED_ROUTES = [
+  // NOTE: /key-access-requests/site-policy/:siteId is a two-segment path and must stay listed
+  // BEFORE the single-segment /key-access-requests/:id pattern would otherwise seem to apply —
+  // in practice Express/path-to-regexp never confuses the two (segment counts differ), but list
+  // order here follows registration order in keyAccessRequests.js for readability.
+  { method: 'GET', pattern: /^\/key-access-requests\/site-policy\/[^/]+$/ },
+  { method: 'GET', pattern: /^\/key-access-requests$/ },
+  { method: 'GET', pattern: /^\/key-access-requests\/[^/]+$/ },
+  { method: 'POST', pattern: /^\/key-access-requests$/ },
+  // Added so the mobile Key Access Request form can build its key picker — both self-scoped
+  // server-side to the caller's own site/grant assignments, never a way to browse system-wide
+  // (see the TECHNICIAN/VENDOR branches added to keys.js's and accessGrants.js's GET '/' handlers).
+  { method: 'GET', pattern: /^\/keys$/ },
+  { method: 'GET', pattern: /^\/access-grants$/ },
+];
+
+/**
  * Replaces `requireSuperAdmin` ONLY at the `/v1/admin` router's mount point. Real Super
  * Admin users pass through exactly as before (unconditional, unchanged). A TERMINAL_DEVICE
  * token only passes for the exact routes in TERMINAL_DEVICE_ALLOWED_ROUTES; a REGIONAL_ADMIN
- * token only passes for the exact routes in REGIONAL_ADMIN_ALLOWED_ROUTES. Everything else
- * under `/v1/admin` — and all of `/v1/audit` and `/v1/reports`, which still use the plain
- * `requireSuperAdmin` — remains 403 for both, same least-privilege intent as today.
+ * token only passes for the exact routes in REGIONAL_ADMIN_ALLOWED_ROUTES; a TECHNICIAN or
+ * VENDOR token only passes for the exact routes in TECHNICIAN_VENDOR_ALLOWED_ROUTES. Everything
+ * else under `/v1/admin` — and all of `/v1/audit` and `/v1/reports`, which still use the plain
+ * `requireSuperAdmin` — remains 403, same least-privilege intent as today.
  */
 export function requireSuperAdminOrAllowlistedRole(req, res, next) {
   if (req.auth?.role === 'SUPER_ADMIN') {
@@ -130,6 +169,14 @@ export function requireSuperAdminOrAllowlistedRole(req, res, next) {
   }
   if (req.auth?.role === 'REGIONAL_ADMIN') {
     const allowed = REGIONAL_ADMIN_ALLOWED_ROUTES.some(
+      (route) => route.method === req.method && route.pattern.test(req.path),
+    );
+    if (allowed) {
+      return next();
+    }
+  }
+  if (req.auth?.role === 'TECHNICIAN' || req.auth?.role === 'VENDOR') {
+    const allowed = TECHNICIAN_VENDOR_ALLOWED_ROUTES.some(
       (route) => route.method === req.method && route.pattern.test(req.path),
     );
     if (allowed) {
@@ -188,5 +235,41 @@ export function signTerminalRefreshToken(terminal) {
     { sub: terminal.id, typ: 'refresh', role: 'TERMINAL_DEVICE' },
     process.env.JWT_REFRESH_SECRET,
     { expiresIn: Number(process.env.JWT_REFRESH_TTL_SECONDS || 604800) },
+  );
+}
+
+/**
+ * KEY_ACCESS_SESSION-scoped token, issued by `POST /v1/terminal/passkey-login`
+ * (keyAccessRequests.js) once a submitted 4-digit passkey validates against an approved,
+ * not-yet-expired `key_access_requests` row. `sub` is the requester's own `users.id` (not a
+ * terminal id, unlike the TERMINAL_DEVICE tokens above) — the session represents "this specific
+ * person, admitted to exactly these keys, until this specific time," not a device identity.
+ * `keyIds`/`siteId` are carried as claims so a future consumer of this token (terminalApp's own
+ * take/return flow) can check "is the key this operator is trying to take one of the ids on
+ * their own token" without a second database round-trip. No refresh token exists for this
+ * session type by design — it expires with the approval window and is not meant to be renewed;
+ * a new passkey-login (or a fresh key-access-request) is required after expiry, not a refresh.
+ *
+ * Deliberately NOT added to any `*_ALLOWED_ROUTES` allowlist yet — nothing in this pass consumes
+ * this token against `/v1/admin/*` (terminalApp's UI wiring for passkey login is separate,
+ * explicitly deferred follow-up work; see keyAccessRequests.js's `passkeyLogin` doc). A token of
+ * this role decodes successfully via `requireAuth` (same secret/algorithm as every other token)
+ * but 403s under `requireSuperAdminOrAllowlistedRole` until a future pass defines what it may do.
+ */
+export function signKeyAccessSessionToken(request, keyIds) {
+  const expiresInSeconds = Math.max(
+    1,
+    Math.floor((Number(request.passkey_expires_at_epoch_ms) - Date.now()) / 1000),
+  );
+  return jwt.sign(
+    {
+      sub: request.requester_user_id,
+      role: 'KEY_ACCESS_SESSION',
+      keyAccessRequestId: request.id,
+      siteId: request.site_id,
+      keyIds,
+    },
+    process.env.JWT_ACCESS_SECRET,
+    { expiresIn: expiresInSeconds },
   );
 }

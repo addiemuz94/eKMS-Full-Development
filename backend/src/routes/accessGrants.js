@@ -60,6 +60,21 @@ router.get('/', async (req, res) => {
   const siteId = req.query.siteId;
   const userId = req.query.userId;
 
+  // Technician/Vendor (added for the mobile Key Access Request form, migration 009 follow-up):
+  // always self-scoped to their OWN grants, regardless of any siteId/userId filter — this is
+  // "which keys am I allowed to request," never a way to browse another user's grants.
+  if (req.auth?.role === 'TECHNICIAN' || req.auth?.role === 'VENDOR') {
+    const [rows] = await pool.execute(
+      `SELECT * FROM access_grants WHERE lifecycle_state = :state AND user_id = :userId ORDER BY created_at_epoch_ms DESC`,
+      { state, userId: req.auth.sub },
+    );
+    const items = [];
+    for (const row of rows) {
+      items.push(mapGrant(row, await keyIdsForGrant(row.id)));
+    }
+    return res.json({ items });
+  }
+
   if (siteId && req.auth?.role === 'REGIONAL_ADMIN' && !(await isSiteAssignedToUser(req.auth.sub, siteId))) {
     return res.status(403).json({ error: 'FORBIDDEN', message: 'Not permitted to view grants for this site' });
   }

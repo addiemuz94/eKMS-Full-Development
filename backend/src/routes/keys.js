@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { z } from 'zod';
 import pool from '../db.js';
 import {
+  assignedSiteIdsForUser,
   badRequest,
   conflict,
   lifecycleFromRow,
@@ -27,6 +28,26 @@ function mapKey(row) {
 router.get('/', async (req, res) => {
   const state = req.query.state || 'ACTIVE';
   const siteId = req.query.siteId;
+
+  // Technician/Vendor (added for the mobile Key Access Request form, migration 009 follow-up):
+  // always self-scoped to their OWN assigned sites, regardless of any siteId filter — a
+  // Technician/Vendor building their request form's key picker must never be able to list keys
+  // at a site they have no assignment to, just by passing a different siteId.
+  if (req.auth?.role === 'TECHNICIAN' || req.auth?.role === 'VENDOR') {
+    const assignedSiteIds = await assignedSiteIdsForUser(req.auth.sub);
+    if (assignedSiteIds.length === 0) return res.json({ items: [] });
+    const placeholders = assignedSiteIds.map((_, i) => `:site${i}`).join(', ');
+    const params = { state };
+    assignedSiteIds.forEach((id, i) => {
+      params[`site${i}`] = id;
+    });
+    const [rows] = await pool.execute(
+      `SELECT * FROM managed_keys WHERE lifecycle_state = :state AND site_id IN (${placeholders}) ORDER BY display_name ASC`,
+      params,
+    );
+    return res.json({ items: rows.map(mapKey) });
+  }
+
   let sql = `SELECT * FROM managed_keys WHERE lifecycle_state = :state`;
   const params = { state };
   if (siteId) {

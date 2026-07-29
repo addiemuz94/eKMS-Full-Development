@@ -53,6 +53,7 @@ async function migrate() {
   await applySqlFile('006_registration_and_pairing.sql', { ignoreDuplicates: true });
   await applySqlFile('007_terminal_cabinet_settings.sql', { ignoreDuplicates: true });
   await applySqlFile('008_regional_admin_checkouts_office_hours_vendor_passkey.sql', { ignoreDuplicates: true });
+  await applySqlFile('009_regions_and_key_access_requests.sql', { ignoreDuplicates: true });
   process.exit(0);
 }
 

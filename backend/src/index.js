@@ -15,6 +15,8 @@ import recycleBinRouter from './routes/recycleBin.js';
 import credentialsRouter from './routes/credentials.js';
 import keyCheckoutsRouter from './routes/keyCheckouts.js';
 import vendorPasskeyRequestsRouter from './routes/vendorPasskeyRequests.js';
+import regionsRouter from './routes/regions.js';
+import keyAccessRequestsRouter, { passkeyLogin } from './routes/keyAccessRequests.js';
 import auditRouter from './routes/audit.js';
 import { terminalSyncRouter, syncConflictsRouter } from './routes/sync.js';
 import {
@@ -74,6 +76,11 @@ app.post('/v1/auth/refresh', refresh);
 // TerminalPairWithCodeRequest's doc in shared/.../api/ApiContracts.kt for the full flow,
 // and pairing.js for the rate-limiting/lockout that makes this safe to expose.
 app.post('/v1/terminal/pair-with-code', pairWithCode);
+// Unauthenticated by necessity, same reasoning as pair-with-code above — a terminal-side
+// operator entering a passkey has no token yet. See keyAccessRequests.js's `passkeyLogin` doc
+// and TerminalPasskeyLoginRequest in shared/.../api/ApiContracts.kt for the full contract.
+// Backend route only this pass — terminalApp's TerminalPasskeyLoginScreen is not wired to it yet.
+app.post('/v1/terminal/passkey-login', passkeyLogin);
 
 const admin = express.Router();
 admin.use(requireAuth, requireSuperAdminOrAllowlistedRole, idempotency);
@@ -85,7 +92,13 @@ admin.use('/keys', keysRouter);
 admin.use('/key-slots', keySlotsRouter);
 admin.use('/access-grants', accessGrantsRouter);
 admin.use('/key-checkouts', keyCheckoutsRouter);
+// Kept mounted, unchanged — still the live route backing terminalApp's deployed Phase 7 Vendor
+// Passkey screen (TerminalVendorPasskeyScreen.kt). key-access-requests below is an ADDITIVE,
+// more general mechanism for mobileApp going forward, not a replacement for this one — see the
+// design-choice note at the top of 009_regions_and_key_access_requests.sql for why both coexist.
 admin.use('/vendor-passkey-requests', vendorPasskeyRequestsRouter);
+admin.use('/regions', regionsRouter);
+admin.use('/key-access-requests', keyAccessRequestsRouter);
 admin.use('/recycle-bin', recycleBinRouter);
 admin.use('/sync-conflicts', syncConflictsRouter);
 admin.use('/event-definitions', eventDefinitionsRouter);

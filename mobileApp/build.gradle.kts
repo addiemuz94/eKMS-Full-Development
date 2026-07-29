@@ -4,6 +4,7 @@ plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.android)
     alias(libs.plugins.compose.compiler)
+    alias(libs.plugins.kotlin.serialization)
 }
 
 android {
@@ -40,4 +41,17 @@ dependencies {
     implementation(libs.androidx.activity.compose)
     implementation(libs.androidx.lifecycle.runtime.ktx)
     implementation(libs.androidx.compose.material3)
+    implementation(libs.androidx.navigation.compose)
+    implementation(libs.androidx.compose.material.icons.extended)
+    // Mirrors terminalApp's exact HTTP client choice (Ktor client + OkHttp engine +
+    // kotlinx.serialization content negotiation) — mobileApp is Android-only like terminalApp
+    // (not Wasm-targeted), so there's no cross-platform-engine constraint pushing toward a
+    // different client; reusing the same one terminalApp already depends on (rather than
+    // introducing e.g. Retrofit) keeps exactly one HTTP stack across the two Android apps.
+    implementation(libs.kotlinx.serialization.json)
+    implementation(libs.kotlinx.coroutines.android)
+    implementation(libs.ktor.client.core)
+    implementation(libs.ktor.client.okhttp)
+    implementation(libs.ktor.client.content.negotiation)
+    implementation(libs.ktor.serialization.kotlinx.json)
 }

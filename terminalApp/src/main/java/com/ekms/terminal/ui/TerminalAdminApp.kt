@@ -393,6 +393,25 @@ fun TerminalAdminApp() {
     // CabinetHardwareController.beginMultiKeyRedLightSequence), then starts the queue at its
     // first node once every light is confirmed lit. multiKeyQueuePending covers exactly that
     // in-between window so the screen can show "preparing" rather than nothing.
+    // Shared by beginMultiKeyTake (Key Menu's normal multi-select path) and beginPasskeyKeyTake
+    // (migration 009 follow-up: a passkey-authenticated take) — the actual "light every selected
+    // node, then start the queue" hardware sequence is identical either way; only how `deadline`
+    // gets decided differs between the two callers.
+    fun startMultiKeyQueue(pairs: List<Pair<ManagedKey, KeySlot>>, deadline: CheckoutDeadlineChoice) {
+        multiKeyQueuePending = true
+        hardwareController.beginMultiKeyRedLightSequence(
+            nodeAddresses = pairs.map { (_, slot) -> slot.nodeAddress },
+            onReady = {
+                multiKeyQueuePending = false
+                multiKeyQueue = MultiKeyTakeQueue(pairs, checkoutDeadline = deadline)
+            },
+            onFailure = { message ->
+                multiKeyQueuePending = false
+                notice = message
+            },
+        )
+    }
+
     fun beginMultiKeyTake(selectedKeys: List<ManagedKey>) {
         val pairs = selectedKeys.mapNotNull { key ->
             retrievalSlots.firstOrNull { it.managedKeyId == key.id }?.let { slot -> key to slot }
@@ -402,35 +421,81 @@ fun TerminalAdminApp() {
             return
         }
 
-        fun startQueue(deadline: CheckoutDeadlineChoice) {
-            multiKeyQueuePending = true
-            hardwareController.beginMultiKeyRedLightSequence(
-                nodeAddresses = pairs.map { (_, slot) -> slot.nodeAddress },
-                onReady = {
-                    multiKeyQueuePending = false
-                    multiKeyQueue = MultiKeyTakeQueue(pairs, checkoutDeadline = deadline)
-                },
-                onFailure = { message ->
-                    multiKeyQueuePending = false
-                    notice = message
-                },
-            )
-        }
-
         checkoutDeadlineResolving = true
         scope.launch {
             val (decision, timezone) = resolveCheckoutDeadline()
             checkoutDeadlineResolving = false
             when (decision) {
                 is CheckoutDeadlinePolicy.DeadlineDecision.Auto ->
-                    startQueue(CheckoutDeadlineChoice.auto(decision.dueAtEpochMillis))
+                    startMultiKeyQueue(pairs, CheckoutDeadlineChoice.auto(decision.dueAtEpochMillis))
 
                 is CheckoutDeadlinePolicy.DeadlineDecision.NeedsDecision ->
                     pendingCheckoutDecision = PendingCheckoutDecision(
                         closeAtEpochMillis = decision.closeAtEpochMillis,
                         timezone = timezone,
-                        resume = { choice -> startQueue(choice) },
+                        resume = { choice -> startMultiKeyQueue(pairs, choice) },
                     )
+            }
+        }
+    }
+
+    /**
+     * Migration 009 follow-up: entry point for a passkey-authenticated take, reached from
+     * [runPasskeyLogin] on a successful `POST /v1/terminal/passkey-login`. Deliberately does
+     * NOT go through [resolveCheckoutDeadline]/[CheckoutDeadlinePolicy] or
+     * `pendingCheckoutDecision` (`TerminalCloseToDeadlineScreen`) at all — the due time was
+     * already fixed at request-approval time (`passkeyExpiresAtEpochMillis`), so there is no
+     * decision left to make here, only [CheckoutDeadlineChoice.passkeyRequest] to construct from
+     * it. Reuses [startMultiKeyQueue] (same hardware sequence Key Menu's own multi-select path
+     * uses) rather than a parallel queue implementation — this only differs in how the pairs and
+     * deadline are sourced (an approved [TerminalPasskeyLoginResponse], not an operator's
+     * on-screen selection).
+     */
+    fun beginPasskeyKeyTake(approvedKeyIds: Set<String>, expiresAtEpochMillis: Long) {
+        val pairs = approvedKeyIds.mapNotNull { keyId ->
+            val key = retrievalKeys.firstOrNull { it.id == keyId } ?: return@mapNotNull null
+            val slot = retrievalSlots.firstOrNull { it.managedKeyId == keyId } ?: return@mapNotNull null
+            key to slot
+        }
+        if (pairs.isEmpty()) {
+            notice = "None of the approved keys are currently assigned to a cabinet slot."
+            return
+        }
+        startMultiKeyQueue(pairs, CheckoutDeadlineChoice.passkeyRequest(expiresAtEpochMillis))
+    }
+
+    /**
+     * Migration 009 follow-up: calls the real backend passkey-login route (previously this
+     * screen was a non-functional UI shell). On success, resolves a normal
+     * [com.ekms.shared.domain.TerminalSession] via `store.authenticateByUserId` — the same
+     * mechanism Fingerprint/Face login already use — so checkout attribution, sign-out, and
+     * every other session-dependent behavior work unchanged; it just then routes straight into
+     * [beginPasskeyKeyTake] for the approved key(s) instead of [postLoginRoute]'s normal
+     * role-based landing screen, since a passkey session's whole purpose is taking specific
+     * pre-approved keys, never Key Menu's own selection UI.
+     */
+    fun runPasskeyLogin(code: String) {
+        scope.launch {
+            syncBusy = true
+            try {
+                val response = apiClient.passkeyLogin(code, retrievalTerminal.id)
+                when (val result = store.authenticateByUserId(response.requesterUserId)) {
+                    is StoreResult.Success -> {
+                        session = result.value
+                        notice = null
+                        loginMethod = null
+                        route = SuperAdminRoute.KEY_MENU
+                        beginPasskeyKeyTake(response.keyIds, response.expiresAtEpochMillis)
+                    }
+
+                    is StoreResult.Error -> notice = result.message
+                }
+            } catch (error: TerminalApiException) {
+                notice = error.message
+            } catch (error: Exception) {
+                notice = error.message ?: "Passkey sign-in failed."
+            } finally {
+                syncBusy = false
             }
         }
     }
@@ -1225,6 +1290,8 @@ fun TerminalAdminApp() {
 
                     LoginMethod.PASSKEY -> TerminalPasskeyLoginScreen(
                         padding = padding,
+                        onSubmit = { code -> runPasskeyLogin(code) },
+                        loginError = notice,
                         onBack = { loginMethod = null },
                     )
                 }

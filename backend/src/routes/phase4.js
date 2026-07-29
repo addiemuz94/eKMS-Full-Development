@@ -723,4 +723,8 @@ export {
   appointmentsRouter,
   appointmentPermissionsRouter,
   reportsRouter,
+  // Exported for routes/regions.js (migration 009) — regions has no siteId column, so it doesn't
+  // fit namedGroupRouter's assumed shape, but it fits this lower-level factory directly with its
+  // own mapRow/schemas/SQL, the same way eventDefinitionsRouter/schedulesRouter/etc. do above.
+  softDeleteRouter,
 };

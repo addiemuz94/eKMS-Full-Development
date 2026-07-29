@@ -22,13 +22,29 @@ async function assignedSites(userId) {
   return rows.map((r) => r.site_id);
 }
 
-function mapUser(row, siteIds) {
+/** Region-assignment counterpart of [assignedSites] (migration 009) — see
+ * `assignedRegionIds`'s doc on [mapUser] for why this is additive, not a replacement. */
+async function assignedRegions(userId) {
+  const [rows] = await pool.execute(
+    `SELECT region_id FROM user_region_assignments WHERE user_id = :userId`,
+    { userId },
+  );
+  return rows.map((r) => r.region_id);
+}
+
+function mapUser(row, siteIds, regionIds = []) {
   return {
     id: row.id,
     displayName: row.display_name,
     email: row.email,
     role: row.role,
     assignedSiteIds: siteIds,
+    // Region assignment (migration 009) — independent of assignedSiteIds, only meaningful for
+    // REGIONAL_ADMIN (routes key-access-request approval authority; see keyAccessRequests.js).
+    // Deliberately not validated against assignedSiteIds for consistency — see the
+    // "no consistency rule" note on user_region_assignments in
+    // 009_regions_and_key_access_requests.sql.
+    assignedRegionIds: regionIds,
     accountStatus: row.account_status,
     staffId: row.staff_id,
     revision: Number(row.revision),
@@ -52,6 +68,20 @@ async function replaceAssignments(conn, userId, siteIds) {
   }
 }
 
+/** Region counterpart of [replaceAssignments] — same delete-all-then-reinsert shape, own table.
+ * No application-level validation that regionIds reference real regions, same as
+ * replaceAssignments's siteIds: a bad id fails on the FK constraint itself and surfaces as a
+ * raw 500, identical to today's behavior for a bad assignedSiteIds entry. */
+async function replaceRegionAssignments(conn, userId, regionIds) {
+  await conn.execute(`DELETE FROM user_region_assignments WHERE user_id = :userId`, { userId });
+  for (const regionId of regionIds) {
+    await conn.execute(
+      `INSERT INTO user_region_assignments (user_id, region_id) VALUES (:userId, :regionId)`,
+      { userId, regionId },
+    );
+  }
+}
+
 router.get('/', async (req, res) => {
   const state = req.query.state || 'ACTIVE';
   const siteId = req.query.siteId;
@@ -65,7 +95,7 @@ router.get('/', async (req, res) => {
   const [rows] = await pool.execute(sql, params);
   const items = [];
   for (const row of rows) {
-    items.push(mapUser(row, await assignedSites(row.id)));
+    items.push(mapUser(row, await assignedSites(row.id), await assignedRegions(row.id)));
   }
   res.json({ items });
 });
@@ -75,7 +105,7 @@ router.get('/:id', async (req, res) => {
     id: req.params.id,
   });
   if (!rows[0]) return notFound(res, 'User not found');
-  return res.json(mapUser(rows[0], await assignedSites(rows[0].id)));
+  return res.json(mapUser(rows[0], await assignedSites(rows[0].id), await assignedRegions(rows[0].id)));
 });
 
 router.post('/', async (req, res) => {
@@ -84,6 +114,11 @@ router.post('/', async (req, res) => {
     email: z.string().email(),
     role: z.enum(['SUPER_ADMIN', 'REGIONAL_ADMIN', 'TECHNICIAN', 'VENDOR']),
     assignedSiteIds: z.array(z.string().uuid()).default([]),
+    // Region assignment (migration 009) — optional, defaults to none. Only meaningful for
+    // REGIONAL_ADMIN; no role-based requirement is enforced here (unlike assignedSiteIds below)
+    // since a Regional Admin with zero region assignments simply can't yet approve any
+    // key-access request, which is a valid (if not very useful) starting state, not an error.
+    assignedRegionIds: z.array(z.string().uuid()).default([]),
     password: z.string().min(8).optional(),
     staffId: z.string().max(128).nullable().optional(),
   });
@@ -119,6 +154,7 @@ router.post('/', async (req, res) => {
       },
     );
     await replaceAssignments(conn, id, parsed.data.assignedSiteIds);
+    await replaceRegionAssignments(conn, id, parsed.data.assignedRegionIds);
     await conn.commit();
   } catch (err) {
     await conn.rollback();
@@ -138,7 +174,7 @@ router.post('/', async (req, res) => {
     detail: 'USER_CREATED',
   });
   const [rows] = await pool.execute(`SELECT * FROM users WHERE id = :id`, { id });
-  return res.status(201).json(mapUser(rows[0], await assignedSites(id)));
+  return res.status(201).json(mapUser(rows[0], await assignedSites(id), await assignedRegions(id)));
 });
 
 router.patch('/:id', async (req, res) => {
@@ -147,6 +183,7 @@ router.patch('/:id', async (req, res) => {
     email: z.string().email(),
     role: z.enum(['SUPER_ADMIN', 'REGIONAL_ADMIN', 'TECHNICIAN', 'VENDOR']),
     assignedSiteIds: z.array(z.string().uuid()).default([]),
+    assignedRegionIds: z.array(z.string().uuid()).default([]),
     staffId: z.string().max(128).nullable().optional(),
     expectedRevision: z.number().int().nonnegative(),
   });
@@ -187,6 +224,7 @@ router.patch('/:id', async (req, res) => {
       return conflict(res);
     }
     await replaceAssignments(conn, req.params.id, parsed.data.assignedSiteIds);
+    await replaceRegionAssignments(conn, req.params.id, parsed.data.assignedRegionIds);
     await conn.commit();
   } catch (err) {
     await conn.rollback();
@@ -196,7 +234,7 @@ router.patch('/:id', async (req, res) => {
   }
 
   const [rows] = await pool.execute(`SELECT * FROM users WHERE id = :id`, { id: req.params.id });
-  return res.json(mapUser(rows[0], await assignedSites(req.params.id)));
+  return res.json(mapUser(rows[0], await assignedSites(req.params.id), await assignedRegions(req.params.id)));
 });
 
 router.post('/:id/account-status', async (req, res) => {
@@ -242,7 +280,7 @@ router.post('/:id/account-status', async (req, res) => {
     detail: parsed.data.accountStatus,
   });
   const [rows] = await pool.execute(`SELECT * FROM users WHERE id = :id`, { id: req.params.id });
-  return res.json(mapUser(rows[0], await assignedSites(req.params.id)));
+  return res.json(mapUser(rows[0], await assignedSites(req.params.id), await assignedRegions(req.params.id)));
 });
 
 router.delete('/:id', async (req, res) => {
@@ -273,7 +311,7 @@ router.delete('/:id', async (req, res) => {
     entityId: req.params.id,
   });
   const [rows] = await pool.execute(`SELECT * FROM users WHERE id = :id`, { id: req.params.id });
-  return res.json(mapUser(rows[0], await assignedSites(req.params.id)));
+  return res.json(mapUser(rows[0], await assignedSites(req.params.id), await assignedRegions(req.params.id)));
 });
 
 export default router;

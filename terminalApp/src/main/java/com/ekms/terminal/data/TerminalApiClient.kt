@@ -23,6 +23,8 @@ import com.ekms.shared.api.TerminalBootstrapResponse
 import com.ekms.shared.api.TerminalDto
 import com.ekms.shared.api.TerminalPairWithCodeRequest
 import com.ekms.shared.api.TerminalPairingResponse
+import com.ekms.shared.api.TerminalPasskeyLoginRequest
+import com.ekms.shared.api.TerminalPasskeyLoginResponse
 import com.ekms.shared.api.TerminalSyncAckResponse
 import com.ekms.shared.api.TerminalSyncPushRequest
 import com.ekms.shared.api.TerminalSyncPushResponse
@@ -183,6 +185,29 @@ class TerminalApiClient(context: Context) {
         accessToken = response.accessToken
         refreshToken = response.refreshToken
         return response
+    }
+
+    /**
+     * Unauthenticated by necessity, same reasoning as [pairWithCode] — a terminal-side operator
+     * entering a passkey has no token yet at the login screen. Unlike [pairWithCode] or [login],
+     * this does NOT store the returned token in [accessToken]/[refreshToken] — a
+     * KEY_ACCESS_SESSION-scoped token represents a specific requester admitted to specific keys
+     * until a specific expiry, not this terminal's own device/operator session slots. The caller
+     * (`TerminalAdminApp`) resolves a normal [com.ekms.shared.domain.TerminalSession] separately
+     * via `TerminalAdminStore.authenticateByUserId` and only uses this response's
+     * `keyIds`/`siteId`/`expiresAtEpochMillis` to drive straight into the take flow.
+     */
+    suspend fun passkeyLogin(passkey: String, terminalId: String): TerminalPasskeyLoginResponse {
+        ensureBaseUrl()
+        return decode(
+            send(
+                method = HttpMethod.Post,
+                path = ApiPaths.TERMINAL_PASSKEY_LOGIN,
+                body = json.encodeToString(TerminalPasskeyLoginRequest(passkey = passkey, terminalId = terminalId)),
+                authenticated = false,
+                idempotent = false,
+            ),
+        )
     }
 
     suspend fun bootstrap(

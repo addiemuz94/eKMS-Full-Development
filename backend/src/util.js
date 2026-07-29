@@ -73,6 +73,43 @@ export async function assignedSiteIdsForUser(userId) {
   return rows.map((r) => r.site_id);
 }
 
+/**
+ * Region-scoped counterpart of [isSiteAssignedToUser], added for key-access-request routing
+ * (migration 009). Deliberately checks `user_region_assignments`, NOT `user_site_assignments` —
+ * a Regional Admin may approve a key-access request for any Site inside a Region they're
+ * assigned to, even one they have no individual Site assignment for (see the "deliberate
+ * simplification, no consistency check" note on user_region_assignments in
+ * 009_regions_and_key_access_requests.sql). Same two-layer model as every other Regional Admin
+ * route: this is the row-level half, REGIONAL_ADMIN_ALLOWED_ROUTES in middleware/auth.js is the
+ * route-level half.
+ */
+export async function isRegionAssignedToUser(userId, regionId) {
+  if (!regionId) return false;
+  const [rows] = await pool.execute(
+    `SELECT 1 FROM user_region_assignments WHERE user_id = :userId AND region_id = :regionId LIMIT 1`,
+    { userId, regionId },
+  );
+  return Boolean(rows[0]);
+}
+
+/** All region ids a user is assigned to — used to scope a Regional Admin's key-access-request
+ * list view down to their own regions when no specific `?siteId=` filter is given. */
+export async function assignedRegionIdsForUser(userId) {
+  const [rows] = await pool.execute(
+    `SELECT region_id FROM user_region_assignments WHERE user_id = :userId`,
+    { userId },
+  );
+  return rows.map((r) => r.region_id);
+}
+
+/** A site's region, or `null` if the site has no region assigned yet (region_id is nullable —
+ * see migration 009). A request tied to a regionless site cannot be routed to any Regional
+ * Admin until a Super Admin assigns that site to a region. */
+export async function regionIdForSite(siteId) {
+  const [rows] = await pool.execute(`SELECT region_id FROM sites WHERE id = :id LIMIT 1`, { id: siteId });
+  return rows[0]?.region_id ?? null;
+}
+
 export function conflict(res, message = 'expectedRevision does not match current revision') {
   return res.status(409).json({ error: 'CONFLICT', message });
 }

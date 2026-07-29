@@ -85,8 +85,11 @@ router.post('/', async (req, res) => {
     // Not stored — same "log which path set it via audit_events, no parallel column" decision
     // already applied to the PATCH route's dueDateSource. Phase 5 adds the EMERGENCY case here:
     // the close-to-deadline decision (auto-computed close time / manually entered / marked
-    // emergency) happens once at take time, which is exactly this route.
-    dueDateSource: z.enum(['AUTO', 'MANUAL', 'EMERGENCY']).default('AUTO'),
+    // emergency) happens once at take time, which is exactly this route. Migration 009 follow-up
+    // adds PASSKEY_REQUEST: a passkey-authenticated take's due time was already fixed at
+    // key-access-request approval time, not decided here at all — logged for provenance same as
+    // every other source.
+    dueDateSource: z.enum(['AUTO', 'MANUAL', 'EMERGENCY', 'PASSKEY_REQUEST']).default('AUTO'),
   });
   const parsed = schema.safeParse(req.body);
   if (!parsed.success) return badRequest(res, 'Invalid key checkout payload');

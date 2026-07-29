@@ -43,9 +43,29 @@ object ApiPaths {
     const val ADMIN_KEY_CHECKOUTS = "/v1/admin/key-checkouts"
     /** Super Admin. {id} is sites.id. GET/PATCH per-site office hours (open/close time + timezone). */
     const val ADMIN_SITE_OFFICE_HOURS = "/v1/admin/sites/{id}/office-hours"
+    /** Still live — backs terminalApp's deployed Phase 7 `TerminalVendorPasskeyScreen`. Kept
+     * unchanged; [ADMIN_KEY_ACCESS_REQUESTS] below is an additive, more general mechanism for
+     * mobileApp going forward, not a replacement for this one — both coexist. */
     const val ADMIN_VENDOR_PASSKEY_REQUESTS = "/v1/admin/vendor-passkey-requests"
     const val ADMIN_VENDOR_PASSKEY_REQUEST_APPROVE = "/v1/admin/vendor-passkey-requests/{id}/approve"
     const val ADMIN_VENDOR_PASSKEY_REQUEST_REJECT = "/v1/admin/vendor-passkey-requests/{id}/reject"
+    /** Super Admin only. Regions (migration 009) — a geographic grouping ABOVE Site, used only to
+     * route a [KeyAccessRequestDto] to the right Regional Admin. See [RegionDto]. */
+    const val ADMIN_REGIONS = "/v1/admin/regions"
+    /** Additive, more general mechanism alongside [ADMIN_VENDOR_PASSKEY_REQUESTS] (migration
+     * 009) — Technician now gets passkey access too, and approval routes via Region instead of
+     * Site. See [KeyAccessRequestDto]. Not a rename/replacement of the vendor-only route. */
+    const val ADMIN_KEY_ACCESS_REQUESTS = "/v1/admin/key-access-requests"
+    const val ADMIN_KEY_ACCESS_REQUEST_APPROVE = "/v1/admin/key-access-requests/{id}/approve"
+    const val ADMIN_KEY_ACCESS_REQUEST_REJECT = "/v1/admin/key-access-requests/{id}/reject"
+    /** Resolves a single site's Region-derived [SiteKeyAccessPolicyDto.maxKeyAccessDurationMinutes]
+     * ceiling — a narrow, purpose-built read so a requester's mobile form can bound its duration
+     * picker without needing broader Region visibility (regions.js itself stays Super-Admin-only). */
+    const val ADMIN_KEY_ACCESS_REQUEST_SITE_POLICY = "/v1/admin/key-access-requests/site-policy/{siteId}"
+    /** Unauthenticated — a terminal-side operator entering a passkey has no token yet, same
+     * reasoning as [TERMINAL_PAIR_WITH_CODE]. See [TerminalPasskeyLoginRequest]. Backend route
+     * only as of migration 009 — terminalApp's UI is not wired to this endpoint yet. */
+    const val TERMINAL_PASSKEY_LOGIN = "/v1/terminal/passkey-login"
     const val ADMIN_KEY_FOB_ENROLLMENT = "/v1/admin/keys/{keyId}/fob-enrollment"
     const val ADMIN_EVENT_DEFINITIONS = "/v1/admin/event-definitions"
     const val ADMIN_SCHEDULES = "/v1/admin/schedules"
@@ -175,6 +195,10 @@ data class SiteDto(
     /** Superior / parent unit id, when this unit sits under another site. */
     val parentSiteId: String? = null,
     val address: String? = null,
+    /** Region assignment (migration 009) — was added to the `sites` table then but never
+     * actually exposed via the API until now (a confirmed gap: nothing could assign a site to a
+     * region at all). See [RegionDto]; null until a Super Admin assigns one. */
+    val regionId: String? = null,
     val revision: Long,
 )
 
@@ -208,6 +232,16 @@ data class UserDto(
     val email: String,
     val role: UserRole,
     val assignedSiteIds: Set<String> = emptySet(),
+    /**
+     * Region assignment (migration 009) — a Regional Admin may be assigned to one or more
+     * [RegionDto]s, independently of and in addition to [assignedSiteIds]. Region assignment's
+     * only job is routing a Technician/Vendor's [KeyAccessRequestDto] to the right Regional
+     * Admin for approval — it does not replace or need to be kept consistent with
+     * assignedSiteIds (a Regional Admin assigned to a Region need not also be individually
+     * assigned to every Site inside it — a deliberate simplification, see the backend migration
+     * doc). Empty/irrelevant for every role except REGIONAL_ADMIN.
+     */
+    val assignedRegionIds: Set<String> = emptySet(),
     val accountStatus: AccountStatus = AccountStatus.ACTIVE,
     /** External/employee identifier, distinct from [id]. */
     val staffId: String? = null,
@@ -268,6 +302,9 @@ data class CreateAdminUserRequest(
     val email: String,
     val role: UserRole,
     val assignedSiteIds: Set<String>,
+    /** Region assignment (migration 009) — independent of [assignedSiteIds]; only meaningful for
+     * REGIONAL_ADMIN. See [UserDto.assignedRegionIds] for the full "why separate" reasoning. */
+    val assignedRegionIds: Set<String> = emptySet(),
     val password: String? = null,
     /** External/employee identifier; optional, not required for account creation. */
     val staffId: String? = null,
@@ -279,6 +316,7 @@ data class UpdateAdminUserRequest(
     val email: String,
     val role: UserRole,
     val assignedSiteIds: Set<String>,
+    val assignedRegionIds: Set<String> = emptySet(),
     val staffId: String? = null,
     val expectedRevision: Long,
 )
@@ -421,6 +459,8 @@ data class SiteUpsertRequest(
     /** Superior unit id; omit or null for a top-level unit. */
     val parentSiteId: String? = null,
     val address: String? = null,
+    /** Region assignment (migration 009) — see [SiteDto.regionId]. */
+    val regionId: String? = null,
     /** Required for PATCH and must match the current backend revision. */
     val expectedRevision: Long? = null,
 )
@@ -864,6 +904,14 @@ enum class DueDateSource {
     AUTO,
     MANUAL,
     EMERGENCY,
+    /** Migration 009 follow-up: the due time was already fixed at key-access-request approval
+     * time (the approved [KeyAccessRequestDto.requestedDurationMinutes]/`passkeyExpiresAtEpochMillis`),
+     * not decided at take time by either an algorithm (AUTO) or an operator (MANUAL/EMERGENCY).
+     * A genuinely distinct provenance, not reused from an existing value, since AUTO specifically
+     * means "computed from office hours" and this due time has nothing to do with office hours
+     * at all. Like EMERGENCY, this is CREATE-only — `PATCH /key-checkouts/:id` (return/close-out)
+     * still only accepts AUTO/MANUAL, since a return never re-decides how the due date was set. */
+    PASSKEY_REQUEST,
 }
 
 @Serializable
@@ -926,6 +974,11 @@ data class UpdateSiteOfficeHoursRequest(
  * app UI, terminal-side passkey validation) is designed later in the mobileApp phase. No
  * `expectedRevision`: approve/reject are single state-transition actions guarded by checking
  * `status == PENDING` at write time, not a general field-level PATCH.
+ *
+ * Still live in production — backs terminalApp's deployed Phase 7 `TerminalVendorPasskeyScreen`
+ * (item 16). Kept exactly as-is; [KeyAccessRequestDto] below is an additive, more general
+ * mechanism for mobileApp going forward (Region-routed, multi-key, Technician+Vendor), not a
+ * rename or replacement of this one — both coexist.
  */
 @Serializable
 enum class VendorPasskeyRequestStatus {
@@ -965,4 +1018,163 @@ data class ApproveVendorPasskeyRequestResponse(
     val status: VendorPasskeyRequestStatus = VendorPasskeyRequestStatus.APPROVED,
     val passkeyCode: String,
     val passkeyExpiresAtEpochMillis: Long,
+)
+
+/**
+ * A geographic grouping ABOVE Site (migration 009) — additive, not a replacement for
+ * `assignedSiteIds`/`user_site_assignments`. Region's one job: route a Technician/Vendor's
+ * [KeyAccessRequestDto] to the right Regional Admin, since the (not-yet-built, per the
+ * mobileApp foundation pass's own scope) request form only lets the requester pick a key/
+ * cabinet, not a person to approve it. Super-Admin-managed only — a Regional Admin is assigned
+ * INTO a region (via [UserDto.assignedRegionIds]), never creates/edits regions themselves.
+ */
+@Serializable
+data class RegionDto(
+    val id: String,
+    val name: String,
+    /** Optional display ordering for a future portal region list; not load-bearing elsewhere. */
+    val displayOrder: Int = 0,
+    /** Ceiling (in minutes) that [KeyAccessRequestDto.requestedDurationMinutes] is clamped to at
+     * approval time — the "fixed/default return timing policy" a Regional Admin sets for their
+     * whole region. Default 1440 (24h) matches the prior fixed vendor-passkey TTL. */
+    val maxKeyAccessDurationMinutes: Int = 1440,
+    val revision: Long,
+)
+
+@Serializable
+data class CreateRegionRequest(
+    val name: String,
+    val displayOrder: Int = 0,
+    val maxKeyAccessDurationMinutes: Int = 1440,
+)
+
+@Serializable
+data class UpdateRegionRequest(
+    val name: String,
+    val displayOrder: Int = 0,
+    val maxKeyAccessDurationMinutes: Int = 1440,
+    val expectedRevision: Long,
+)
+
+@Serializable
+data class RegionListResponse(val items: List<RegionDto> = emptyList())
+
+/**
+ * Generalizes the old VendorPasskeyRequestDto (Phase 1) beyond Vendor-only, now that Technician
+ * also gets passkey access (migration 009). Approval routes through the request's [siteId]'s
+ * [RegionDto] assignment, not direct Site assignment — see [UserDto.assignedRegionIds]. No
+ * `expectedRevision`: approve/reject are single state-transition actions guarded by checking
+ * `status == PENDING` at write time, same as the table this generalizes.
+ */
+@Serializable
+enum class KeyAccessRequestStatus {
+    PENDING,
+    APPROVED,
+    REJECTED,
+}
+
+/** [passkeyExpiresAtEpochMillis] is present once approved; the plaintext code itself is never
+ * included here — see [ApproveKeyAccessRequestResponse], which shows it exactly once. */
+@Serializable
+data class KeyAccessRequestDto(
+    val id: String,
+    val requesterUserId: String,
+    /** TECHNICIAN or VENDOR — reuses [UserRole]'s existing values, no new enum. */
+    val requesterRole: UserRole,
+    val siteId: String,
+    /** Multi-key support: mirrors [AccessGrantDto.keyIds] rather than a single key id — a
+     * request can cover one key or several (mirroring Key Menu's multi-key take), decided as
+     * the schema shape that's easiest to extend either way. */
+    val keyIds: Set<String> = emptySet(),
+    val requestedAtEpochMillis: Long,
+    /** The duration the requester picked in the mobile form, before any Region-ceiling clamp
+     * is applied at approval time. */
+    val requestedDurationMinutes: Int,
+    val status: KeyAccessRequestStatus,
+    val approvedByUserId: String? = null,
+    val approvedAtEpochMillis: Long? = null,
+    /** Non-null only when the caller viewing this DTO IS the request's own [requesterUserId] —
+     * see the viewer-scoping note on `mapRequest` in backend/src/routes/keyAccessRequests.js.
+     * Everyone else (a Regional Admin reviewing it, a different requester) always gets `null`
+     * here; the [ApproveKeyAccessRequestResponse] the approver receives is a separate, one-time
+     * value and does not affect this field. */
+    val generatedPasskey: String? = null,
+    val passkeyExpiresAtEpochMillis: Long? = null,
+)
+
+@Serializable
+data class CreateKeyAccessRequestRequest(
+    /** Only honored for a SUPER_ADMIN/REGIONAL_ADMIN caller creating a request on someone
+     * else's behalf — a TECHNICIAN/VENDOR caller always requests for themselves server-side,
+     * regardless of what (if anything) is sent here. See backend/src/routes/keyAccessRequests.js. */
+    val requesterUserId: String? = null,
+    val requesterRole: UserRole? = null,
+    val siteId: String,
+    val keyIds: Set<String>,
+    val requestedDurationMinutes: Int,
+)
+
+@Serializable
+data class KeyAccessRequestListResponse(val items: List<KeyAccessRequestDto> = emptyList())
+
+/** [generatedPasskey] is a plaintext 4-digit code, shown exactly once — same "shown once"
+ * treatment as terminal pairing codes (RegeneratePairingCodeResponse). Nothing re-reads it
+ * afterward. Server-generated only — a client can never submit its own passkey value. */
+@Serializable
+data class ApproveKeyAccessRequestResponse(
+    val id: String,
+    val status: KeyAccessRequestStatus = KeyAccessRequestStatus.APPROVED,
+    val generatedPasskey: String,
+    val passkeyExpiresAtEpochMillis: Long,
+)
+
+/**
+ * Terminal-side passkey login (migration 009) — submits the 4-digit code from
+ * [ApproveKeyAccessRequestResponse.generatedPasskey] at the terminal's existing (currently
+ * non-functional) Passkey login tile. Unauthenticated, same reasoning as
+ * [TerminalPairWithCodeRequest]. [terminalId] lets the backend confirm the passkey's approved
+ * site matches the terminal being logged into — a passkey approved for one cabinet's site must
+ * not be usable at an unrelated terminal elsewhere.
+ *
+ * Backend route only as of this migration — terminalApp's `TerminalPasskeyLoginScreen` is not
+ * wired to this endpoint yet (still the disabled UI shell from Phase 3); that wiring is
+ * deliberately deferred, separate follow-up work.
+ */
+@Serializable
+data class TerminalPasskeyLoginRequest(
+    val passkey: String,
+    val terminalId: String,
+)
+
+/**
+ * [accessToken] is a KEY_ACCESS_SESSION-scoped JWT (see `signKeyAccessSessionToken` in
+ * backend/src/middleware/auth.js) carrying exactly [keyIds]/[siteId] as claims and expiring at
+ * [expiresAtEpochMillis] — no refresh token exists for this session type, it is not meant to be
+ * renewed. [requesterUserId] is carried as a plain field (not just inside the opaque JWT) so
+ * terminalApp can resolve a normal `TerminalSession` via `TerminalAdminStore.authenticateByUserId`
+ * without ever needing to decode a JWT client-side — nothing else in this codebase does that.
+ */
+@Serializable
+data class TerminalPasskeyLoginResponse(
+    val accessToken: String,
+    val keyAccessRequestId: String,
+    val requesterUserId: String,
+    val siteId: String,
+    val keyIds: Set<String> = emptySet(),
+    val expiresAtEpochMillis: Long,
+)
+
+/**
+ * Response for [ApiPaths.ADMIN_KEY_ACCESS_REQUEST_SITE_POLICY] — the one derived value a
+ * requester's mobile form needs before submitting a [CreateKeyAccessRequestRequest]:
+ * [maxKeyAccessDurationMinutes] bounds the duration picker client-side for UX only. The real
+ * enforcement point stays server-side, at approve time (`POST .../{id}/approve` clamps down to
+ * this same ceiling regardless of what the client sent) — never trust this value as security.
+ * `null` if the site has no Region assigned yet (no ceiling to enforce; see [SiteDto.regionId]).
+ */
+@Serializable
+data class SiteKeyAccessPolicyDto(
+    val siteId: String,
+    val regionId: String? = null,
+    val maxKeyAccessDurationMinutes: Int? = null,
 )

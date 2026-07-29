@@ -1,0 +1,56 @@
+package com.ekms.mobile.ui.theme
+
+import androidx.compose.material3.Typography
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.font.Font
+import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontWeight
+import com.ekms.mobile.R
+
+/**
+ * Cavotec type: Outfit for UI, IBM Plex Mono for technical readouts (key/access identifiers) —
+ * same brand fonts as terminalApp and `web/`, duplicated here rather than shared (see Color.kt's
+ * doc comment for why). Font files copied byte-for-byte from terminalApp/src/main/res/font/.
+ */
+val OutfitFontFamily = FontFamily(
+    Font(R.font.outfit_regular, FontWeight.Normal),
+    Font(R.font.outfit_medium, FontWeight.Medium),
+    Font(R.font.outfit_semibold, FontWeight.SemiBold),
+)
+
+val PlexMonoFontFamily = FontFamily(
+    Font(R.font.plex_mono_regular, FontWeight.Normal),
+    Font(R.font.plex_mono_medium, FontWeight.Medium),
+)
+
+private val base = Typography()
+
+private fun TextStyle.outfit(weight: FontWeight? = null): TextStyle =
+    copy(fontFamily = OutfitFontFamily, fontWeight = weight ?: fontWeight)
+
+val EkmsMobileTypography = Typography(
+    displayLarge = base.displayLarge.outfit(),
+    displayMedium = base.displayMedium.outfit(),
+    displaySmall = base.displaySmall.outfit(),
+    headlineLarge = base.headlineLarge.outfit(),
+    headlineMedium = base.headlineMedium.outfit(),
+    headlineSmall = base.headlineSmall.outfit(),
+    titleLarge = base.titleLarge.outfit(),
+    titleMedium = base.titleMedium.outfit(FontWeight.Medium),
+    titleSmall = base.titleSmall.outfit(FontWeight.Medium),
+    bodyLarge = base.bodyLarge.outfit(),
+    bodyMedium = base.bodyMedium.outfit(),
+    bodySmall = base.bodySmall.outfit(),
+    labelLarge = base.labelLarge.outfit(FontWeight.Medium),
+    labelMedium = base.labelMedium.outfit(FontWeight.Medium),
+    labelSmall = base.labelSmall.outfit(FontWeight.Medium),
+)
+
+/** Mono style for a raw key/access identifier value. */
+val DataReadoutTextStyle = TextStyle(
+    fontFamily = PlexMonoFontFamily,
+    fontWeight = FontWeight.Medium,
+)
+
+/** Merge mono readout onto an existing Material text style. */
+fun TextStyle.readout(): TextStyle = merge(DataReadoutTextStyle)

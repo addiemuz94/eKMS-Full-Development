@@ -23,9 +23,23 @@ function mapSite(row) {
     city: row.city ?? null,
     parentSiteId: row.parent_site_id ?? null,
     address: row.address,
+    // Region assignment (migration 009) — was added to the `sites` table then but never
+    // actually exposed here, leaving no way for anyone to assign a site to a region at all.
+    // Fixed now: routes key_access_requests approval to the right Regional Admin.
+    regionId: row.region_id ?? null,
     revision: Number(row.revision),
     lifecycle: lifecycleFromRow(row),
   };
+}
+
+async function assertValidRegion(regionId) {
+  if (regionId == null || regionId === '') return null;
+  const [rows] = await pool.execute(
+    `SELECT id FROM regions WHERE id = :id AND lifecycle_state = 'ACTIVE' LIMIT 1`,
+    { id: regionId },
+  );
+  if (!rows[0]) return 'regionId must reference an active region';
+  return null;
 }
 
 function derivedAddress({ address, city, province }) {
@@ -53,6 +67,7 @@ const upsertSchema = z.object({
   city: z.string().nullable().optional(),
   parentSiteId: z.string().uuid().nullable().optional(),
   address: z.string().nullable().optional(),
+  regionId: z.string().uuid().nullable().optional(),
 });
 
 router.get('/', async (req, res) => {
@@ -105,6 +120,10 @@ router.post('/', async (req, res) => {
   const parentError = await assertValidParent(parentSiteId);
   if (parentError) return badRequest(res, parentError);
 
+  const regionId = parsed.data.regionId ?? null;
+  const regionError = await assertValidRegion(regionId);
+  if (regionError) return badRequest(res, regionError);
+
   const id = newId();
   const now = nowMs();
   const province = parsed.data.province?.trim() || null;
@@ -117,10 +136,10 @@ router.post('/', async (req, res) => {
 
   await pool.execute(
     `INSERT INTO sites
-      (id, name, province, city, parent_site_id, address, revision, lifecycle_state,
+      (id, name, province, city, parent_site_id, address, region_id, revision, lifecycle_state,
        created_at_epoch_ms, updated_at_epoch_ms)
      VALUES
-      (:id, :name, :province, :city, :parentSiteId, :address, 1, 'ACTIVE', :now, :now)`,
+      (:id, :name, :province, :city, :parentSiteId, :address, :regionId, 1, 'ACTIVE', :now, :now)`,
     {
       id,
       name: parsed.data.name.trim(),
@@ -128,6 +147,7 @@ router.post('/', async (req, res) => {
       city,
       parentSiteId,
       address,
+      regionId,
       now,
     },
   );
@@ -165,6 +185,11 @@ router.patch('/:id', async (req, res) => {
   const parentError = await assertValidParent(parentSiteId, { excludeSiteId: req.params.id });
   if (parentError) return badRequest(res, parentError);
 
+  const regionId =
+    parsed.data.regionId === undefined ? existing[0].region_id : parsed.data.regionId;
+  const regionError = await assertValidRegion(regionId);
+  if (regionError) return badRequest(res, regionError);
+
   const province =
     parsed.data.province === undefined
       ? existing[0].province
@@ -184,6 +209,7 @@ router.patch('/:id', async (req, res) => {
          city = :city,
          parent_site_id = :parentSiteId,
          address = :address,
+         region_id = :regionId,
          revision = revision + 1,
          updated_at_epoch_ms = :now
      WHERE id = :id AND revision = :expectedRevision AND lifecycle_state = 'ACTIVE'`,
@@ -194,6 +220,7 @@ router.patch('/:id', async (req, res) => {
       city,
       parentSiteId,
       address,
+      regionId,
       expectedRevision: parsed.data.expectedRevision,
       now,
     },
