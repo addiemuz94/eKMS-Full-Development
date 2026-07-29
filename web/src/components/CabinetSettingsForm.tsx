@@ -1,4 +1,5 @@
 import { useEffect, useState, type FormEvent } from 'react'
+import { Check } from 'lucide-react'
 import { api, ApiError } from '../api/client'
 import type { TerminalCabinetSettingsDto, TerminalDto } from '../api/types'
 import { Button, LinearProgress } from './ui'
@@ -155,7 +156,7 @@ export function CabinetSettingsForm({ terminal, title, onSaved }: Props) {
       </div>
 
       <div className="dialog-actions" style={{ marginTop: 12 }}>
-        <Button type="submit" loading={busy} disabled={!settings}>
+        <Button type="submit" icon={Check} loading={busy} disabled={!settings}>
           Save settings
         </Button>
       </div>

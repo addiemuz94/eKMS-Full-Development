@@ -1,7 +1,9 @@
 import { useEffect, useState } from 'react'
 import { api, ApiError, type RecycleBinEntry } from '../api/client'
+import { Button, useConfirm } from '../components/ui'
 
 export function RecycleBinPage() {
+  const { confirmAction, dialog } = useConfirm()
   const [entries, setEntries] = useState<RecycleBinEntry[]>([])
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
@@ -32,9 +34,9 @@ export function RecycleBinPage() {
             history is retained.
           </p>
         </div>
-        <button className="btn secondary" type="button" onClick={() => void reload()} disabled={busy}>
+        <Button variant="tonal" loading={busy} onClick={() => void reload()}>
           Refresh
-        </button>
+        </Button>
       </div>
 
       {error && <div className="error-banner">{error}</div>}
@@ -60,9 +62,8 @@ export function RecycleBinPage() {
                   <td>{new Date(entry.expiresAtEpochMillis).toLocaleString()}</td>
                   <td className="col-actions">
                     <div className="row-actions">
-                      <button
-                        className="btn"
-                        type="button"
+                      <Button
+                        loading={busy}
                         onClick={() =>
                           void (async () => {
                             await api.restoreRecycleBin({
@@ -75,13 +76,14 @@ export function RecycleBinPage() {
                         }
                       >
                         Restore
-                      </button>
-                      <button
-                        className="btn danger"
-                        type="button"
+                      </Button>
+                      <Button
+                        variant="danger"
+                        loading={busy}
                         onClick={() =>
                           void (async () => {
-                            if (!confirm('Permanently purge this record?')) return
+                            if (!(await confirmAction({ message: 'Permanently purge this record?', danger: true })))
+                              return
                             await api.purgeRecycleBin({
                               recordType: entry.recordType,
                               recordId: entry.recordId,
@@ -91,7 +93,7 @@ export function RecycleBinPage() {
                         }
                       >
                         Purge
-                      </button>
+                      </Button>
                     </div>
                   </td>
                 </tr>
@@ -102,6 +104,8 @@ export function RecycleBinPage() {
       ) : (
         !busy && <div className="empty-state">Recycle Bin is empty.</div>
       )}
+
+      {dialog}
     </section>
   )
 }

@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useState, type FormEvent, type ReactNode } from 'react'
+import { Check, Plus, X } from 'lucide-react'
 import { api, ApiError } from '../api/client'
 import type { SiteDto } from '../api/types'
-import { Button, LinearProgress } from './ui'
+import { Button, LinearProgress, useConfirm } from './ui'
 
 export type FieldDef =
   | { name: string; label: string; type: 'text' | 'number'; required?: boolean }
@@ -37,6 +38,7 @@ export function ResourcePage({
   extraActions,
   buildPayload,
 }: Props) {
+  const { confirmAction, dialog: confirmDialog } = useConfirm()
   const [items, setItems] = useState<Record<string, unknown>[]>([])
   const [sites, setSites] = useState<SiteDto[]>([])
   const [query, setQuery] = useState('')
@@ -150,7 +152,7 @@ export function ResourcePage({
 
   async function onRemove(id: string) {
     if (!remove) return
-    if (!confirm('Move this record to the Recycle Bin?')) return
+    if (!(await confirmAction({ message: 'Move this record to the Recycle Bin?', danger: true }))) return
     setBusy(true)
     try {
       await remove(id)
@@ -170,7 +172,7 @@ export function ResourcePage({
           {title && <h1>{title}</h1>}
           {description && <p className="muted">{description}</p>}
         </div>
-        <Button onClick={openDialog}>{addLabel}</Button>
+        <Button icon={Plus} onClick={openDialog}>{addLabel}</Button>
       </div>
 
       {notice && <div className="notice">{notice}</div>}
@@ -276,6 +278,7 @@ export function ResourcePage({
             <div className="dialog-actions">
               <Button
                 variant="outlined"
+                icon={X}
                 onClick={() => {
                   setOpen(false)
                   setEditingId(null)
@@ -283,13 +286,15 @@ export function ResourcePage({
               >
                 Cancel
               </Button>
-              <Button type="submit" loading={busy}>
+              <Button type="submit" icon={Check} loading={busy}>
                 {editingId ? 'Save changes' : 'Save'}
               </Button>
             </div>
           </form>
         </div>
       )}
+
+      {confirmDialog}
     </section>
   )
 }

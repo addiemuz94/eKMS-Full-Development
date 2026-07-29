@@ -1,12 +1,14 @@
 import { useEffect, useMemo, useState, type FormEvent } from 'react'
+import { Check, Plus, X } from 'lucide-react'
 import { api, ApiError } from '../api/client'
 import type { SiteDto } from '../api/types'
-import { Button, CircularProgress, LinearProgress, SegmentedControl } from '../components/ui'
+import { Button, CircularProgress, LinearProgress, SegmentedControl, useConfirm } from '../components/ui'
 import { MALAYSIA_STATES, citiesForState } from '../geo/malaysiaLocations'
 
 type UnitView = 'all' | 'mapped'
 
 export function UnitsPage() {
+  const { confirmAction, dialog } = useConfirm()
   const [sites, setSites] = useState<SiteDto[]>([])
   const [query, setQuery] = useState('')
   const [view, setView] = useState<UnitView>('all')
@@ -146,7 +148,7 @@ export function UnitsPage() {
   }
 
   async function onArchive(id: string) {
-    if (!confirm('Move this unit to the Recycle Bin?')) return
+    if (!(await confirmAction({ message: 'Move this unit to the Recycle Bin?', danger: true }))) return
     setBusy(true)
     setError(null)
     try {
@@ -175,6 +177,7 @@ export function UnitsPage() {
           </p>
         </div>
         <Button
+          icon={Plus}
           onClick={() => {
             resetForm()
             setEditingSite(null)
@@ -307,6 +310,7 @@ export function UnitsPage() {
             <div className="dialog-actions">
               <Button
                 variant="outlined"
+                icon={X}
                 onClick={() => {
                   setOpen(false)
                   setEditingSite(null)
@@ -314,7 +318,7 @@ export function UnitsPage() {
               >
                 Cancel
               </Button>
-              <Button type="submit" loading={busy}>
+              <Button type="submit" icon={Check} loading={busy}>
                 {editingSite ? 'Save changes' : 'Save unit'}
               </Button>
             </div>
@@ -328,6 +332,8 @@ export function UnitsPage() {
           Loading units…
         </div>
       )}
+
+      {dialog}
     </section>
   )
 }

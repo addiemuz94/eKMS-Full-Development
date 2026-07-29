@@ -1,12 +1,14 @@
 import { useCallback, useEffect, useMemo, useState, type FormEvent } from 'react'
+import { Check, Plus, X } from 'lucide-react'
 import { api, ApiError } from '../api/client'
 import type { SiteDto, UserDto } from '../api/types'
-import { Button, LinearProgress } from '../components/ui'
+import { Button, LinearProgress, useConfirm } from '../components/ui'
 
 type SortKey = 'name' | 'role' | 'site'
 type SortDir = 'asc' | 'desc'
 
 export function PersonnelPage() {
+  const { confirmAction, dialog } = useConfirm()
   const [people, setPeople] = useState<UserDto[]>([])
   const [sites, setSites] = useState<SiteDto[]>([])
   const [query, setQuery] = useState('')
@@ -153,6 +155,7 @@ export function PersonnelPage() {
           </p>
         </div>
         <Button
+          icon={Plus}
           onClick={() => {
             resetForm()
             setEditingPerson(null)
@@ -213,7 +216,9 @@ export function PersonnelPage() {
                   <td>
                     <span className="badge">{person.role}</span>
                   </td>
-                  <td>{person.accountStatus || 'ACTIVE'}</td>
+                  <td>
+                    <span className="badge">{person.accountStatus || 'ACTIVE'}</span>
+                  </td>
                   <td>{siteLabel(person.assignedSiteIds)}</td>
                   <td>
                     <span className="badge">Terminal-local only</span>
@@ -226,7 +231,8 @@ export function PersonnelPage() {
                           variant="link"
                           onClick={() =>
                             void (async () => {
-                              if (!confirm('Move personnel to Recycle Bin?')) return
+                              if (!(await confirmAction({ message: 'Move personnel to Recycle Bin?', danger: true })))
+                                return
                               await api.deleteUser(person.id)
                               await reload()
                             })()
@@ -304,6 +310,7 @@ export function PersonnelPage() {
             <div className="dialog-actions">
               <Button
                 variant="outlined"
+                icon={X}
                 onClick={() => {
                   setOpen(false)
                   setEditingPerson(null)
@@ -311,13 +318,15 @@ export function PersonnelPage() {
               >
                 Cancel
               </Button>
-              <Button type="submit" loading={busy}>
+              <Button type="submit" icon={Check} loading={busy}>
                 {editingPerson ? 'Save changes' : 'Save'}
               </Button>
             </div>
           </form>
         </div>
       )}
+
+      {dialog}
     </section>
   )
 }

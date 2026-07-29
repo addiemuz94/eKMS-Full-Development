@@ -1,8 +1,11 @@
 import { useEffect, useState, type FormEvent } from 'react'
+import { Check, Plus, X } from 'lucide-react'
 import { api, ApiError } from '../api/client'
 import type { SiteDto } from '../api/types'
+import { Button, LinearProgress, useConfirm } from '../components/ui'
 
 export function MultiAuthPage() {
+  const { confirmAction, dialog } = useConfirm()
   const [rules, setRules] = useState<Record<string, unknown>[]>([])
   const [sites, setSites] = useState<SiteDto[]>([])
   const [personnelGroups, setPersonnelGroups] = useState<Record<string, unknown>[]>([])
@@ -106,51 +109,76 @@ export function MultiAuthPage() {
           <h1>Multi-authentication Rules</h1>
           <p className="muted">Primary and assistant personnel groups required for a key group.</p>
         </div>
-        <button
-          className="btn"
-          type="button"
+        <Button
+          icon={Plus}
           onClick={() => {
             setEditingRule(null)
             setOpen(true)
           }}
         >
           Add rule
-        </button>
+        </Button>
       </div>
 
       {error && <div className="error-banner">{error}</div>}
+      {busy && <LinearProgress className="table-busy" label="Loading rules" />}
 
-      {rules.map((rule) => (
-        <article className="card" key={String(rule.id)}>
-          <h3>{sites.find((site) => site.id === rule.siteId)?.name ?? 'Rule'}</h3>
-          <div className="meta">
-            <div>Primary group: {label(personnelGroups, rule.primaryPersonnelGroupId)}</div>
-            <div>Assistant 1: {label(personnelGroups, rule.assistantGroupOneId)}</div>
-            <div>Assistant 2: {label(personnelGroups, rule.assistantGroupTwoId)}</div>
-            <div>Key group: {label(keyGroups, rule.keyGroupId)}</div>
-          </div>
-          <div className="card-actions">
-            <button className="btn linkish" type="button" onClick={() => openEdit(rule)}>
-              Edit
-            </button>
-            <button
-              className="btn linkish"
-              type="button"
-              onClick={() =>
-                void (async () => {
-                  if (!confirm('Move rule to Recycle Bin?')) return
-                  await api.deleteMultiAuthRule(String(rule.id))
-                  await reload()
-                })()
-              }
-            >
-              Move to Recycle Bin
-            </button>
-          </div>
-        </article>
-      ))}
-
-      {!rules.length && !busy && <div className="empty-state">No multi-auth rules yet. Create user and key groups first.</div>}
+      {rules.length ? (
+        <div className="data-panel">
+          <table className="data-table">
+            <thead>
+              <tr>
+                <th>Unit</th>
+                <th>Primary group</th>
+                <th>Assistant groups</th>
+                <th>Key group</th>
+                <th className="col-actions">Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rules.map((rule) => (
+                <tr key={String(rule.id)}>
+                  <td className="cell-title">
+                    {sites.find((site) => site.id === rule.siteId)?.name ?? 'Rule'}
+                  </td>
+                  <td>{label(personnelGroups, rule.primaryPersonnelGroupId)}</td>
+                  <td>
+                    <div className="cell-stack">
+                      <span>Assistant 1: {label(personnelGroups, rule.assistantGroupOneId)}</span>
+                      <span>Assistant 2: {label(personnelGroups, rule.assistantGroupTwoId)}</span>
+                    </div>
+                  </td>
+                  <td>{label(keyGroups, rule.keyGroupId)}</td>
+                  <td className="col-actions">
+                    <div className="row-actions">
+                      <Button variant="link" onClick={() => openEdit(rule)}>
+                        Edit
+                      </Button>
+                      <Button
+                        variant="link"
+                        onClick={() =>
+                          void (async () => {
+                            if (!(await confirmAction({ message: 'Move rule to Recycle Bin?', danger: true })))
+                              return
+                            await api.deleteMultiAuthRule(String(rule.id))
+                            await reload()
+                          })()
+                        }
+                      >
+                        Recycle
+                      </Button>
+                    </div>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      ) : (
+        !busy && (
+          <div className="empty-state">No multi-auth rules yet. Create user and key groups first.</div>
+        )
+      )}
 
       {open && (
         <div className="dialog-backdrop">
@@ -212,23 +240,25 @@ export function MultiAuthPage() {
               </select>
             </div>
             <div className="dialog-actions">
-              <button
-                className="btn secondary"
-                type="button"
+              <Button
+                variant="outlined"
+                icon={X}
                 onClick={() => {
                   setOpen(false)
                   setEditingRule(null)
                 }}
               >
                 Cancel
-              </button>
-              <button className="btn" type="submit" disabled={busy}>
+              </Button>
+              <Button type="submit" icon={Check} loading={busy}>
                 {editingRule ? 'Save changes' : 'Save'}
-              </button>
+              </Button>
             </div>
           </form>
         </div>
       )}
+
+      {dialog}
     </section>
   )
 }

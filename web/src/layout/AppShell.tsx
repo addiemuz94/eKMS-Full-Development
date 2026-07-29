@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useState } from 'react'
 import { NavLink, Outlet, useLocation } from 'react-router-dom'
 import { useAuth } from '../auth/AuthContext'
-import { Button } from '../components/ui'
+import { Button, SegmentedControl } from '../components/ui'
+import { useTheme, type ThemeMode } from '../theme/ThemeContext'
 import { NAV_ICONS, type NavIconName } from './NavIcons'
 
 type NavItem = { to: string; label: string; icon: NavIconName; end?: boolean }
@@ -68,6 +69,7 @@ function pathInGroup(pathname: string, group: NavGroup) {
 
 export function AppShell() {
   const { session, logout } = useAuth()
+  const { mode, setMode } = useTheme()
   const location = useLocation()
   const [navOpen, setNavOpen] = useState(false)
   const [openGroups, setOpenGroups] = useState<Record<string, boolean>>(() => {
@@ -185,6 +187,16 @@ export function AppShell() {
             <div className="topbar-eyebrow">Website management portal</div>
           </div>
           <div className="session-pill">
+            <SegmentedControl<ThemeMode>
+              ariaLabel="Theme"
+              value={mode}
+              onChange={setMode}
+              options={[
+                { value: 'system', label: 'System' },
+                { value: 'light', label: 'Light' },
+                { value: 'dark', label: 'Dark' },
+              ]}
+            />
             <span className="session-name">{session?.displayName}</span>
             <Button variant="outlined" onClick={logout}>
               Sign out

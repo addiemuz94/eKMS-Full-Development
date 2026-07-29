@@ -3,6 +3,23 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <script>
+      // Apply the persisted/system theme before first paint so there's no flash of the
+      // wrong theme. Kept intentionally tiny — mirrors the same 'ekms_web_theme' key and
+      // system/light/dark modes ThemeContext.tsx uses once React mounts.
+      (function () {
+        try {
+          var stored = localStorage.getItem('ekms_web_theme')
+          var mode = stored === 'light' || stored === 'dark' ? stored : 'system'
+          var dark =
+            mode === 'dark' ||
+            (mode === 'system' && window.matchMedia('(prefers-color-scheme: dark)').matches)
+          document.documentElement.setAttribute('data-theme', dark ? 'dark' : 'light')
+        } catch (e) {
+          /* localStorage/matchMedia unavailable — fall back to light, same as no theme set */
+        }
+      })()
+    </script>
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
@@ -25,8 +42,14 @@
         margin: 0;
         min-height: 100%;
         font-family: Outfit, 'Segoe UI', Tahoma, sans-serif;
+      }
+      body {
         background: #f7f9fc;
         color: #152033;
+      }
+      html[data-theme='dark'] body {
+        background: #10151c;
+        color: #e2e7ef;
       }
       .boot {
         padding: 48px 24px;

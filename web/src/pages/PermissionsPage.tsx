@@ -1,9 +1,11 @@
 import { useEffect, useMemo, useState, type FormEvent } from 'react'
+import { Check, Plus, X } from 'lucide-react'
 import { api, ApiError } from '../api/client'
 import type { KeyDto, SiteDto, UserDto } from '../api/types'
-import { Button, LinearProgress } from '../components/ui'
+import { Button, LinearProgress, useConfirm } from '../components/ui'
 
 export function PermissionsPage() {
+  const { confirmAction, dialog } = useConfirm()
   const [grants, setGrants] = useState<Record<string, unknown>[]>([])
   const [users, setUsers] = useState<UserDto[]>([])
   const [keys, setKeys] = useState<KeyDto[]>([])
@@ -124,6 +126,7 @@ export function PermissionsPage() {
           <p className="muted">Bind exact keys to a person. A site-only assignment is never enough.</p>
         </div>
         <Button
+          icon={Plus}
           onClick={() => {
             setEditingGrant(null)
             setOpen(true)
@@ -188,7 +191,8 @@ export function PermissionsPage() {
                         variant="link"
                         onClick={() =>
                           void (async () => {
-                            if (!confirm('Move grant to Recycle Bin?')) return
+                            if (!(await confirmAction({ message: 'Move grant to Recycle Bin?', danger: true })))
+                              return
                             await api.deleteAccessGrant(String(grant.id))
                             await reload()
                           })()
@@ -237,12 +241,14 @@ export function PermissionsPage() {
               </select>
             </div>
             <div className="dialog-actions">
-              <Button variant="outlined" onClick={() => { setOpen(false); setEditingGrant(null) }}>Cancel</Button>
-              <Button type="submit" loading={busy}>{editingGrant ? 'Save changes' : 'Save'}</Button>
+              <Button variant="outlined" icon={X} onClick={() => { setOpen(false); setEditingGrant(null) }}>Cancel</Button>
+              <Button type="submit" icon={Check} loading={busy}>{editingGrant ? 'Save changes' : 'Save'}</Button>
             </div>
           </form>
         </div>
       )}
+
+      {dialog}
     </section>
   )
 }

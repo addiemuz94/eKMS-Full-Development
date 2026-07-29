@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useState, type FormEvent } from 'react'
+import { Check, Plus, X } from 'lucide-react'
 import { api, ApiError } from '../api/client'
 import type { SiteDto, TerminalDto } from '../api/types'
 import { CabinetSettingsForm } from '../components/CabinetSettingsForm'
-import { Button, LinearProgress } from '../components/ui'
+import { Button, LinearProgress, useConfirm } from '../components/ui'
 
 type PairingBanner = {
   code: string
@@ -13,6 +14,7 @@ type PairingBanner = {
 }
 
 export function TerminalsPage() {
+  const { confirmAction, dialog } = useConfirm()
   const [sites, setSites] = useState<SiteDto[]>([])
   const [terminals, setTerminals] = useState<TerminalDto[]>([])
   const [query, setQuery] = useState('')
@@ -176,9 +178,11 @@ export function TerminalsPage() {
 
   async function onRegenerate(terminal: TerminalDto) {
     if (
-      !confirm(
-        'Regenerate pairing code? This immediately revokes any existing device session for this cabinet. Give the new code only to the on-site technician.',
-      )
+      !(await confirmAction({
+        message:
+          'Regenerate pairing code? This immediately revokes any existing device session for this cabinet. Give the new code only to the on-site technician.',
+        danger: true,
+      }))
     ) {
       return
     }
@@ -202,7 +206,7 @@ export function TerminalsPage() {
   }
 
   async function onArchive(id: string) {
-    if (!confirm('Move this terminal to the Recycle Bin?')) return
+    if (!(await confirmAction({ message: 'Move this terminal to the Recycle Bin?', danger: true }))) return
     setBusy(true)
     setError(null)
     try {
@@ -226,7 +230,7 @@ export function TerminalsPage() {
             from the server. NFC / fingerprint / face stay on the terminal only.
           </p>
         </div>
-        <Button onClick={openCreate} disabled={!sites.length}>
+        <Button icon={Plus} onClick={openCreate} disabled={!sites.length}>
           Register key cabinet
         </Button>
       </div>
@@ -246,7 +250,7 @@ export function TerminalsPage() {
           <p className="muted mono" style={{ fontSize: '0.85rem' }}>
             Key Cabinet ID: {pairing.terminalId}
           </p>
-          <Button variant="outlined" onClick={() => setPairing(null)}>
+          <Button variant="outlined" icon={X} onClick={() => setPairing(null)}>
             Dismiss
           </Button>
         </div>
@@ -392,10 +396,10 @@ export function TerminalsPage() {
               </div>
             </div>
             <div className="dialog-actions">
-              <Button variant="outlined" onClick={() => setOpen(false)}>
+              <Button variant="outlined" icon={X} onClick={() => setOpen(false)}>
                 Cancel
               </Button>
-              <Button type="submit" loading={busy}>
+              <Button type="submit" icon={Check} loading={busy}>
                 {editingTerminal ? 'Save changes' : 'Register & show pairing code'}
               </Button>
             </div>
@@ -409,13 +413,15 @@ export function TerminalsPage() {
             <h2>Cabinet settings — {settingsTerminal.name}</h2>
             <CabinetSettingsForm terminal={settingsTerminal} />
             <div className="dialog-actions">
-              <Button variant="outlined" onClick={() => setSettingsTerminal(null)}>
+              <Button variant="outlined" icon={X} onClick={() => setSettingsTerminal(null)}>
                 Close
               </Button>
             </div>
           </div>
         </div>
       )}
+
+      {dialog}
     </section>
   )
 }

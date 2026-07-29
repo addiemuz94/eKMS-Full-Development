@@ -13,10 +13,11 @@
  * Dialogs never close on backdrop click; Cancel / Save only.
  */
 import { useEffect, useMemo, useState, type FormEvent } from 'react'
+import { Check, Plus, X } from 'lucide-react'
 import { api, ApiError } from '../api/client'
 import type { KeyDto, SiteDto, TerminalDto, UserDto } from '../api/types'
 import { CabinetSettingsForm } from '../components/CabinetSettingsForm'
-import { Button, LinearProgress } from '../components/ui'
+import { Button, LinearProgress, useConfirm } from '../components/ui'
 import { MALAYSIA_STATES, citiesForState } from '../geo/malaysiaLocations'
 
 type PairingBanner = {
@@ -166,7 +167,7 @@ function StepUnit({
       )}
 
       <div className="toolbar-row" style={{ marginBottom: 12 }}>
-        <Button onClick={() => { setError(null); setOpen(true) }}>Register new unit</Button>
+        <Button icon={Plus} onClick={() => { setError(null); setOpen(true) }}>Register new unit</Button>
         {sites.length > 0 && (
           <select
             value={unit?.id ?? ''}
@@ -239,10 +240,10 @@ function StepUnit({
               </select>
             </div>
             <div className="dialog-actions">
-              <Button variant="outlined" onClick={() => setOpen(false)}>
+              <Button variant="outlined" icon={X} onClick={() => setOpen(false)}>
                 Cancel
               </Button>
-              <Button type="submit" loading={busy}>
+              <Button type="submit" icon={Check} loading={busy}>
                 Save unit & continue
               </Button>
             </div>
@@ -351,6 +352,7 @@ function StepCabinet({ unit }: { unit: SiteDto }) {
 
       <div className="toolbar-row" style={{ marginBottom: 12 }}>
         <Button
+          icon={Plus}
           onClick={() => {
             resetForm()
             setError(null)
@@ -462,10 +464,10 @@ function StepCabinet({ unit }: { unit: SiteDto }) {
               </div>
             </div>
             <div className="dialog-actions">
-              <Button variant="outlined" onClick={() => setOpen(false)}>
+              <Button variant="outlined" icon={X} onClick={() => setOpen(false)}>
                 Cancel
               </Button>
-              <Button type="submit" loading={busy}>
+              <Button type="submit" icon={Check} loading={busy}>
                 Save cabinet
               </Button>
             </div>
@@ -729,15 +731,16 @@ function StepPersonnel({ unit }: { unit: SiteDto }) {
         />
         <Button
           variant="outlined"
+          icon={Plus}
           onClick={() => {
             setError(null)
             setNotice(null)
             setOpen(true)
           }}
         >
-          + Create new user
+          Create new user
         </Button>
-        <Button loading={saving} disabled={!dirty || saving} onClick={() => void onSaveAssignments()}>
+        <Button icon={Check} loading={saving} disabled={!dirty || saving} onClick={() => void onSaveAssignments()}>
           Save assignments ({selectedCount})
         </Button>
       </div>
@@ -841,10 +844,10 @@ function StepPersonnel({ unit }: { unit: SiteDto }) {
               />
             </div>
             <div className="dialog-actions">
-              <Button variant="outlined" onClick={() => setOpen(false)}>
+              <Button variant="outlined" icon={X} onClick={() => setOpen(false)}>
                 Cancel
               </Button>
-              <Button type="submit" loading={busy}>
+              <Button type="submit" icon={Check} loading={busy}>
                 Create & assign
               </Button>
             </div>
@@ -910,6 +913,7 @@ function StepKeys({ unit }: { unit: SiteDto }) {
 
       <div className="toolbar-row" style={{ marginBottom: 12 }}>
         <Button
+          icon={Plus}
           onClick={() => {
             setDisplayName('')
             setError(null)
@@ -965,10 +969,10 @@ function StepKeys({ unit }: { unit: SiteDto }) {
               <input value={displayName} onChange={(e) => setDisplayName(e.target.value)} required />
             </div>
             <div className="dialog-actions">
-              <Button variant="outlined" onClick={() => setOpen(false)}>
+              <Button variant="outlined" icon={X} onClick={() => setOpen(false)}>
                 Cancel
               </Button>
-              <Button type="submit" loading={busy}>
+              <Button type="submit" icon={Check} loading={busy}>
                 Save
               </Button>
             </div>
@@ -1050,6 +1054,7 @@ function StepPermissions({ unit }: { unit: SiteDto }) {
 
       <div className="toolbar-row" style={{ marginBottom: 12 }}>
         <Button
+          icon={Plus}
           onClick={() => {
             setError(null)
             setOpen(true)
@@ -1123,10 +1128,10 @@ function StepPermissions({ unit }: { unit: SiteDto }) {
               </select>
             </div>
             <div className="dialog-actions">
-              <Button variant="outlined" onClick={() => setOpen(false)}>
+              <Button variant="outlined" icon={X} onClick={() => setOpen(false)}>
                 Cancel
               </Button>
-              <Button type="submit" loading={busy}>
+              <Button type="submit" icon={Check} loading={busy}>
                 Save
               </Button>
             </div>
@@ -1140,6 +1145,7 @@ function StepPermissions({ unit }: { unit: SiteDto }) {
 // ─── Step 7: Pairing code (LAST) ─────────────────────────────────────────────
 
 function StepPairing({ unit }: { unit: SiteDto }) {
+  const { confirmAction, dialog } = useConfirm()
   const [terminals, setTerminals] = useState<TerminalDto[]>([])
   const [pairing, setPairing] = useState<PairingBanner | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -1164,9 +1170,11 @@ function StepPairing({ unit }: { unit: SiteDto }) {
 
   async function onGenerate(terminal: TerminalDto) {
     if (
-      !confirm(
-        'Generate a 6-digit pairing code for this cabinet? If a previous code or device session exists, it will be revoked. Copy the new code for the on-site technician.',
-      )
+      !(await confirmAction({
+        message:
+          'Generate a 6-digit pairing code for this cabinet? If a previous code or device session exists, it will be revoked. Copy the new code for the on-site technician.',
+        danger: true,
+      }))
     ) {
       return
     }
@@ -1210,7 +1218,7 @@ function StepPairing({ unit }: { unit: SiteDto }) {
           <p className="muted mono" style={{ fontSize: '0.85rem' }}>
             Key Cabinet ID: {pairing.terminalId}
           </p>
-          <Button variant="outlined" onClick={() => setPairing(null)}>
+          <Button variant="outlined" icon={X} onClick={() => setPairing(null)}>
             Dismiss
           </Button>
         </div>
@@ -1252,6 +1260,8 @@ function StepPairing({ unit }: { unit: SiteDto }) {
           </div>
         )
       )}
+
+      {dialog}
     </div>
   )
 }
@@ -1335,6 +1345,7 @@ export function RegistrationPage() {
           </Button>
         ) : (
           <Button
+            icon={Plus}
             onClick={() => {
               setStep(0)
               setUnit(null)

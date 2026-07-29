@@ -23,6 +23,14 @@
   --md-sys-color-on-error-container: #410e0b;
   --md-sys-color-success-container: #d4edda;
   --md-sys-color-on-success-container: #0f3d24;
+  --md-sys-color-warning: #8a5000;
+  --md-sys-color-on-warning: #ffffff;
+  --md-sys-color-warning-container: #ffddb3;
+  --md-sys-color-on-warning-container: #2b1700;
+  --md-sys-color-info: #0b6e76;
+  --md-sys-color-on-info: #ffffff;
+  --md-sys-color-info-container: #b4eaf0;
+  --md-sys-color-on-info-container: #002023;
 
   --font-sans: "Outfit", "Segoe UI", sans-serif;
   --font-mono: "IBM Plex Mono", ui-monospace, monospace;
@@ -40,15 +48,86 @@
   --danger: var(--md-sys-color-error);
   --danger-soft: var(--md-sys-color-error-container);
   --success-soft: var(--md-sys-color-success-container);
+  --warning-soft: var(--md-sys-color-warning-container);
+  --info-soft: var(--md-sys-color-info-container);
   --shadow: 0 1px 2px rgba(0, 29, 54, 0.06), 0 4px 12px rgba(0, 29, 54, 0.06);
   --radius: 16px;
   --radius-sm: 12px;
   --space: 8px;
 
+  /* One-off surfaces not covered by the MD3 role set above */
+  --map-side-bg: #fbfcfd;
+  --map-canvas-bg: #e8eef5;
+  --marker-color: #2f6fed;
+  --marker-color-selected: #1f54c9;
+  --focus-ring: rgba(0, 85, 165, 0.18);
+  --focus-ring-strong: rgba(0, 85, 165, 0.25);
+  --wizard-stepper-bg: #f0f4fa;
+  --wizard-step-text: #44505f;
+  --wizard-step-num-bg: #ffffff;
+  --nav-link-text: #314155;
+  --success-border: #cdeadf;
+  --danger-border: #f5c2bd;
+  --map-detail-bg: rgba(255, 255, 255, 0.96);
+  color-scheme: light;
+
   color: var(--text);
   font-family: var(--font-sans);
   line-height: 1.5;
   font-size: 15px;
+}
+
+:root[data-theme='dark'] {
+  --md-sys-color-primary: #a9c8ee;
+  --md-sys-color-on-primary: #00304f;
+  --md-sys-color-primary-container: #00497e;
+  --md-sys-color-on-primary-container: #d6e3f5;
+  --md-sys-color-secondary: #b4cae0;
+  --md-sys-color-on-secondary: #1b2e3f;
+  --md-sys-color-secondary-container: #334657;
+  --md-sys-color-on-secondary-container: #d1e0f2;
+  --md-sys-color-surface: #10151c;
+  --md-sys-color-surface-container-lowest: #0b0f14;
+  --md-sys-color-surface-container-low: #171d25;
+  --md-sys-color-surface-container: #1c232c;
+  --md-sys-color-surface-container-high: #232b35;
+  --md-sys-color-on-surface: #e2e7ef;
+  --md-sys-color-on-surface-variant: #b7c2d0;
+  --md-sys-color-outline: #8894a3;
+  --md-sys-color-outline-variant: #3a4553;
+  --md-sys-color-error: #ffb4ab;
+  --md-sys-color-on-error: #690005;
+  --md-sys-color-error-container: #93000a;
+  --md-sys-color-on-error-container: #ffdad6;
+  --md-sys-color-success-container: #1e4030;
+  --md-sys-color-on-success-container: #a6f0c4;
+  --md-sys-color-warning: #ffb870;
+  --md-sys-color-on-warning: #482900;
+  --md-sys-color-warning-container: #663d00;
+  --md-sys-color-on-warning-container: #ffddb3;
+  --md-sys-color-info: #6fdce3;
+  --md-sys-color-on-info: #00363a;
+  --md-sys-color-info-container: #1e4e53;
+  --md-sys-color-on-info-container: #b4eaf0;
+
+  --line-strong: #4a5566;
+  --accent-hover: #8fb4de;
+  --shadow: 0 1px 2px rgba(0, 0, 0, 0.4), 0 4px 12px rgba(0, 0, 0, 0.4);
+
+  --map-side-bg: #12181f;
+  --map-canvas-bg: #0d1319;
+  --marker-color: #5b93f5;
+  --marker-color-selected: #8fb4ff;
+  --focus-ring: rgba(169, 200, 238, 0.24);
+  --focus-ring-strong: rgba(169, 200, 238, 0.32);
+  --wizard-stepper-bg: #1a222c;
+  --wizard-step-text: #a9b4c2;
+  --wizard-step-num-bg: #232b35;
+  --nav-link-text: #c9d3e0;
+  --success-border: #2f5b44;
+  --danger-border: #c84f43;
+  --map-detail-bg: rgba(16, 21, 28, 0.92);
+  color-scheme: dark;
 }
 
 * {
@@ -122,7 +201,7 @@ button {
   height: 36px;
   border-radius: 10px;
   background: var(--accent);
-  color: #fff;
+  color: var(--md-sys-color-on-primary);
   font-size: 0.78rem;
   font-weight: 700;
   letter-spacing: 0.04em;
@@ -173,7 +252,7 @@ button {
 }
 
 .sidebar-group-title:hover {
-  background: #eef2f7;
+  background: var(--md-sys-color-surface-container-low);
   color: var(--text);
 }
 
@@ -199,7 +278,7 @@ button {
   gap: 10px;
   padding: 9px 12px;
   border-radius: var(--radius-sm);
-  color: #314155;
+  color: var(--nav-link-text);
 }
 
 .nav-icon {
@@ -209,7 +288,7 @@ button {
 }
 
 .nav-link:hover {
-  background: #eef2f7;
+  background: var(--md-sys-color-surface-container-low);
   color: var(--text);
 }
 
@@ -263,7 +342,9 @@ button {
 
 .session-pill {
   display: inline-flex;
+  flex-wrap: wrap;
   align-items: center;
+  justify-content: flex-end;
   gap: 10px;
 }
 
@@ -425,7 +506,7 @@ button {
 
 .notice {
   background: var(--success-soft);
-  border-color: #cdeadf;
+  border-color: var(--success-border);
 }
 
 .error-banner,
@@ -435,7 +516,7 @@ button {
 
 .error-banner {
   background: var(--danger-soft);
-  border-color: #f5c2bd;
+  border-color: var(--danger-border);
 }
 
 .search,
@@ -447,7 +528,7 @@ button {
   padding: 0 12px;
   border: 1px solid var(--line-strong);
   border-radius: var(--radius-sm);
-  background: #fff;
+  background: var(--md-sys-color-surface-container-lowest);
   color: var(--text);
   outline: none;
 }
@@ -480,7 +561,7 @@ button {
   padding: 10px 12px;
   border: 1px solid var(--line);
   border-radius: var(--radius-sm);
-  background: var(--md-sys-color-surface-container-low, #f7f9fc);
+  background: var(--md-sys-color-surface-container-low);
   cursor: pointer;
   font-weight: 400;
 }
@@ -508,13 +589,13 @@ button {
 .field select:focus,
 .field textarea:focus {
   border-color: var(--md-sys-color-primary);
-  box-shadow: 0 0 0 3px rgba(0, 85, 165, 0.18);
+  box-shadow: 0 0 0 3px var(--focus-ring);
 }
 
 .field input[type='checkbox']:focus,
 .field input[type='radio']:focus,
 .toggle-row input[type='checkbox']:focus {
-  box-shadow: 0 0 0 2px rgba(0, 85, 165, 0.25);
+  box-shadow: 0 0 0 2px var(--focus-ring-strong);
   outline: none;
 }
 
@@ -609,7 +690,7 @@ button {
   padding: 28px 18px;
   border: 1px dashed var(--line-strong);
   border-radius: var(--radius);
-  background: #fff;
+  background: var(--md-sys-color-surface-container-lowest);
   color: var(--muted);
   text-align: center;
 }
@@ -621,20 +702,20 @@ button {
   min-height: 24px;
   padding: 0 9px;
   border-radius: 999px;
-  background: #eef2f7;
-  color: #314155;
+  background: var(--md-sys-color-surface-container-low);
+  color: var(--nav-link-text);
   font-size: 0.76rem;
   font-weight: 700;
 }
 
 .badge-success {
-  background: var(--md-sys-color-success-container, #d4edda);
-  color: var(--md-sys-color-on-success-container, #0f3d24);
+  background: var(--md-sys-color-success-container);
+  color: var(--md-sys-color-on-success-container);
 }
 
 .pairing-code-banner {
-  border-color: var(--md-sys-color-primary, #0055a5);
-  background: var(--md-sys-color-primary-container, #d6e3f5);
+  border-color: var(--md-sys-color-primary);
+  background: var(--md-sys-color-primary-container);
 }
 
 .pairing-code-banner h3 {
@@ -646,7 +727,7 @@ button {
   font-weight: 700;
   letter-spacing: 0.28em;
   margin: 12px 0;
-  color: var(--md-sys-color-on-primary-container, #001d36);
+  color: var(--md-sys-color-on-primary-container);
 }
 
 .registration-step-card {
@@ -656,7 +737,7 @@ button {
 }
 
 .registration-step-card:hover {
-  border-color: var(--md-sys-color-primary, #0055a5);
+  border-color: var(--md-sys-color-primary);
   box-shadow: var(--shadow);
 }
 
@@ -666,7 +747,7 @@ button {
   display: flex;
   gap: 0;
   overflow-x: auto;
-  background: var(--surface-variant, #f0f4fa);
+  background: var(--wizard-stepper-bg);
   border: 1px solid var(--line);
   border-radius: 10px;
   padding: 6px;
@@ -684,7 +765,7 @@ button {
   border-radius: 7px;
   padding: 8px 4px;
   cursor: pointer;
-  color: var(--on-surface-variant, #44505f);
+  color: var(--wizard-step-text);
   font-family: inherit;
   font-size: 0.75rem;
   transition: background 130ms;
@@ -704,20 +785,20 @@ button {
   justify-content: center;
   font-size: 0.72rem;
   font-weight: 600;
-  background: var(--surface, #fff);
+  background: var(--wizard-step-num-bg);
   transition: background 130ms, border-color 130ms, color 130ms;
 }
 
 .wizard-step-active .wizard-step-num {
-  background: var(--md-sys-color-primary, #0055a5);
-  border-color: var(--md-sys-color-primary, #0055a5);
-  color: #fff;
+  background: var(--md-sys-color-primary);
+  border-color: var(--md-sys-color-primary);
+  color: var(--md-sys-color-on-primary);
 }
 
 .wizard-step-done .wizard-step-num {
-  background: var(--md-sys-color-success-container, #d4edda);
-  border-color: var(--md-sys-color-success-container, #d4edda);
-  color: var(--md-sys-color-on-success-container, #0f3d24);
+  background: var(--md-sys-color-success-container);
+  border-color: var(--md-sys-color-success-container);
+  color: var(--md-sys-color-on-success-container);
 }
 
 .wizard-step-label {
@@ -734,7 +815,7 @@ button {
 }
 
 .wizard-step-active {
-  color: var(--md-sys-color-primary, #0055a5);
+  color: var(--md-sys-color-primary);
   font-weight: 600;
 }
 
@@ -755,13 +836,13 @@ button {
   border-radius: 6px;
   font-family: inherit;
   font-size: 0.9rem;
-  background: var(--surface, #fff);
+  background: var(--md-sys-color-surface-container-lowest);
   color: inherit;
   cursor: pointer;
 }
 
 .toolbar-row select:focus {
-  outline: 2px solid var(--md-sys-color-primary, #0055a5);
+  outline: 2px solid var(--md-sys-color-primary);
   outline-offset: 1px;
 }
 
@@ -874,7 +955,7 @@ button {
 .map-canvas-wrap {
   position: relative;
   min-height: 440px;
-  background: #e8eef5;
+  background: var(--map-canvas-bg);
 }
 
 .map-canvas {
@@ -900,7 +981,7 @@ button {
   height: 14px;
   margin: 2px;
   border-radius: 50%;
-  background: #2f6fed;
+  background: var(--marker-color);
   border: 2px solid #fff;
   box-shadow: 0 1px 4px rgba(15, 23, 42, 0.35);
 }
@@ -909,7 +990,7 @@ button {
   width: 18px;
   height: 18px;
   margin: 0;
-  background: #1f54c9;
+  background: var(--marker-color-selected);
 }
 
 .layout-map-detail {
@@ -924,7 +1005,7 @@ button {
   padding: 12px 14px;
   border: 1px solid var(--line);
   border-radius: var(--radius-sm);
-  background: rgba(255, 255, 255, 0.96);
+  background: var(--map-detail-bg);
   box-shadow: var(--shadow);
 }
 
@@ -939,7 +1020,7 @@ button {
 
 .map-side-list {
   border-left: 1px solid var(--line);
-  background: #fbfcfd;
+  background: var(--map-side-bg);
   overflow: auto;
   max-height: 440px;
 }
@@ -974,11 +1055,6 @@ button {
   color: inherit;
   text-align: left;
   cursor: pointer;
-}
-
-.map-unit-button:hover,
-.map-unit-button.selected {
-  background: #edf3ff;
 }
 
 .map-unit-button strong {

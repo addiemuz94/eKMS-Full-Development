@@ -1,11 +1,13 @@
 import { useEffect, useMemo, useState, type FormEvent } from 'react'
+import { Check, Plus, X } from 'lucide-react'
 import { api, ApiError } from '../api/client'
 import type { KeyDto, SiteDto } from '../api/types'
-import { Button, LinearProgress } from '../components/ui'
+import { Button, LinearProgress, useConfirm } from '../components/ui'
 
 type SortDir = 'asc' | 'desc'
 
 export function KeysPage() {
+  const { confirmAction, dialog } = useConfirm()
   const [keys, setKeys] = useState<KeyDto[]>([])
   const [sites, setSites] = useState<SiteDto[]>([])
   const [query, setQuery] = useState('')
@@ -105,6 +107,7 @@ export function KeysPage() {
           <p className="muted">Managed keys from the backend. Raw NFC UIDs never appear here.</p>
         </div>
         <Button
+          icon={Plus}
           onClick={() => {
             setEditingKey(null)
             setDisplayName('')
@@ -171,7 +174,7 @@ export function KeysPage() {
                         variant="link"
                         onClick={() =>
                           void (async () => {
-                            if (!confirm('Move key to Recycle Bin?')) return
+                            if (!(await confirmAction({ message: 'Move key to Recycle Bin?', danger: true }))) return
                             await api.deleteKey(key.id)
                             await reload()
                           })()
@@ -208,12 +211,14 @@ export function KeysPage() {
               </select>
             </div>
             <div className="dialog-actions">
-              <Button variant="outlined" onClick={() => { setOpen(false); setEditingKey(null) }}>Cancel</Button>
-              <Button type="submit" loading={busy}>{editingKey ? 'Save changes' : 'Save'}</Button>
+              <Button variant="outlined" icon={X} onClick={() => { setOpen(false); setEditingKey(null) }}>Cancel</Button>
+              <Button type="submit" icon={Check} loading={busy}>{editingKey ? 'Save changes' : 'Save'}</Button>
             </div>
           </form>
         </div>
       )}
+
+      {dialog}
     </section>
   )
 }

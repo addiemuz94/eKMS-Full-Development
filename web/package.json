@@ -12,6 +12,7 @@
   "dependencies": {
     "leaflet": "^1.9.4",
     "leaflet.markercluster": "^1.5.3",
+    "lucide-react": "^1.27.0",
     "react": "^19.2.7",
     "react-dom": "^19.2.7",
     "react-router-dom": "^7.18.1"
