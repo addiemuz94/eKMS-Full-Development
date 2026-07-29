@@ -64,18 +64,18 @@ The terminal does **not** talk to the React UI. It talks to the **same backend**
 
 **Endpoints terminalApp actually calls today** (base = `https://kms-cvt.com`):
 
-| Purpose | Method | Path | Auth |
-|---|---|---|---|
+| Purpose                               | Method | Path | Auth |
+|---------------------------------------|---|---|---|
 | Pair with 6-digit code (fresh device) | `POST` | `/v1/terminal/pair-with-code` | No |
-| Sign in (store tokens) | `POST` | `/v1/auth/login` | No |
-| Refresh tokens | `POST` | `/v1/auth/refresh` | No (body refresh token) |
-| First-link / bootstrap snapshot | `POST` | `/v1/terminal/sync/bootstrap` | Yes |
-| Push offline outbox | `POST` | `/v1/terminal/sync/push` | Yes |
-| Read sync ack / revisions | `GET` (via client) | `/v1/terminal/sync/read` | Yes |
-| Download server snapshot | `GET` (via client) | `/v1/terminal/sync/download` | Yes |
-| List units (sites) for Add Personnel | `GET` | `/v1/admin/sites` | Yes |
-| Resolve this cabinet’s unit | `GET` | `/v1/admin/terminals/{terminalId}` | Yes |
-| List / create personnel | `GET` / `POST` | `/v1/admin/users` | Yes |
+| Sign in (store tokens)                | `POST` | `/v1/auth/login` | No |
+| Refresh tokens                        | `POST` | `/v1/auth/refresh` | No (body refresh token) |
+| First-link / bootstrap snapshot       | `POST` | `/v1/terminal/sync/bootstrap` | Yes |
+| Push offline outbox                   | `POST` | `/v1/terminal/sync/push` | Yes |
+| Read sync ack / revisi-ons            | `GET` (via client) | `/v1/terminal/sync/read` | Yes |
+| Download server snapshot              | `GET` (via client) | `/v1/terminal/sync/download` | Yes |
+| List units (sites) for Add Personnel  | `GET` | `/v1/admin/sites` | Yes |
+| Resolve this cabinet’s unit           | `GET` | `/v1/admin/terminals/{terminalId}` | Yes |
+| List / create personnel               | `GET` / `POST` | `/v1/admin/users` | Yes |
 
 Credential complete/revoke admin routes may still exist on the backend for older clients; terminalApp must not call them for biometric/NFC enrollment under policy A.
 
