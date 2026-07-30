@@ -52,6 +52,10 @@ class CabinetHardwareController(
         // verified timings), this is a first-pass guess for a screen with no hardware pass yet.
         private const val ATTACHMENT_TIMEOUT_MILLIS = 60_000L
         private const val ATTACHMENT_POLL_INTERVAL_MILLIS = 400L
+
+        // Key Attachment missing-fob blink (Part 3): a plain guess at a "clearly blinking, not
+        // flickering" rate — no spec or hardware pass to derive this from, easy to retune.
+        private const val MISSING_FOB_BLINK_INTERVAL_MILLIS = 600L
     }
 
     private val mainHandler = Handler(Looper.getMainLooper())
@@ -62,6 +66,11 @@ class CabinetHardwareController(
     private val takeMonitoring = AtomicBoolean(false)
     /** Key Attachment (Part 4): guards the guided attach-a-new-key flow, unlock through secure. */
     private val attachmentMonitoring = AtomicBoolean(false)
+    /** Key Attachment missing-fob blink (Part 3) — main-thread-owned, only ever touched from
+     * mainHandler's own callbacks, so no extra synchronization is needed on top of that. */
+    private val blinkingNodes = mutableSetOf<Int>()
+    private var blinkOn = false
+    private var blinkLoopScheduled = false
 
     @Volatile
     private var currentState = CabinetHardwareState()
@@ -301,15 +310,19 @@ class CabinetHardwareController(
     }
 
     /**
-     * Key Attachment screen (Part 5), entry: lights every KeySlot-assigned node at once — blue
-     * for [needsAttachmentNodeAddresses] (no stored fob UID yet), red for
-     * [alreadyAttachedNodeAddresses] — one command per node, individually, same
-     * never-a-batch-command reasoning as [beginMultiKeyRedLightSequence]. Auto-connects if not
-     * already connected, same as every other operator-reachable entry point.
+     * Key Attachment screen (Part 5, extended for the 4-state rework): lights every relevant
+     * node at once — blue-only for [needsAttachmentNodeAddresses] (web-assigned, no stored fob
+     * UID yet), red-only for [alreadyAttachedNodeAddresses] (web-assigned and complete), BOTH
+     * blue and red for [availableForRegistrationNodeAddresses] (no web assignment, but a card is
+     * physically present — available for new-key registration from the terminal). One command
+     * per node, individually, same never-a-batch-command reasoning as
+     * [beginMultiKeyRedLightSequence]. Auto-connects if not already connected, same as every
+     * other operator-reachable entry point.
      */
     fun lightKeyAttachmentOverview(
         needsAttachmentNodeAddresses: List<Int>,
         alreadyAttachedNodeAddresses: List<Int>,
+        availableForRegistrationNodeAddresses: List<Int>,
         onReady: () -> Unit,
         onFailure: (String) -> Unit,
     ) {
@@ -321,10 +334,279 @@ class CabinetHardwareController(
                 val activeLink = requireNotNull(link) { "Cabinet protocol is unavailable." }
                 needsAttachmentNodeAddresses.forEach { activeLink.blueLightOn(it) }
                 alreadyAttachedNodeAddresses.forEach { activeLink.redLightOn(it) }
+                availableForRegistrationNodeAddresses.forEach {
+                    activeLink.blueLightOn(it)
+                    activeLink.redLightOn(it)
+                }
                 publish(currentState.copy(busy = false, message = "Cabinet overview lit."))
                 mainHandler.post(onReady)
             } catch (error: Exception) {
                 reportCommandFailure("Unable to light the cabinet overview", error, onFailure)
+            }
+        }
+    }
+
+    /**
+     * Key Attachment (door pop on node selection): checks door status first (0x22); only ejects
+     * (0x23) if it isn't already open — reusing exactly the primitives Take/Return Flow already
+     * call directly (e.g. [beginKeyReturnFlow]'s own eject+confirm pair), no new door command.
+     * Deliberately does not track/close the door itself afterward — the door is meant to stay
+     * open across multiple attachments in one screen visit; only the exit flow
+     * ([checkDoorStatusOnly]) reports on it again, and only to prompt a human to close it.
+     */
+    fun ensureDoorOpen(onReady: () -> Unit, onFailure: (String) -> Unit) {
+        if (!canStartOperatorCommand(onFailure)) return
+        publish(currentState.copy(busy = true, message = "Checking cabinet door…"))
+        worker.execute {
+            try {
+                ensureConnectedOnWorker()
+                val activeLink = requireNotNull(link) { "Cabinet protocol is unavailable." }
+                val status = activeLink.checkDoorStatus().data
+                if (!isDoorOpen(status)) {
+                    activeLink.ejectDoor()
+                    val confirmStatus = activeLink.checkDoorStatus().data
+                    if (!isDoorOpen(confirmStatus)) {
+                        throw IllegalStateException("The cabinet door did not confirm open.")
+                    }
+                }
+                publish(currentState.copy(busy = false, doorStatus = "Door status: open.", message = "Door open."))
+                mainHandler.post(onReady)
+            } catch (error: Exception) {
+                reportCommandFailure("Unable to open the cabinet door", error, onFailure)
+            }
+        }
+    }
+
+    /** Key Attachment's exit check (Part 3, step 1) — reads door status only, never ejects. */
+    fun checkDoorStatusOnly(onResult: (isOpen: Boolean) -> Unit, onFailure: (String) -> Unit) {
+        if (!canStartOperatorCommand(onFailure)) return
+        worker.execute {
+            try {
+                ensureConnectedOnWorker()
+                val activeLink = requireNotNull(link) { "Cabinet protocol is unavailable." }
+                val isOpen = isDoorOpen(activeLink.checkDoorStatus().data)
+                publish(currentState.copy(busy = false))
+                mainHandler.post { onResult(isOpen) }
+            } catch (error: Exception) {
+                reportCommandFailure("Unable to check the cabinet door", error, onFailure)
+            }
+        }
+    }
+
+    /**
+     * Key Attachment's missing-fob alert (Part 1/Part 3): a node whose fob is currently detected
+     * missing blinks red regardless of its other state — layered on top of, not a replacement
+     * for, the steady blue/red/both lighting elsewhere on this screen. Deliberately NOT a
+     * blocking loop on [worker] (that would monopolize the cabinet's one serial-command thread
+     * indefinitely, starving every other real command — Take/Return Flow, background sync —
+     * for as long as anything is blinking): timing is driven by [mainHandler]'s own
+     * `postDelayed`, and each tick submits one quick, non-blocking on/off command per blinking
+     * node to [worker] rather than looping there itself.
+     */
+    fun setMissingFobBlink(nodeAddresses: List<Int>) {
+        if (nodeAddresses.isEmpty()) return
+        // Blinking red overrides whatever steady light was there — blue is turned off up front
+        // so a previously-blue node doesn't also still show blue between red blink pulses.
+        worker.execute { nodeAddresses.forEach { runCatching { link?.blueLightOff(it) } } }
+        blinkingNodes += nodeAddresses
+        if (!blinkLoopScheduled) {
+            blinkLoopScheduled = true
+            scheduleMissingFobBlinkTick()
+        }
+    }
+
+    /** Restores a node's steady blue/red light (RED for a physically-attached key, BLUE
+     * otherwise) — reused by [resolveMissingFob]/[cancelResolveMissingFob] (both need the exact
+     * same "what should this node look like when it's not blinking or mid-operation" logic).
+     * Always called from the worker thread — never touches [link] from anywhere else.
+     *
+     * Formerly also used by a `reconcileMissingFobBlink` acknowledge-and-relight method, removed
+     * this pass: Key Attachment's exit-time missing-fob dialog became a mandatory
+     * resolve-or-explicitly-override gate (see [resolveMissingFob]'s doc comment), which
+     * superseded that method's only call site. */
+    private fun relightSteadyState(nodeAddress: Int, physicallyAttached: Boolean) {
+        if (physicallyAttached) {
+            runCatching { link?.blueLightOff(nodeAddress) }
+            runCatching { link?.redLightOn(nodeAddress) }
+        } else {
+            runCatching { link?.redLightOff(nodeAddress) }
+            runCatching { link?.blueLightOn(nodeAddress) }
+        }
+    }
+
+    /**
+     * Key Attachment's exit-check missing-fob dialog (mandatory resolution, not just
+     * acknowledgment) — "Unlock node to return key fob": engages this specific node's
+     * electromagnet (0x13) so the operator can physically return the fob, then waits for it to
+     * be reinserted, reusing exactly [beginKeyAttachment]'s hardware-tested "wait for
+     * reinsertion" pattern (the same [ATTACHMENT_TIMEOUT_MILLIS]/[ATTACHMENT_POLL_INTERVAL_MILLIS]
+     * budget and [isReadableFobData] success condition) rather than the old instant-success check
+     * that pass fixed. Unlike [beginKeyAttachment], there is no "already occupied" branch to
+     * consider here — a node only reaches this method because the exit scan already confirmed it
+     * reads [KeyFobScanResult.NothingPresent], so this is always the "wait for something to
+     * appear" case.
+     *
+     * Shares [attachmentMonitoring] with [beginKeyAttachment] — the same one-electromagnet-at-a-
+     * time hardware guard ([KeyCabinetLink.engageElectromagnet] throws if a different node is
+     * already engaged) also means this and a node-attachment flow can never run concurrently,
+     * which is correct: both physically move the same one electromagnet-current budget. If
+     * multiple nodes are missing, the screen only allows resolving them one at a time anyway
+     * (each "Unlock" button disabled while another node's resolution is in progress) — this guard
+     * is defense in depth under that, not the only thing enforcing it.
+     *
+     * On success: re-locks (0x14), relights the node's correct steady state via
+     * [relightSteadyState] using [wasPhysicallyAttached] (its blink was never touched by the
+     * missing-fob detection itself — this call starts by removing it from [blinkingNodes]), and
+     * reports [onResolved]. On timeout or cancellation ([cancelResolveMissingFob]), the node is
+     * still genuinely missing — blinking is restored via [setMissingFobBlink] rather than left
+     * dark or falsely steady.
+     *
+     * Does not open the door itself — same convention as [beginKeyAttachment]: the caller
+     * (`KeyAttachmentScreen.resolveMissingFobAt`) must confirm the door is open via
+     * [ensureDoorOpen] first. Reopening the door here is expected even after Key Attachment's
+     * exit-time door-closed gate has already run once — that gate deliberately checks last, only
+     * once every missing node is resolved or overridden, precisely so this method remains free
+     * to reopen the door as needed in the meantime.
+     */
+    fun resolveMissingFob(
+        nodeAddress: Int,
+        wasPhysicallyAttached: Boolean,
+        onResolved: () -> Unit,
+        onTimeout: () -> Unit,
+        onFailure: (String) -> Unit,
+    ) {
+        blinkingNodes -= nodeAddress
+        if (!canStartEnrollmentCommand(onFailure)) return
+        if (!attachmentMonitoring.compareAndSet(false, true)) {
+            notifyCommandFailure("Another key attachment/resolution is already in progress.", onFailure)
+            setMissingFobBlink(listOf(nodeAddress))
+            return
+        }
+        publish(currentState.copy(busy = true, message = "Unlocking node $nodeAddress to return the key fob…"))
+        worker.execute {
+            try {
+                val activeLink = requireNotNull(link) { "Cabinet protocol is unavailable." }
+                activeLink.blueLightOn(nodeAddress)
+                activeLink.engageElectromagnet(nodeAddress)
+
+                val deadline = System.currentTimeMillis() + ATTACHMENT_TIMEOUT_MILLIS
+                var resolved = false
+                while (attachmentMonitoring.get() && transport.isOpen && System.currentTimeMillis() < deadline) {
+                    val data = activeLink.testMicroSwitchAndCard(nodeAddress).data
+                    if (isReadableFobData(data)) {
+                        resolved = true
+                        break
+                    }
+                    Thread.sleep(ATTACHMENT_POLL_INTERVAL_MILLIS)
+                }
+
+                if (resolved) {
+                    activeLink.releaseElectromagnet(nodeAddress)
+                    relightSteadyState(nodeAddress, wasPhysicallyAttached)
+                    attachmentMonitoring.set(false)
+                    publish(
+                        currentState.copy(
+                            busy = false,
+                            nodeStatus = "Node $nodeAddress: fob returned and secured.",
+                            message = "Fob returned and locked at node $nodeAddress.",
+                        ),
+                    )
+                    mainHandler.post(onResolved)
+                } else if (!attachmentMonitoring.get()) {
+                    // Cancelled via cancelResolveMissingFob() — that call already released the
+                    // electromagnet and restored the blink.
+                    publish(currentState.copy(busy = false, message = "Fob return cancelled."))
+                } else {
+                    runCatching { activeLink.releaseElectromagnet(nodeAddress) }
+                    attachmentMonitoring.set(false)
+                    setMissingFobBlink(listOf(nodeAddress))
+                    publish(
+                        currentState.copy(
+                            busy = false,
+                            message = "No fob was returned to node $nodeAddress in time. Still missing.",
+                        ),
+                    )
+                    mainHandler.post(onTimeout)
+                }
+            } catch (error: Exception) {
+                runCatching { link?.releaseElectromagnet(nodeAddress) }
+                attachmentMonitoring.set(false)
+                setMissingFobBlink(listOf(nodeAddress))
+                reportCommandFailure("Unable to resolve the missing fob at node $nodeAddress", error, onFailure)
+            }
+        }
+    }
+
+    /** Cancels an in-progress [resolveMissingFob] — re-locks the node (an unlocked, unattended
+     * slot should never be left that way, same reasoning as [cancelKeyAttachment]) and restores
+     * the missing-fob blink, since cancelling leaves the fob genuinely still missing. */
+    fun cancelResolveMissingFob(nodeAddress: Int) {
+        if (!attachmentMonitoring.compareAndSet(true, false)) return
+        worker.execute { runCatching { link?.releaseElectromagnet(nodeAddress) } }
+        setMissingFobBlink(listOf(nodeAddress))
+    }
+
+    private fun scheduleMissingFobBlinkTick() {
+        if (blinkingNodes.isEmpty()) {
+            blinkLoopScheduled = false
+            return
+        }
+        blinkOn = !blinkOn
+        val snapshot = blinkingNodes.toList()
+        val turnOn = blinkOn
+        worker.execute {
+            snapshot.forEach { nodeAddress ->
+                runCatching { if (turnOn) link?.redLightOn(nodeAddress) else link?.redLightOff(nodeAddress) }
+            }
+        }
+        mainHandler.postDelayed({ scheduleMissingFobBlinkTick() }, MISSING_FOB_BLINK_INTERVAL_MILLIS)
+    }
+
+    /**
+     * Key Attachment screen: a generic foreground sweep — one non-unlocking, door-closed-safe
+     * read per node (0x17, no eject/engage, same as [autoScanKeyFobs]'s own read but
+     * deliberately no per-node light flash here: this sweep runs with the screen already open,
+     * so its result feeds straight into a light command afterward rather than needing its own
+     * visual confirmation mid-sweep). Reused for two distinct purposes by the caller:
+     * - **Discovery** (unassigned nodes, entry): a [KeyFobScanResult.CardRead] means "available
+     *   for new registration"; anything else means OFF/unlit.
+     * - **Missing-fob check** (assigned nodes, exit): a [KeyFobScanResult.NothingPresent] means
+     *   the previously-known fob is gone; [KeyFobScanResult.Failed] is a transient read problem,
+     *   never itself proof of absence — the caller must not conflate the two.
+     * Each node's read is individually try/caught (unlike the older wrong-slot sweep, which lets
+     * one node's failure abort the whole poll) — appropriate here since this is a one-shot check
+     * rather than a timing-critical loop, and a single hiccup must not read as "missing."
+     */
+    fun scanNodes(
+        nodeAddresses: List<Int>,
+        onNodeResult: (nodeAddress: Int, result: KeyFobScanResult) -> Unit,
+        onSweepComplete: () -> Unit,
+    ) {
+        if (nodeAddresses.isEmpty()) {
+            mainHandler.post(onSweepComplete)
+            return
+        }
+        worker.execute {
+            try {
+                ensureConnectedOnWorker()
+                val activeLink = requireNotNull(link) { "Cabinet protocol is unavailable." }
+                for (nodeAddress in nodeAddresses) {
+                    val result = try {
+                        val data = activeLink.testMicroSwitchAndCard(nodeAddress).data
+                        when {
+                            data.isFourBytesOf(0x00) -> KeyFobScanResult.BoltPresentNoCard
+                            data.isFourBytesOf(0xFF) -> KeyFobScanResult.NothingPresent
+                            else -> KeyFobScanResult.CardRead(data.toCompactHex())
+                        }
+                    } catch (nodeError: Exception) {
+                        KeyFobScanResult.Failed(nodeError.message ?: nodeError.javaClass.simpleName)
+                    }
+                    mainHandler.post { onNodeResult(nodeAddress, result) }
+                }
+            } catch (error: Exception) {
+                Log.w(LOG_TAG, "Node scan could not connect: ${error.detail()}")
+            } finally {
+                mainHandler.post(onSweepComplete)
             }
         }
     }
@@ -988,16 +1270,47 @@ class CabinetHardwareController(
      * (Part 1.1 discovery: blueLightOn + engageElectromagnet to make a slot's peg workable,
      * testMicroSwitchAndCard to read a card, releaseElectromagnet + light-off to secure) but
      * adapted for the opposite intent — that old flow verified and re-secured a fob already
-     * resting in the cabinet; this one unlocks an EMPTY slot and waits for a fob to be clipped
-     * onto it, accepting whatever UID first appears rather than requiring it match a
-     * previously-read one.
+     * resting in the cabinet.
+     *
+     * **Hardware-tested bug fix, this pass**: this function is shared by both a genuinely empty
+     * blue node and the amber "available for registration" node (which, by construction, already
+     * has a fob physically resting in it — that's how it was discovered). The original version
+     * unconditionally polled "wait until a readable fob is present," which is correct for an
+     * empty slot but was trivially, instantly satisfied for an already-occupied one — the unlock
+     * (0x13) was torn down by a re-lock (0x14) within a single 0x17 round-trip, far too fast for
+     * a human to physically pull the fob out. Fixed by branching on an immediate presence check
+     * right after unlock:
+     * - Not present (0xFF): unchanged — wait for a NEW fob to be clipped on, same as before.
+     * - Already present (the common case for this hardware): a two-phase wait instead — (a) wait
+     *   for the existing fob to be physically REMOVED (0x17 turns to 0xFF), then (b) wait for it
+     *   (or a different fob) to be REINSERTED (0x17 becomes readable again). Only re-lock (0x14)
+     *   once phase (b) succeeds, so the slot stays genuinely unlocked for the whole real physical
+     *   task (pull fob out, attach the real key to it, put it back), not one instant tick.
+     *   [onSlotState] reports which branch was taken (fired once, right after the presence
+     *   check) and [onRemovalConfirmed] reports the phase (a)→(b) transition (occupied case
+     *   only) — both purely for the caller's on-screen guidance text, no behavior depends on
+     *   either being observed. Each phase gets its own full [ATTACHMENT_TIMEOUT_MILLIS] budget
+     *   rather than splitting one budget across both — removing the fob, attaching a real key to
+     *   it, and bringing it back is a genuinely longer physical task than clipping on a brand-new
+     *   fob (what that constant was originally sized for); flagged as an easy constant to retune
+     *   if this proves too generous or not generous enough on real hardware.
+     * - [onAttached]'s `uidChangedFromPrevious` flag is set when the occupied case's reinserted
+     *   UID differs from the one read during the initial presence check — a different physical
+     *   fob than what was removed came back. Never blocks completion (the operator may
+     *   legitimately be threading a different fob on) but is surfaced as an on-screen warning
+     *   rather than silently treated as identical. Always `false` for the empty-slot case (there
+     *   is nothing to compare against) and for the occupied case's `BoltPresentNoCard` initial
+     *   read (no UID was ever captured to compare).
      *
      * Does not eject the door itself — like the old flow, that happens once per screen entry via
-     * [openKeyEnrollmentSession], reused as-is; this only operates the one selected node.
+     * [openKeyEnrollmentSession] (or, for the reworked Key Attachment screen, [ensureDoorOpen]);
+     * this only operates the one selected node.
      */
     fun beginKeyAttachment(
         nodeAddress: Int,
-        onAttached: (rawUidHex: String) -> Unit,
+        onSlotState: (occupied: Boolean) -> Unit,
+        onRemovalConfirmed: () -> Unit,
+        onAttached: (rawUidHex: String, uidChangedFromPrevious: Boolean) -> Unit,
         onTimeout: () -> Unit,
         onFailure: (String) -> Unit,
     ) {
@@ -1006,27 +1319,59 @@ class CabinetHardwareController(
             notifyCommandFailure("A key attachment is already in progress.", onFailure)
             return
         }
-        publish(
-            currentState.copy(
-                busy = true,
-                message = "Unlocking node $nodeAddress — attach the new key's fob now…",
-            ),
-        )
+        publish(currentState.copy(busy = true, message = "Unlocking node $nodeAddress…"))
         worker.execute {
             try {
                 val activeLink = requireNotNull(link) { "Cabinet protocol is unavailable." }
                 activeLink.blueLightOn(nodeAddress)
                 activeLink.engageElectromagnet(nodeAddress)
 
-                val deadline = System.currentTimeMillis() + ATTACHMENT_TIMEOUT_MILLIS
+                val initialData = activeLink.testMicroSwitchAndCard(nodeAddress).data
+                val initiallyOccupied = !initialData.isFourBytesOf(0xFF)
+                val initialUid = initialData.takeIf { isReadableFobData(it) }?.toCompactHex()
+                mainHandler.post { onSlotState(initiallyOccupied) }
+
                 var uidHex: String? = null
-                while (attachmentMonitoring.get() && transport.isOpen && System.currentTimeMillis() < deadline) {
-                    val data = activeLink.testMicroSwitchAndCard(nodeAddress).data
-                    if (isReadableFobData(data)) {
-                        uidHex = data.toCompactHex()
-                        break
+                var uidChanged = false
+
+                if (!initiallyOccupied) {
+                    // Empty slot — unchanged behavior: wait for a NEW fob to be clipped on.
+                    val deadline = System.currentTimeMillis() + ATTACHMENT_TIMEOUT_MILLIS
+                    while (attachmentMonitoring.get() && transport.isOpen && System.currentTimeMillis() < deadline) {
+                        val data = activeLink.testMicroSwitchAndCard(nodeAddress).data
+                        if (isReadableFobData(data)) {
+                            uidHex = data.toCompactHex()
+                            break
+                        }
+                        Thread.sleep(ATTACHMENT_POLL_INTERVAL_MILLIS)
                     }
-                    Thread.sleep(ATTACHMENT_POLL_INTERVAL_MILLIS)
+                } else {
+                    // Phase (a): wait for the existing fob to be physically removed.
+                    val removalDeadline = System.currentTimeMillis() + ATTACHMENT_TIMEOUT_MILLIS
+                    var removed = false
+                    while (attachmentMonitoring.get() && transport.isOpen && System.currentTimeMillis() < removalDeadline) {
+                        val data = activeLink.testMicroSwitchAndCard(nodeAddress).data
+                        if (data.isFourBytesOf(0xFF)) {
+                            removed = true
+                            break
+                        }
+                        Thread.sleep(ATTACHMENT_POLL_INTERVAL_MILLIS)
+                    }
+
+                    if (removed && attachmentMonitoring.get()) {
+                        mainHandler.post(onRemovalConfirmed)
+                        // Phase (b): wait for it (or a different fob) to be reinserted.
+                        val reinsertDeadline = System.currentTimeMillis() + ATTACHMENT_TIMEOUT_MILLIS
+                        while (attachmentMonitoring.get() && transport.isOpen && System.currentTimeMillis() < reinsertDeadline) {
+                            val data = activeLink.testMicroSwitchAndCard(nodeAddress).data
+                            if (isReadableFobData(data)) {
+                                uidHex = data.toCompactHex()
+                                uidChanged = initialUid != null && uidHex != initialUid
+                                break
+                            }
+                            Thread.sleep(ATTACHMENT_POLL_INTERVAL_MILLIS)
+                        }
+                    }
                 }
 
                 if (uidHex != null) {
@@ -1036,12 +1381,13 @@ class CabinetHardwareController(
                     publish(
                         currentState.copy(
                             busy = false,
-                            nodeStatus = "Node $nodeAddress: new fob attached and secured.",
+                            nodeStatus = "Node $nodeAddress: fob attached and secured.",
                             message = "Key attached and locked at node $nodeAddress.",
                         ),
                     )
                     val capturedUid = uidHex
-                    mainHandler.post { onAttached(capturedUid) }
+                    val capturedChanged = uidChanged
+                    mainHandler.post { onAttached(capturedUid, capturedChanged) }
                 } else if (!attachmentMonitoring.get()) {
                     // Cancelled via cancelKeyAttachment() — that call already released/lit-off.
                     publish(currentState.copy(busy = false, message = "Key attachment cancelled."))

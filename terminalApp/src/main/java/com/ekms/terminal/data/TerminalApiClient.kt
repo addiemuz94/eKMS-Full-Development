@@ -12,6 +12,10 @@ import com.ekms.shared.api.CredentialStatusListResponse
 import com.ekms.shared.api.FobEnrollmentCompleteRequest
 import com.ekms.shared.api.FobEnrollmentResponse
 import com.ekms.shared.api.KeyCheckoutDto
+import com.ekms.shared.api.KeyDto
+import com.ekms.shared.api.KeySlotDto
+import com.ekms.shared.api.KeySlotUpsertRequest
+import com.ekms.shared.api.KeyUpsertRequest
 import com.ekms.shared.api.LoginRequest
 import com.ekms.shared.api.LoginResponse
 import com.ekms.shared.api.ApproveVendorPasskeyRequestResponse
@@ -505,6 +509,58 @@ class TerminalApiClient(context: Context) {
                 method = HttpMethod.Post,
                 path = ApiPaths.ADMIN_KEY_FOB_ENROLLMENT_COMPLETE.replace("{id}", keyId),
                 body = json.encodeToString(request),
+                authenticated = true,
+                idempotent = true,
+            ),
+        )
+    }
+
+    /** Key Attachment's new-key-registration flow (terminal-side equivalent of web's Register
+     * Keys step) — same route, same request shape as `web/src/api/client.ts`'s `createKey`.
+     * Requires a real per-user Super Admin/Regional Admin token (see boundary: TERMINAL_DEVICE
+     * tokens cannot reach this route at all) — the caller must confirm `serverAuthenticated`
+     * before attempting this, not assume `isAuthenticated` alone is sufficient. */
+    suspend fun createKey(request: KeyUpsertRequest): KeyDto {
+        ensureBaseUrl()
+        return decode(
+            send(
+                method = HttpMethod.Post,
+                path = ApiPaths.ADMIN_KEYS,
+                body = json.encodeToString(request),
+                authenticated = true,
+                idempotent = true,
+            ),
+        )
+    }
+
+    /** Pins the new key to the exact node its physical fob was already found at (not the
+     * lowest-unused-node logic web's own registration flow uses) — same route/shape as
+     * `web/src/api/client.ts`'s `createKeySlot`. Same per-user-token requirement as [createKey]. */
+    suspend fun createKeySlot(request: KeySlotUpsertRequest): KeySlotDto {
+        ensureBaseUrl()
+        return decode(
+            send(
+                method = HttpMethod.Post,
+                path = ApiPaths.ADMIN_KEY_SLOTS,
+                body = json.encodeToString(request),
+                authenticated = true,
+                idempotent = true,
+            ),
+        )
+    }
+
+    /** Key Attachment's new-key-registration flow — cleans up a just-created key when the
+     * follow-up [createKeySlot] call fails, so a failed registration attempt doesn't leave a
+     * stray, un-slotted `ManagedKey` behind on the backend. Same route/shape as
+     * `web/src/api/client.ts`'s `deleteKey`; the backend soft-deletes (Recycle Bin, boundary #5)
+     * same as any other delete — this is not a hard purge. */
+    suspend fun deleteKey(keyId: String): KeyDto {
+        ensureBaseUrl()
+        return decode(
+            send(
+                method = HttpMethod.Delete,
+                path = "${ApiPaths.ADMIN_KEYS}/$keyId",
+                body = null,
                 authenticated = true,
                 idempotent = true,
             ),

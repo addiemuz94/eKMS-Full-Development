@@ -61,6 +61,8 @@ import com.ekms.shared.api.CreateAdminUserRequest
 import com.ekms.shared.api.CreateKeyCheckoutRequest
 import com.ekms.shared.api.FobEnrollmentCompleteRequest
 import com.ekms.shared.api.KeyCheckoutStatus
+import com.ekms.shared.api.KeySlotUpsertRequest
+import com.ekms.shared.api.KeyUpsertRequest
 import com.ekms.shared.api.SiteDto
 import com.ekms.shared.api.UpdateKeyCheckoutRequest
 import com.ekms.shared.api.UserDto
@@ -89,6 +91,7 @@ import com.ekms.terminal.data.TerminalApiException
 import com.ekms.terminal.data.TerminalCheckoutRecord
 import com.ekms.terminal.data.TerminalCheckoutStore
 import com.ekms.terminal.data.KeySlotAssignmentTracker
+import com.ekms.terminal.data.PhysicalAttachmentTracker
 import com.ekms.terminal.data.TerminalKey
 import com.ekms.terminal.data.TerminalSession
 import com.ekms.terminal.data.TerminalServerCache
@@ -282,6 +285,10 @@ fun TerminalAdminApp() {
         EncryptedUidEnrollmentStore(applicationContext, "managed_key_fob")
     }
     val keySlotAssignmentTracker = remember(applicationContext) { KeySlotAssignmentTracker(applicationContext) }
+    // Key Attachment (this pass): the second, previously-conflated fact — see
+    // PhysicalAttachmentTracker's own doc comment for why this can't just be
+    // managedKeyFobStore.enrollmentFor(id) != null anymore.
+    val physicalAttachmentTracker = remember(applicationContext) { PhysicalAttachmentTracker(applicationContext) }
     val fingerprintTemplateStore = remember(applicationContext) { FingerprintTemplateStore(applicationContext) }
     var fingerprintHardwareState by remember { mutableStateOf(FingerprintHardwareState()) }
     val fingerprintHardwareController = remember {
@@ -1608,25 +1615,46 @@ fun TerminalAdminApp() {
                     }
                     KeyAttachmentScreen(
                         padding = padding,
-                        terminalId = retrievalTerminal.id,
+                        configuredSlotCount = retrievalTerminal.configuredSlotCount,
                         keys = retrievalKeys,
                         initialSlots = retrievalSlots,
-                        isAttached = { managedKeyId -> managedKeyFobStore.enrollmentFor(managedKeyId) != null },
+                        isUidKnown = { managedKeyId -> managedKeyFobStore.enrollmentFor(managedKeyId) != null },
+                        isPhysicallyAttached = physicalAttachmentTracker::isAttached,
+                        // Real per-user token gate for new-key registration (Part 0.1 discovery):
+                        // TERMINAL_DEVICE pairing tokens and purely-local NFC/fingerprint/face
+                        // sessions never populate a real Super Admin/Regional Admin JWT — only a
+                        // successful password login against the real server does
+                        // (TerminalSyncCoordinator.authenticate's AuthOutcome.Server branch, which
+                        // is exactly what sets serverAuthenticated on the active session).
+                        serverLinked = serverLinked,
                         notice = notice,
                         onBack = {
                             hardwareController.stopMonitoring()
                             route = SuperAdminRoute.DASHBOARD
                         },
-                        onLightOverview = { needsAttachment, alreadyAttached, onReady, onFailure ->
-                            hardwareController.lightKeyAttachmentOverview(needsAttachment, alreadyAttached, onReady, onFailure)
+                        onLightOverview = { needsAttachment, alreadyAttached, availableForRegistration, onReady, onFailure ->
+                            hardwareController.lightKeyAttachmentOverview(
+                                needsAttachment,
+                                alreadyAttached,
+                                availableForRegistration,
+                                onReady,
+                                onFailure,
+                            )
                         },
                         onClearOverview = hardwareController::clearKeyAttachmentOverview,
-                        onBeginAttachment = { nodeAddress, onAttached, onTimeout, onFailure ->
-                            hardwareController.beginKeyAttachment(nodeAddress, onAttached, onTimeout, onFailure)
-                        },
+                        onScanNodes = hardwareController::scanNodes,
+                        onEnsureDoorOpen = hardwareController::ensureDoorOpen,
+                        onCheckDoorStatus = hardwareController::checkDoorStatusOnly,
+                        onBeginAttachment = hardwareController::beginKeyAttachment,
                         onCancelAttachment = hardwareController::cancelKeyAttachment,
                         onSaveAttachment = { nodeAddress, managedKeyId, rawUidHex ->
                             val enrollResult = managedKeyFobStore.enroll(managedKeyId, rawUidHex, System.currentTimeMillis())
+                            // AlreadyEnrolledToSelectedRecord happens when this is the reused
+                            // attach-flow tail end of a brand-new registration (onRegisterNewKey
+                            // below already saved this exact uid/key pair) — treated as success
+                            // too, not just Saved, so that path doesn't falsely report failure.
+                            val uidSaved = enrollResult is UidEnrollmentResult.Saved ||
+                                enrollResult is UidEnrollmentResult.AlreadyEnrolledToSelectedRecord
                             if (enrollResult is UidEnrollmentResult.Saved) {
                                 keySlotAssignmentTracker.recordManagedKeyId(nodeAddress, managedKeyId)
                                 try {
@@ -1647,12 +1675,48 @@ fun TerminalAdminApp() {
                                         error.message ?: "Unknown error",
                                     )
                                 }
-                                true
-                            } else {
-                                false
                             }
+                            // This is the fact this pass adds: the operator has now completed this
+                            // screen's own guided attach sequence for this key, distinct from (and
+                            // gating) uidKnown above — see PhysicalAttachmentTracker's doc comment.
+                            if (uidSaved) physicalAttachmentTracker.markAttached(managedKeyId)
+                            uidSaved
                         },
                         onLightAttachedNode = { nodeAddress -> hardwareController.redLight(nodeAddress, true) },
+                        onLogMissingFob = { nodeAddress, managedKeyId ->
+                            store.logEvent(
+                                AuditEventType.KEY_FOB_MISSING,
+                                session?.userId,
+                                RecordType.KEY,
+                                managedKeyId,
+                                "Node $nodeAddress: fob detected missing on Key Attachment exit check.",
+                            )
+                        },
+                        onSetMissingFobBlink = hardwareController::setMissingFobBlink,
+                        // Called only when a missing fob is explicitly overridden at the
+                        // mandatory exit gate (never on a successful resolve, where the fob is
+                        // confirmed genuinely back) — clears BOTH tracked facts so the node
+                        // correctly renders BLUE ("needs re-attachment") next time this screen
+                        // opens, rather than still claiming a UID/attachment that's no longer true.
+                        onResetMissingKeyState = { managedKeyId ->
+                            managedKeyFobStore.revoke(managedKeyId)
+                            physicalAttachmentTracker.clear(managedKeyId)
+                        },
+                        onResolveMissingFob = hardwareController::resolveMissingFob,
+                        onCancelResolveMissingFob = hardwareController::cancelResolveMissingFob,
+                        // Mandatory exit gate's only other way to clear a still-missing node —
+                        // must be unambiguously logged, distinct from the automatic KEY_FOB_MISSING
+                        // detection event. actorUserId + logEvent's own auto-stamped
+                        // occurredAtEpochMillis together record who overrode it and when.
+                        onOverrideMissingFob = { nodeAddress, managedKeyId ->
+                            store.logEvent(
+                                AuditEventType.KEY_FOB_MISSING_OVERRIDDEN,
+                                session?.userId,
+                                RecordType.KEY,
+                                managedKeyId,
+                                "Node $nodeAddress: missing fob explicitly overridden, left unresolved.",
+                            )
+                        },
                         // Deliberately the raw apiClient.download() call, not
                         // syncCoordinator.downloadFromServer() — this screen's polling loop only
                         // needs a fresh KeySlot list to catch deletions; going through the full
@@ -1664,6 +1728,119 @@ fun TerminalAdminApp() {
                                 apiClient.download(syncCoordinator.resolveTerminalId()).snapshot?.keySlots
                             } catch (_: Throwable) {
                                 null
+                            }
+                        },
+                        // Registers a brand-new key entirely from the terminal (new capability).
+                        // Reuses the existing POST /v1/admin/keys and POST /v1/admin/key-slots
+                        // routes exactly as web would call them — no new backend route/permission
+                        // — using whatever token apiClient currently holds. No offline queue: a
+                        // live failure is surfaced as-is for the operator to retry, never queued
+                        // like the offline-first hardware event outbox elsewhere in this app.
+                        onRegisterNewKey = { nodeAddress, uidHex, displayName ->
+                            if (!serverLinked) {
+                                RegisterNewKeyResult.Failed(
+                                    "Sign in with a server password to register a new key from this terminal.",
+                                )
+                            } else {
+                                try {
+                                    val createdKey = apiClient.createKey(
+                                        KeyUpsertRequest(siteId = retrievalTerminal.siteId, displayName = displayName),
+                                    )
+                                    var slotFailureMessage: String? = null
+                                    try {
+                                        apiClient.createKeySlot(
+                                            KeySlotUpsertRequest(
+                                                terminalId = retrievalTerminal.id,
+                                                nodeAddress = nodeAddress,
+                                                managedKeyId = createdKey.id,
+                                            ),
+                                        )
+                                    } catch (slotError: Throwable) {
+                                        slotFailureMessage = slotError.message ?: "Unknown error"
+                                    }
+                                    if (slotFailureMessage != null) {
+                                        // Bonus fix (hardware-tested): don't leave the now-orphaned,
+                                        // never-slotted key behind on the backend — best-effort,
+                                        // since the operator still needs to see the original slot
+                                        // failure either way.
+                                        val cleanupFailureNote = try {
+                                            apiClient.deleteKey(createdKey.id)
+                                            null
+                                        } catch (deleteError: Throwable) {
+                                            " (and it could not be automatically removed: ${deleteError.message ?: "unknown error"} — check the web portal)"
+                                        }
+                                        RegisterNewKeyResult.Failed(
+                                            "Key \"$displayName\" was created, but binding it to node $nodeAddress " +
+                                                "failed: $slotFailureMessage.${cleanupFailureNote ?: " The key was removed — try again."}",
+                                        )
+                                    } else {
+                                        val enrollResult = managedKeyFobStore.enroll(
+                                            createdKey.id,
+                                            uidHex,
+                                            System.currentTimeMillis(),
+                                        )
+                                        if (enrollResult is UidEnrollmentResult.Saved) {
+                                            keySlotAssignmentTracker.recordManagedKeyId(nodeAddress, createdKey.id)
+                                            try {
+                                                apiClient.completeKeyFobEnrollment(
+                                                    createdKey.id,
+                                                    FobEnrollmentCompleteRequest(
+                                                        enrollmentReference = enrollResult.summary.enrollmentReference,
+                                                        terminalId = retrievalTerminal.id,
+                                                    ),
+                                                )
+                                            } catch (reportError: Throwable) {
+                                                store.logEvent(
+                                                    AuditEventType.KEY_FOB_ENROLLMENT_SYNC_FAILED,
+                                                    session?.userId,
+                                                    RecordType.KEY,
+                                                    createdKey.id,
+                                                    reportError.message ?: "Unknown error",
+                                                )
+                                            }
+                                        }
+                                        // Real fix (hardware-tested): the two direct API calls
+                                        // above never told syncCoordinator/retrievalKeys/
+                                        // retrievalSlots anything happened, so a fresh screen
+                                        // entry after navigating away re-rendered from the still-
+                                        // stale pre-registration snapshot — the node looked
+                                        // unregistered again even though the backend had the real
+                                        // record, and re-tapping it hit key-slots.js's duplicate-
+                                        // node check. Reuses the exact same
+                                        // syncCoordinator.downloadFromServer() the Admin Menu's own
+                                        // Download button calls, then refreshSnapshot() (the same
+                                        // function every other sync entry point already uses to
+                                        // repopulate retrievalKeys/retrievalSlots). Best-effort: the
+                                        // key+slot already exist server-side regardless of whether
+                                        // this succeeds, so a failure here doesn't fail the
+                                        // registration itself — it just means the operator may need
+                                        // to hit Download manually later, same recovery as any
+                                        // other missed sync.
+                                        try {
+                                            syncCoordinator.downloadFromServer()
+                                            refreshSnapshot()
+                                        } catch (_: Throwable) {
+                                            // Silently best-effort — see comment above.
+                                        }
+                                        RegisterNewKeyResult.Success(
+                                            ManagedKey(
+                                                id = createdKey.id,
+                                                siteId = createdKey.siteId,
+                                                displayName = createdKey.displayName,
+                                                fobEnrollmentReference = createdKey.fobEnrollmentReference,
+                                                lifecycle = LifecycleMetadata(
+                                                    createdAtEpochMillis = System.currentTimeMillis(),
+                                                    updatedAtEpochMillis = System.currentTimeMillis(),
+                                                ),
+                                            ),
+                                        )
+                                    }
+                                } catch (error: Throwable) {
+                                    RegisterNewKeyResult.Failed(
+                                        "Could not register the new key — this requires an internet connection " +
+                                            "to the server. (${error.message ?: "Unknown error"})",
+                                    )
+                                }
                             }
                         },
                         onOpenKeyCardEnrollment = {

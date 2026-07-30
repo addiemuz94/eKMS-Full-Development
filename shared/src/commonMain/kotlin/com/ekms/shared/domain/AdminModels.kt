@@ -215,6 +215,20 @@ enum class AuditEventType {
      * KEY_CHECKOUT_SYNC_FAILED. A later sync does not automatically retry the report, since the
      * local store already considers this key enrolled — flagged as a known gap. */
     KEY_FOB_ENROLLMENT_SYNC_FAILED,
+    /** Terminal-local only: Key Attachment's exit-time scan found a node whose fob was
+     * previously known (uidKnown and/or physicallyAttached) now reading "nothing present"
+     * (0xFF, not a read failure — see KeyAttachmentScreen's door-exit check). Logged regardless
+     * of whether the operator dismisses or acknowledges the on-screen notification; does not
+     * block anything. */
+    KEY_FOB_MISSING,
+    /** Terminal-local only: a Super Admin explicitly overrode a still-unresolved KEY_FOB_MISSING
+     * finding at Key Attachment's mandatory exit gate, choosing to leave the screen without
+     * physically returning the fob. Distinct from KEY_FOB_MISSING (automatic detection) — this
+     * is a deliberate human decision and must be unambiguously attributable; actorUserId and
+     * occurredAtEpochMillis (both already-standard AuditEvent fields) record who and when. The
+     * node's missing-fob blink is deliberately left running after an override — the physical
+     * problem is still real, only navigation is unblocked. */
+    KEY_FOB_MISSING_OVERRIDDEN,
     KEY_SLOT_CREATED,
     KEY_SLOT_UPDATED,
     ACCESS_GRANT_CREATED,
