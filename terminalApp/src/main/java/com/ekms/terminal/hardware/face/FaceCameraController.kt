@@ -259,7 +259,7 @@ class FaceCameraController(
                 if (faceEngine == null) faceEngine = OpenCvFaceEngine.create(appContext)
                 if (landmarker == null) landmarker = MediaPipeFaceLandmarkerEngine.create(appContext)
                 val update = livenessChallenge.start(System.currentTimeMillis())
-                loginPhase = FaceLoginPhase.Liveness(update.message)
+                loginPhase = FaceLoginPhase.Liveness(update.message, update.direction, update.progress)
             } catch (error: Exception) {
                 loginPhase = FaceLoginPhase.Failed("Could not load face models: ${error.detail()}")
             }
@@ -448,7 +448,7 @@ class FaceCameraController(
             }
 
             else -> {
-                loginPhase = FaceLoginPhase.Liveness(update.message)
+                loginPhase = FaceLoginPhase.Liveness(update.message, update.direction, update.progress)
             }
         }
     }
@@ -580,7 +580,19 @@ sealed interface FaceEnrollmentPhase {
 sealed interface FaceLoginPhase {
     data object Idle : FaceLoginPhase
     data object LoadingModels : FaceLoginPhase
-    data class Liveness(val message: String) : FaceLoginPhase
+    /**
+     * [direction]/[progress] added (UI/trigger-timing pass, additive) so
+     * [com.ekms.terminal.ui.TerminalFaceLoginScreen] can render a real guide indicator instead
+     * of only [message]'s text — forwarded straight from
+     * [ActiveHeadTurnLivenessChallenge.Update], see that class for what they mean. Deliberately
+     * not mirrored onto [FaceEnrollmentPhase.Liveness] — out of scope this pass, only the login
+     * screen was asked for.
+     */
+    data class Liveness(
+        val message: String,
+        val direction: ActiveHeadTurnLivenessChallenge.HeadTurnDirection,
+        val progress: Float = 0f,
+    ) : FaceLoginPhase
     data class Capturing(val capturedSamples: Int, val requiredSamples: Int, val message: String) : FaceLoginPhase
     data class Matched(val userId: String, val profile: FaceProfileStore.FaceProfile, val similarity: Float) : FaceLoginPhase
     /** A clean "no match" result (best similarity below the threshold, or no profiles enrolled at

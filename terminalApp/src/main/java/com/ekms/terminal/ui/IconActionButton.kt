@@ -17,6 +17,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.unit.dp
+import com.ekms.terminal.ui.theme.LocalAudioClick
 import com.ekms.terminal.ui.theme.LocalEkmsColors
 
 /**
@@ -55,8 +56,18 @@ fun IconActionButton(
     modifier: Modifier = Modifier,
     label: String? = null,
     enabled: Boolean = true,
+    // Click-sound opt-out escape hatch (added for the app-wide click-sound pass). Defaults to
+    // true so every call site gets click feedback for free. Was briefly false at
+    // TerminalCloseToDeadlineScreen's call site pending a product decision on whether a click
+    // sound overlapping the Take/Return Flow beep-loop/voice-line HAL interaction (this device
+    // has hit that bug class twice) was acceptable there — confirmed acceptable, so that call
+    // site now uses this default too. Left in place as a general opt-out for any future call
+    // site that needs one, not currently exercised by any of them.
+    playSound: Boolean = true,
 ) {
     val colors = LocalEkmsColors.current
+    val playClick = LocalAudioClick.current
+    val wrappedOnClick: () -> Unit = { if (playSound) playClick(); onClick() }
     val spec = when (type) {
         ActionButtonType.CANCEL -> ActionButtonSpec(Icons.Filled.Close, "Cancel", filled = false)
         ActionButtonType.ACCEPT -> ActionButtonSpec(Icons.Filled.Check, "Confirm", filled = true)
@@ -76,7 +87,7 @@ fun IconActionButton(
 
     if (spec.filled) {
         Button(
-            onClick = onClick,
+            onClick = wrappedOnClick,
             modifier = modifier,
             enabled = enabled,
             shape = shape,
@@ -92,7 +103,7 @@ fun IconActionButton(
         }
     } else {
         OutlinedButton(
-            onClick = onClick,
+            onClick = wrappedOnClick,
             modifier = modifier,
             enabled = enabled,
             shape = shape,

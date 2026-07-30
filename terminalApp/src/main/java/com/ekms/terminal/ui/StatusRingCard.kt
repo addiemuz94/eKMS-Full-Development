@@ -15,6 +15,7 @@ import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import com.ekms.terminal.ui.theme.LocalAudioClick
 import com.ekms.terminal.ui.theme.LocalEkmsColors
 import com.ekms.terminal.ui.theme.StatusTone
 import com.ekms.terminal.ui.theme.ringColor
@@ -41,11 +42,18 @@ fun StatusRingCard(
         StatusTone.ALARM -> scheme.errorContainer
     }
     val contentAlpha = if (tone == StatusTone.INACTIVE) 0.65f else 1f
+    val playClick = LocalAudioClick.current
 
     Card(
         modifier = modifier
             .fillMaxWidth()
-            .then(if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier),
+            .then(
+                if (onClick != null) {
+                    Modifier.clickable(onClick = { playClick(); onClick() })
+                } else {
+                    Modifier
+                },
+            ),
         shape = RoundedCornerShape(20.dp),
         colors = CardDefaults.cardColors(containerColor = container),
         elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),

@@ -40,6 +40,7 @@ import com.ekms.shared.domain.KeySlot
 import com.ekms.shared.domain.ManagedKey
 import com.ekms.shared.domain.ManagedTerminalOption
 import com.ekms.terminal.hardware.VideoRecordingController
+import com.ekms.terminal.ui.theme.LocalAudioClick
 import com.ekms.terminal.ui.theme.StatusTone
 import com.ekms.terminal.ui.theme.readout
 
@@ -181,11 +182,12 @@ private fun SoftSegmentOption(
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    val playClick = LocalAudioClick.current
     Box(
         modifier = modifier
             .clip(RoundedCornerShape(20.dp))
             .background(if (selected) MaterialTheme.colorScheme.surface else Color.Transparent)
-            .clickable(onClick = onClick)
+            .clickable(onClick = { playClick(); onClick() })
             .padding(vertical = 10.dp),
         contentAlignment = Alignment.Center,
     ) {

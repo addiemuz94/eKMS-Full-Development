@@ -15,13 +15,35 @@ import com.ekms.terminal.hardware.PublicCardReaderState
 import com.ekms.terminal.hardware.face.FaceCameraController
 
 /**
- * Runs automatically on every cold launch, crash-recovery relaunch, and manual restart (wired
- * from [TerminalAdminApp], not gated behind opening a menu). Presents one line per subsystem
- * rather than reusing [connectionHints]'s multi-line detail — that function is written for the
- * Hardware Status admin page, this is meant to be readable in a few seconds before sign-in.
- * Non-blocking: every check here can fail without preventing sign-in or key operations; only
- * [NetworkStatus] additionally affects which *other* screens (pairing, live sync) can proceed,
- * and even that degrades gracefully rather than freezing this screen.
+ * The actual hardware-detection logic, factored out so [TerminalBootSplashScreen] (the
+ * animated boot splash that now runs ahead of this screen at the same cold-launch/crash-
+ * recovery trigger point) can drive the exact same checks without duplicating any of the
+ * per-subsystem detection rules below.
+ */
+internal fun startupDiagnosticChecks(
+    hardwareState: CabinetHardwareState,
+    fingerprintHardwareState: FingerprintHardwareState,
+    cameraAvailable: Boolean,
+    publicCardReaderState: PublicCardReaderState,
+    networkStatus: NetworkStatus,
+): List<ConnectionHint> = listOf(
+    cabinetDiagnostic(hardwareState),
+    fingerprintDiagnostic(fingerprintHardwareState),
+    cameraDiagnostic(cameraAvailable),
+    publicReaderDiagnostic(publicCardReaderState),
+    networkDiagnostic(networkStatus),
+)
+
+/**
+ * Formerly the always-visible startup screen, wired directly from [TerminalAdminApp]; now
+ * reached only from [TerminalBootSplashScreen]'s collapsed "View details" expansion (both the
+ * initial splash and its failure warning card), reusing [ConnectionHintCard] per line rather
+ * than duplicating this screen's own rendering. Presents one line per subsystem rather than
+ * reusing [connectionHints]'s multi-line detail — that function is written for the Hardware
+ * Status admin page, this is meant to be readable in a few seconds. Non-blocking: every check
+ * here can fail without preventing sign-in or key operations; only [NetworkStatus] additionally
+ * affects which *other* screens (pairing, live sync) can proceed, and even that degrades
+ * gracefully rather than freezing this screen.
  */
 @Composable
 fun StartupDiagnosticsScreen(
@@ -33,12 +55,12 @@ fun StartupDiagnosticsScreen(
     networkStatus: NetworkStatus,
     onContinue: () -> Unit,
 ) {
-    val checks = listOf(
-        cabinetDiagnostic(hardwareState),
-        fingerprintDiagnostic(fingerprintHardwareState),
-        cameraDiagnostic(cameraAvailable),
-        publicReaderDiagnostic(publicCardReaderState),
-        networkDiagnostic(networkStatus),
+    val checks = startupDiagnosticChecks(
+        hardwareState = hardwareState,
+        fingerprintHardwareState = fingerprintHardwareState,
+        cameraAvailable = cameraAvailable,
+        publicCardReaderState = publicCardReaderState,
+        networkStatus = networkStatus,
     )
     val hardwareChecks = checks.dropLast(1)
     val hardwareHealthy = hardwareChecks.none { it.severity == HintSeverity.FAIL }

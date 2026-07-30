@@ -23,6 +23,7 @@ import com.ekms.shared.protocol.KeyCabinetLink.Companion.MAX_KEY_NODE_ADDRESS
 import com.ekms.terminal.data.TerminalCabinetSettings
 import com.ekms.terminal.data.TerminalUserRole
 import com.ekms.terminal.hardware.readEthernetMacAddress
+import com.ekms.terminal.ui.theme.LocalAudioClick
 import com.ekms.terminal.ui.theme.readout
 
 /**
@@ -424,7 +425,7 @@ private fun AdminMenuStringField(
  * ever called from a non-HIDDEN branch by every caller).
  */
 @Composable
-private fun AdminMenuReadOnlyField(label: String, value: String) {
+internal fun AdminMenuReadOnlyField(label: String, value: String) {
     SoftCard(contentPadding = 16.dp) {
         Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
             Text(label, fontWeight = FontWeight.SemiBold)
@@ -448,12 +449,16 @@ private fun AdminMenuToggle(
     onCheckedChange: (Boolean) -> Unit,
 ) {
     if (mode == AdminFieldMode.HIDDEN) return
+    val playClick = LocalAudioClick.current
     SoftCard(contentPadding = 16.dp) {
         Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Text(title, fontWeight = FontWeight.SemiBold)
             Text(description, style = MaterialTheme.typography.bodySmall)
             if (mode == AdminFieldMode.EDIT) {
-                Switch(checked = checked, onCheckedChange = onCheckedChange)
+                Switch(
+                    checked = checked,
+                    onCheckedChange = { next -> playClick(); onCheckedChange(next) },
+                )
             } else {
                 Text(
                     if (checked) "Enabled" else "Disabled",

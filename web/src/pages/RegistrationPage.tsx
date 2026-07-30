@@ -15,7 +15,8 @@
 import { useEffect, useMemo, useState, type FormEvent } from 'react'
 import { Check, Plus, X } from 'lucide-react'
 import { api, ApiError } from '../api/client'
-import type { KeyDto, SiteDto, TerminalDto, UserDto } from '../api/types'
+import { assignKeyToNextAvailableNode, countAvailableNodes } from '../api/keySlotAssignment'
+import type { KeyDto, KeySlotDto, SiteDto, TerminalDto, UserDto } from '../api/types'
 import { CabinetSettingsForm } from '../components/CabinetSettingsForm'
 import { Button, LinearProgress, useConfirm } from '../components/ui'
 import { MALAYSIA_STATES, citiesForState } from '../geo/malaysiaLocations'
@@ -862,17 +863,36 @@ function StepPersonnel({ unit }: { unit: SiteDto }) {
 
 function StepKeys({ unit }: { unit: SiteDto }) {
   const [keys, setKeys] = useState<KeyDto[]>([])
+  const [terminals, setTerminals] = useState<TerminalDto[]>([])
+  const [slotsByTerminal, setSlotsByTerminal] = useState<Record<string, KeySlotDto[]>>({})
+  const [availableNodes, setAvailableNodes] = useState<number | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   const [open, setOpen] = useState(false)
   const [displayName, setDisplayName] = useState('')
+  const [selectedTerminalId, setSelectedTerminalId] = useState('')
 
   async function reload() {
     setBusy(true)
     setError(null)
     try {
-      const all = await api.listKeys()
-      setKeys(all.filter((k) => k.siteId === unit.id))
+      const [allKeys, allTerminals] = await Promise.all([api.listKeys(), api.listTerminals()])
+      setKeys(allKeys.filter((k) => k.siteId === unit.id))
+      const unitTerminals = allTerminals.filter((t) => t.siteId === unit.id)
+      setTerminals(unitTerminals)
+
+      const slotLists = await Promise.all(unitTerminals.map((t) => api.listKeySlots(t.id)))
+      const byTerminal: Record<string, KeySlotDto[]> = {}
+      unitTerminals.forEach((t, i) => {
+        byTerminal[t.id] = slotLists[i]
+      })
+      setSlotsByTerminal(byTerminal)
+
+      if (unitTerminals.length === 1) {
+        setAvailableNodes(await countAvailableNodes(unitTerminals[0]))
+      } else {
+        setAvailableNodes(null)
+      }
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'Failed to load keys')
     } finally {
@@ -884,12 +904,36 @@ function StepKeys({ unit }: { unit: SiteDto }) {
     void reload()
   }, [unit.id])
 
+  function nodeLabelFor(keyId: string): string {
+    for (const terminal of terminals) {
+      const slot = (slotsByTerminal[terminal.id] ?? []).find((s) => s.managedKeyId === keyId)
+      if (slot) return `Node ${slot.nodeAddress}` + (terminals.length > 1 ? ` (${terminal.name})` : '')
+    }
+    return 'Not assigned'
+  }
+
   async function onSave(e: FormEvent) {
     e.preventDefault()
     setBusy(true)
     setError(null)
     try {
-      await api.createKey({ siteId: unit.id, displayName: displayName.trim() })
+      const created = await api.createKey({ siteId: unit.id, displayName: displayName.trim() })
+      const targetTerminal =
+        terminals.length === 1 ? terminals[0] : terminals.find((t) => t.id === selectedTerminalId)
+      if (targetTerminal) {
+        const assignment = await assignKeyToNextAvailableNode(targetTerminal, created.id)
+        if (!assignment.ok) {
+          setError(
+            assignment.reason === 'CAPACITY_FULL'
+              ? `“${targetTerminal.name}” has no free key nodes left (${targetTerminal.configuredSlotCount} configured). The key was created but is not assigned to a cabinet slot.`
+              : `Key was created, but assigning a cabinet node failed: ${assignment.message}`,
+          )
+        }
+      } else if (terminals.length === 0) {
+        setError(
+          `“${unit.name}” has no cabinet registered yet — the key was created without a slot assignment. Register a Key Cabinet first.`,
+        )
+      }
       setOpen(false)
       setDisplayName('')
       await reload()
@@ -899,6 +943,8 @@ function StepKeys({ unit }: { unit: SiteDto }) {
       setBusy(false)
     }
   }
+
+  const capacityFull = terminals.length === 1 && availableNodes === 0
 
   return (
     <div>
@@ -914,14 +960,23 @@ function StepKeys({ unit }: { unit: SiteDto }) {
       <div className="toolbar-row" style={{ marginBottom: 12 }}>
         <Button
           icon={Plus}
+          disabled={capacityFull}
           onClick={() => {
             setDisplayName('')
+            setSelectedTerminalId(terminals[0]?.id ?? '')
             setError(null)
             setOpen(true)
           }}
         >
           Add key for this unit
         </Button>
+        {terminals.length === 1 && availableNodes != null && (
+          <span className="muted" style={{ marginLeft: 12 }}>
+            {capacityFull
+              ? `Cabinet full — 0 of ${terminals[0].configuredSlotCount} nodes free`
+              : `${availableNodes} of ${terminals[0].configuredSlotCount} nodes free`}
+          </span>
+        )}
       </div>
 
       {keys.length ? (
@@ -930,6 +985,7 @@ function StepKeys({ unit }: { unit: SiteDto }) {
             <thead>
               <tr>
                 <th>Key</th>
+                <th>Cabinet node</th>
                 <th>Enrollment</th>
               </tr>
             </thead>
@@ -937,6 +993,7 @@ function StepKeys({ unit }: { unit: SiteDto }) {
               {keys.map((k) => (
                 <tr key={k.id}>
                   <td className="cell-title">{k.displayName}</td>
+                  <td>{nodeLabelFor(k.id)}</td>
                   <td>
                     {k.fobEnrollmentReference ? (
                       <span className="badge badge-success">Enrolled</span>
@@ -968,6 +1025,31 @@ function StepKeys({ unit }: { unit: SiteDto }) {
               <label>Key name</label>
               <input value={displayName} onChange={(e) => setDisplayName(e.target.value)} required />
             </div>
+            {terminals.length > 1 && (
+              <div className="field">
+                <label>Cabinet</label>
+                <select
+                  value={selectedTerminalId}
+                  onChange={(e) => setSelectedTerminalId(e.target.value)}
+                  required
+                >
+                  <option value="" disabled>
+                    Select the cabinet this key's node will be assigned in
+                  </option>
+                  {terminals.map((t) => (
+                    <option key={t.id} value={t.id}>
+                      {t.name} (Box {t.boxAddress})
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
+            {terminals.length === 0 && (
+              <p className="dialog-copy muted">
+                No cabinet is registered for this unit yet — the key will be created without a
+                node assignment.
+              </p>
+            )}
             <div className="dialog-actions">
               <Button variant="outlined" icon={X} onClick={() => setOpen(false)}>
                 Cancel

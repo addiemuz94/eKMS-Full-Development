@@ -79,6 +79,14 @@ export type KeyDto = {
   revision: number
 }
 
+export type KeySlotDto = {
+  id: string
+  terminalId: string
+  nodeAddress: number
+  managedKeyId?: string | null
+  revision: number
+}
+
 export type AuthUserProfile = {
   id: string
   displayName: string

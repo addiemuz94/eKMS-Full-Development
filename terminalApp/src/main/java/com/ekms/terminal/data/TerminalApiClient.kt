@@ -9,6 +9,8 @@ import com.ekms.shared.api.CreateAdminUserRequest
 import com.ekms.shared.api.CreateKeyCheckoutRequest
 import com.ekms.shared.api.CredentialStatusDto
 import com.ekms.shared.api.CredentialStatusListResponse
+import com.ekms.shared.api.FobEnrollmentCompleteRequest
+import com.ekms.shared.api.FobEnrollmentResponse
 import com.ekms.shared.api.KeyCheckoutDto
 import com.ekms.shared.api.LoginRequest
 import com.ekms.shared.api.LoginResponse
@@ -482,6 +484,26 @@ class TerminalApiClient(context: Context) {
             send(
                 method = HttpMethod.Post,
                 path = ApiPaths.ADMIN_USER_CREDENTIALS_REVOKE.replace("{userId}", userId),
+                body = json.encodeToString(request),
+                authenticated = true,
+                idempotent = true,
+            ),
+        )
+    }
+
+    /** Terminal-only (see backend auth.js's TERMINAL_DEVICE_ALLOWED_ROUTES). Reports an opaque
+     * fob enrollment reference for a key already assigned a KeySlot — never a raw NFC UID
+     * (boundary #2). Used by the background sync auto-scan (see CabinetHardwareController /
+     * TerminalAdminApp's post-download sweep) and by the Key Attachment screen. */
+    suspend fun completeKeyFobEnrollment(
+        keyId: String,
+        request: FobEnrollmentCompleteRequest,
+    ): FobEnrollmentResponse {
+        ensureBaseUrl()
+        return decode(
+            send(
+                method = HttpMethod.Post,
+                path = ApiPaths.ADMIN_KEY_FOB_ENROLLMENT_COMPLETE.replace("{id}", keyId),
                 body = json.encodeToString(request),
                 authenticated = true,
                 idempotent = true,

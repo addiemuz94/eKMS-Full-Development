@@ -28,13 +28,14 @@ export async function writeAudit({
   entityId = null,
   detail = null,
   conn = pool,
+  id = newId(),
 }) {
   await conn.execute(
     `INSERT INTO audit_events
       (id, event_type, actor_user_id, terminal_id, site_id, entity_type, entity_id, occurred_at_epoch_ms, detail)
      VALUES (:id, :eventType, :actorUserId, :terminalId, :siteId, :entityType, :entityId, :now, :detail)`,
     {
-      id: newId(),
+      id,
       eventType,
       actorUserId,
       terminalId,
@@ -45,6 +46,7 @@ export async function writeAudit({
       detail,
     },
   );
+  return { id };
 }
 
 /**

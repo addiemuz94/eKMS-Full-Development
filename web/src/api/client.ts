@@ -1,6 +1,7 @@
 import type {
   CredentialStatusDto,
   KeyDto,
+  KeySlotDto,
   ListResponse,
   LoginResponse,
   RegeneratePairingCodeResponse,
@@ -242,6 +243,26 @@ export const api = {
     request<KeyDto>('PATCH', `/v1/admin/keys/${id}`, payload, { idempotent: true }),
   deleteKey: (id: string) =>
     request<KeyDto>('DELETE', `/v1/admin/keys/${id}`, undefined, { idempotent: true }),
+
+  // Key Slots — physical cabinet node ↔ key binding (id, terminalId, nodeAddress, managedKeyId).
+  // No dedicated admin page yet (see CLAUDE_WEB.md); called from the Registration wizard's Keys
+  // step and the standalone Keys page to auto-assign/release a node when a key is added/deleted.
+  listKeySlots: (terminalId?: string) =>
+    request<ListResponse<KeySlotDto>>(
+      'GET',
+      terminalId ? `/v1/admin/key-slots?terminalId=${terminalId}` : '/v1/admin/key-slots',
+    ).then((r) => r.items),
+  createKeySlot: (payload: { terminalId: string; nodeAddress: number; managedKeyId?: string | null }) =>
+    request<KeySlotDto>('POST', '/v1/admin/key-slots', payload, { idempotent: true }),
+  updateKeySlot: (
+    id: string,
+    payload: {
+      terminalId: string
+      nodeAddress: number
+      managedKeyId?: string | null
+      expectedRevision: number
+    },
+  ) => request<KeySlotDto>('PATCH', `/v1/admin/key-slots/${id}`, payload, { idempotent: true }),
 
   listAccessGrants: listPath('/v1/admin/access-grants'),
   createAccessGrant: createPath('/v1/admin/access-grants'),

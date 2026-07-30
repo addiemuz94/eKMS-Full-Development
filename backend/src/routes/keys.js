@@ -162,23 +162,50 @@ router.delete('/:id', async (req, res) => {
   );
   if (!existing[0]) return notFound(res, 'Key not found');
 
+  // Active-grant dependents still hard-block delete (unchanged) — a key someone can currently
+  // take must not silently disappear out from under an access grant. KeySlot is different: a
+  // slot represents a physical cabinet node, a permanent fixture of the terminal, independent of
+  // which key currently occupies it. Deleting a key un-assigns it from its node rather than
+  // cascading the slot itself into the Recycle Bin — this is what lets the freed node number be
+  // reused by the next key added (see key-slots.js's own duplicate-node-per-terminal check,
+  // which only rejects a second ACTIVE row at the same node — an unlinked one is fair game).
   const [[deps]] = await pool.execute(
-    `SELECT
-      (SELECT COUNT(*) FROM key_slots WHERE managed_key_id = :id AND lifecycle_state = 'ACTIVE') AS slots,
-      (SELECT COUNT(*) FROM access_grant_keys agk
+    `SELECT (SELECT COUNT(*) FROM access_grant_keys agk
          INNER JOIN access_grants ag ON ag.id = agk.grant_id
          WHERE agk.key_id = :id AND ag.lifecycle_state = 'ACTIVE') AS grants`,
     { id: req.params.id },
   );
-  if (Number(deps.slots) > 0 || Number(deps.grants) > 0) {
+  if (Number(deps.grants) > 0) {
     return res.status(409).json({
       error: 'DEPENDENCY_BLOCKED',
-      message: 'Key is referenced by active slots or grants',
-      dependentRecordCount: Number(deps.slots) + Number(deps.grants),
+      message: 'Key is referenced by active access grants',
+      dependentRecordCount: Number(deps.grants),
     });
   }
 
   const now = nowMs();
+  const [unlinkedSlots] = await pool.execute(
+    `SELECT id FROM key_slots WHERE managed_key_id = :id AND lifecycle_state = 'ACTIVE'`,
+    { id: req.params.id },
+  );
+  if (unlinkedSlots.length > 0) {
+    await pool.execute(
+      `UPDATE key_slots
+       SET managed_key_id = NULL, revision = revision + 1, updated_at_epoch_ms = :now
+       WHERE managed_key_id = :id AND lifecycle_state = 'ACTIVE'`,
+      { id: req.params.id, now },
+    );
+    for (const slot of unlinkedSlots) {
+      await writeAudit({
+        eventType: 'KEY_SLOT_UPDATED',
+        actorUserId: req.auth.sub,
+        entityType: 'KEY_SLOT',
+        entityId: slot.id,
+        detail: 'Unlinked from deleted key',
+      });
+    }
+  }
+
   await pool.execute(
     `UPDATE managed_keys
      SET lifecycle_state = 'RECYCLE_BIN', deleted_at_epoch_ms = :now, deleted_by_user_id = :actor,
@@ -198,5 +225,66 @@ router.delete('/:id', async (req, res) => {
   });
   return res.json(mapKey(rows[0]));
 });
+
+/**
+ * Terminal-only completion report (mirrors credentials.js's POST /complete pattern): the Android
+ * Terminal calls this after physically scanning a key's fob at its assigned node, reporting only
+ * an opaque enrollment reference — never the raw NFC UID (boundary #2). The raw UID itself lives
+ * only in the Terminal's local EncryptedUidEnrollmentStore instance for keys.
+ */
+router.post('/:id/fob-enrollment/complete', async (req, res) => {
+  const schema = z.object({
+    enrollmentReference: z.string().min(1).max(128),
+    terminalId: z.string().uuid(),
+  });
+  const parsed = schema.safeParse(req.body);
+  if (!parsed.success) return badRequest(res, 'Invalid fob enrollment completion');
+
+  const ref = parsed.data.enrollmentReference.trim();
+  if (!KNOWN_GOOD_REFERENCE_PREFIX.test(ref)) {
+    return badRequest(res, 'Raw NFC UIDs must not be sent; use an opaque enrollment reference');
+  }
+
+  const [existing] = await pool.execute(
+    `SELECT * FROM managed_keys WHERE id = :id AND lifecycle_state = 'ACTIVE' LIMIT 1`,
+    { id: req.params.id },
+  );
+  if (!existing[0]) return notFound(res, 'Key not found');
+
+  const replacedExistingEnrollment = existing[0].fob_enrollment_reference != null;
+  const now = nowMs();
+  await pool.execute(
+    `UPDATE managed_keys
+     SET fob_enrollment_reference = :ref, revision = revision + 1, updated_at_epoch_ms = :now
+     WHERE id = :id AND lifecycle_state = 'ACTIVE'`,
+    { id: req.params.id, ref, now },
+  );
+
+  const auditEvent = await writeAudit({
+    eventType: replacedExistingEnrollment ? 'KEY_FOB_REPLACED' : 'KEY_FOB_ENROLLED',
+    // TERMINAL_DEVICE-scoped tokens have no real user behind them (see credentials.js's
+    // actorUserIdFor) — this route is TERMINAL_DEVICE-only (see auth.js's allowlist), so
+    // actorUserId is always null here, never req.auth.sub.
+    actorUserId: null,
+    terminalId: parsed.data.terminalId,
+    siteId: existing[0].site_id,
+    entityType: 'KEY',
+    entityId: req.params.id,
+    detail: ref,
+  });
+
+  return res.status(200).json({
+    keyId: req.params.id,
+    fobEnrollmentReference: ref,
+    replacedExistingEnrollment,
+    enrolledAtEpochMillis: now,
+    auditEventId: auditEvent?.id ?? '',
+  });
+});
+
+/** Same permissive-with-denylist convention as credentials.js — recognized opaque prefixes
+ * always pass. Key fob references use the same `cardref_` prefix EncryptedUidEnrollmentStore
+ * already generates for NFC card enrollment (personnel and key cards share one UID space). */
+const KNOWN_GOOD_REFERENCE_PREFIX = /^(cardref|fptemplate|faceref|vendorref|ref)_[A-Za-z0-9_-]+$/i;
 
 export default router;

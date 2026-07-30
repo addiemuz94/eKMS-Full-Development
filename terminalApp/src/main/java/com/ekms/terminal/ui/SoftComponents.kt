@@ -48,6 +48,7 @@ import androidx.compose.ui.unit.dp
 import com.ekms.terminal.ui.theme.StatusTone
 import com.ekms.terminal.ui.theme.readout
 import com.ekms.terminal.ui.theme.OutfitFontFamily
+import com.ekms.terminal.ui.theme.LocalAudioClick
 import com.ekms.terminal.ui.theme.LocalEkmsColors
 import com.ekms.terminal.ui.theme.EkmsColors
 import com.ekms.terminal.ui.theme.SoftTone
@@ -70,6 +71,10 @@ fun SoftCard(
     border: BorderStroke? = null,
     content: @Composable ColumnScope.() -> Unit,
 ) {
+    // Click sound wired here (Part 2 of the immersive-mode/click-sound pass) — the single
+    // central point for SoftCard's own direct onClick usage plus everything built on top of it
+    // (SoftScanTile, SoftNavTile), so those never need their own separate wiring.
+    val playClick = LocalAudioClick.current
     Card(
         modifier = modifier
             .fillMaxWidth()
@@ -78,7 +83,10 @@ fun SoftCard(
                     Modifier.clickable(
                         interactionSource = remember { MutableInteractionSource() },
                         indication = null,
-                        onClick = onClick,
+                        onClick = {
+                            playClick()
+                            onClick()
+                        },
                     )
                 } else {
                     Modifier
@@ -270,8 +278,9 @@ fun SoftPrimaryButton(
     enabled: Boolean = true,
     loading: Boolean = false,
 ) {
+    val playClick = LocalAudioClick.current
     Button(
-        onClick = onClick,
+        onClick = { playClick(); onClick() },
         modifier = modifier
             .fillMaxWidth()
             .height(48.dp),
@@ -336,6 +345,7 @@ fun SoftHeroAction(
     modifier: Modifier = Modifier,
 ) {
     val colors = LocalEkmsColors.current
+    val playClick = LocalAudioClick.current
     Box(
         modifier = modifier
             .fillMaxWidth()
@@ -349,7 +359,7 @@ fun SoftHeroAction(
                     ),
                 ),
             )
-            .clickable(onClick = onClick)
+            .clickable(onClick = { playClick(); onClick() })
             .padding(18.dp),
     ) {
         Column(modifier = Modifier.align(Alignment.CenterStart)) {
@@ -490,7 +500,8 @@ fun SoftTextButton(
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    TextButton(onClick = onClick, modifier = modifier.fillMaxWidth()) {
+    val playClick = LocalAudioClick.current
+    TextButton(onClick = { playClick(); onClick() }, modifier = modifier.fillMaxWidth()) {
         Text(text)
     }
 }

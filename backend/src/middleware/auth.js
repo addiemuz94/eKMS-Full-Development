@@ -52,6 +52,11 @@ const TERMINAL_DEVICE_ALLOWED_ROUTES = [
   { method: 'GET', pattern: /^\/sites\/[^/]+\/office-hours$/ },
   { method: 'POST', pattern: /^\/key-checkouts$/ },
   { method: 'PATCH', pattern: /^\/key-checkouts\/[^/]+$/ },
+  // Background auto-scan-and-save (Key Attachment): reports an opaque fob enrollment reference
+  // for a key already assigned a KeySlot — never a raw NFC UID. Mirrors the personnel
+  // credentials-complete entry above; no GET/list on keys itself, the terminal only ever reports
+  // completion for a key it already knows about from its own synced KeySlot snapshot.
+  { method: 'POST', pattern: /^\/keys\/[^/]+\/fob-enrollment\/complete$/ },
 ];
 
 /**

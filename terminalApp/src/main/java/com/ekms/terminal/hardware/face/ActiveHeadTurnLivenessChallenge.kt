@@ -34,12 +34,32 @@ class ActiveHeadTurnLivenessChallenge {
         FAILED,
     }
 
-    private enum class HeadTurnDirection(val instruction: String) {
+    /**
+     * Was `private` — made public (additive, UI/trigger-timing pass) so a hosting screen can
+     * show which way to turn as a typed value instead of parsing [Update.message]'s English
+     * text. [instruction] itself is unchanged and still populates [Update.message] as before.
+     */
+    enum class HeadTurnDirection(val instruction: String) {
         LEFT("Turn your head left now."),
         RIGHT("Turn your head right now."),
     }
 
-    data class Update(val state: State, val message: String) {
+    /**
+     * @param direction Which way this attempt is asking for — populated on every [Update], not
+     * only while [state] == WAITING_FOR_HEAD_TURN, for simplicity; meaningless outside that
+     * state (nothing reads it then).
+     * @param progress Display-only, 0f (dead-center) to 1f (exactly at the pass threshold) —
+     * `abs(headTurnScore) / threshold`, clamped. Does **not** feed back into [consume]'s own
+     * pass/fail decision, which is byte-for-byte unchanged; this is purely an additional value
+     * for a UI to bind a progress indicator to. Always `0f` outside an active
+     * WAITING_FOR_HEAD_TURN attempt, `1f` on the frame that passes.
+     */
+    data class Update(
+        val state: State,
+        val message: String,
+        val direction: HeadTurnDirection,
+        val progress: Float = 0f,
+    ) {
         val isTerminal: Boolean get() = state == State.PASSED || state == State.FAILED
     }
 
@@ -64,29 +84,31 @@ class ActiveHeadTurnLivenessChallenge {
         startedAtMs = nowMs
         requiredHeadTurn = if (random.nextBoolean()) HeadTurnDirection.LEFT else HeadTurnDirection.RIGHT
         state = State.WAITING_FOR_HEAD_TURN
-        return Update(state, requiredHeadTurn.instruction)
+        return Update(state, requiredHeadTurn.instruction, requiredHeadTurn)
     }
 
     @Synchronized
     fun cancel(): Update {
         state = State.IDLE
-        return Update(state, "Challenge cancelled.")
+        return Update(state, "Challenge cancelled.", requiredHeadTurn)
     }
 
     @Synchronized
     fun consume(headTurnScore: Float?, nowMs: Long): Update {
         if (!isRunning) {
-            return Update(state, "Start the active liveness challenge first.")
+            return Update(state, "Start the active liveness challenge first.", requiredHeadTurn)
         }
 
         if (nowMs - startedAtMs > TIMEOUT_MS) {
             state = State.FAILED
-            return Update(state, "Timed out. Keep one clear face in view and try again.")
+            return Update(state, "Timed out. Keep one clear face in view and try again.", requiredHeadTurn)
         }
 
         if (headTurnScore == null) {
-            return Update(state, "Landmark data is unavailable. Keep exactly one face centred.")
+            return Update(state, "Landmark data is unavailable. Keep exactly one face centred.", requiredHeadTurn)
         }
+
+        val progress = progressToward(requiredHeadTurn, headTurnScore)
 
         val correctHeadTurn = when (requiredHeadTurn) {
             HeadTurnDirection.LEFT -> headTurnScore >= LEFT_HEAD_TURN_MIN_SCORE
@@ -95,9 +117,26 @@ class ActiveHeadTurnLivenessChallenge {
 
         return if (correctHeadTurn) {
             state = State.PASSED
-            Update(state, "Passed: head-turn challenge completed.")
+            Update(state, "Passed: head-turn challenge completed.", requiredHeadTurn, progress = 1f)
         } else {
-            Update(state, requiredHeadTurn.instruction)
+            Update(state, requiredHeadTurn.instruction, requiredHeadTurn, progress = progress)
         }
+    }
+
+    /**
+     * Display-only normalization, no effect on [consume]'s pass/fail decision above (unchanged
+     * — still the exact same `headTurnScore >= LEFT_HEAD_TURN_MIN_SCORE`/`<= RIGHT_HEAD_TURN_MAX_SCORE`
+     * comparisons). Dividing by the signed threshold rather than its magnitude makes the sign
+     * cancel out correctly for both directions in one expression: a score past the threshold in
+     * the *correct* direction always yields a positive ratio ≥1 (clamped to 1f); a score of zero
+     * (centered) or past the threshold in the *wrong* direction yields ≤0 (clamped to 0f) — no
+     * separate LEFT/RIGHT branching needed beyond picking which threshold to divide by.
+     */
+    private fun progressToward(direction: HeadTurnDirection, headTurnScore: Float): Float {
+        val threshold = when (direction) {
+            HeadTurnDirection.LEFT -> LEFT_HEAD_TURN_MIN_SCORE
+            HeadTurnDirection.RIGHT -> RIGHT_HEAD_TURN_MAX_SCORE
+        }
+        return (headTurnScore / threshold).coerceIn(0f, 1f)
     }
 }

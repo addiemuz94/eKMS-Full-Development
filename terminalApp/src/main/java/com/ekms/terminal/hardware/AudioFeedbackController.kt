@@ -2,6 +2,7 @@ package com.ekms.terminal.hardware
 
 import android.content.Context
 import android.media.AudioAttributes
+import android.media.AudioManager
 import android.media.MediaPlayer
 import android.util.Log
 import com.ekms.terminal.R
@@ -43,6 +44,17 @@ import com.ekms.terminal.R
  * with the HAL grouping/preempting streams that share identical
  * usage/content-type. That fix is independent of which engine plays the
  * beep and still applies here.
+ *
+ * [playClick] (added for app-wide UI tap feedback) originally played a custom WAV via
+ * [SoundPool] with its own [AudioAttributes] pair; superseded by
+ * [AudioManager.playSoundEffect] with [AudioManager.FX_KEYPRESS_STANDARD] — the platform's own
+ * built-in click (the same one Android's on-screen keyboard/UI uses) on `STREAM_SYSTEM`. This
+ * sidesteps the custom asset's clipping/duration risk entirely (there is no asset), and is a
+ * completely different code path from beep/voice-line's `MediaPlayer`/`AudioAttributes` usage —
+ * no app-owned `SoundPool`/`MediaPlayer`/`AudioAttributes` instance is involved at all for a
+ * click — which plausibly also sidesteps the `awplayer`/CedarX HAL's stream-grouping bug that's
+ * hit beep/voice twice, but that is reasoning, not a hardware-confirmed result; it still needs
+ * the same Take/Return Flow interference check as the WAV-based version would have.
  */
 class AudioFeedbackController(context: Context) {
     private val appContext = context.applicationContext
@@ -60,6 +72,10 @@ class AudioFeedbackController(context: Context) {
         .setUsage(AudioAttributes.USAGE_ASSISTANCE_ACCESSIBILITY)
         .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
         .build()
+
+    // Backs playClick() only — AudioManager.playSoundEffect() needs no AudioAttributes/
+    // SoundPool/preload of our own; the platform already owns and preloads FX_KEYPRESS_STANDARD.
+    private val audioManager = appContext.getSystemService(AudioManager::class.java)
 
     private var beepPlayer: MediaPlayer? = null
     private var voiceLinePlayer: MediaPlayer? = null
@@ -168,10 +184,28 @@ class AudioFeedbackController(context: Context) {
     }
 
     /**
+     * Plays the platform's built-in click ([AudioManager.FX_KEYPRESS_STANDARD] on
+     * `STREAM_SYSTEM` — the same sound Android's own on-screen keyboard/UI uses), fire-and-
+     * forget. Safe to call in rapid succession — the platform owns the sample and its own
+     * playback pool, unlike [beep]/[playVoiceLine]'s single-instance "cut off and replace"
+     * `MediaPlayer` model.
+     *
+     * No-ops silently (a real Android behavior, not a bug in this method) if the device's
+     * `Settings.System.SOUND_EFFECTS_ENABLED` is off — confirmed `1` (enabled) by default on
+     * the real F7G18P; not toggled or requested by this app (no `WRITE_SETTINGS`), per instruction
+     * not to add that permission speculatively. See CLAUDE_TERMINAL.md Known Issues if this
+     * ever needs revisiting.
+     */
+    fun playClick() {
+        audioManager?.playSoundEffect(AudioManager.FX_KEYPRESS_STANDARD)
+    }
+
+    /**
      * Releases both players. Call when the owning screen leaves composition
      * (e.g. from a `DisposableEffect`'s `onDispose`) so a take/return flow
      * that's abandoned mid-beep doesn't leak a still-playing `MediaPlayer`
-     * past the screen's lifetime.
+     * past the screen's lifetime. [playClick] owns no releasable resource of its own —
+     * `AudioManager` is a shared system service, not something this class allocates.
      */
     fun release() {
         releaseBeepPlayer()

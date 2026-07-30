@@ -59,6 +59,7 @@ import android.provider.Settings
 import android.util.Log
 import com.ekms.shared.api.CreateAdminUserRequest
 import com.ekms.shared.api.CreateKeyCheckoutRequest
+import com.ekms.shared.api.FobEnrollmentCompleteRequest
 import com.ekms.shared.api.KeyCheckoutStatus
 import com.ekms.shared.api.SiteDto
 import com.ekms.shared.api.UpdateKeyCheckoutRequest
@@ -87,6 +88,7 @@ import com.ekms.terminal.data.TerminalApiClient
 import com.ekms.terminal.data.TerminalApiException
 import com.ekms.terminal.data.TerminalCheckoutRecord
 import com.ekms.terminal.data.TerminalCheckoutStore
+import com.ekms.terminal.data.KeySlotAssignmentTracker
 import com.ekms.terminal.data.TerminalKey
 import com.ekms.terminal.data.TerminalSession
 import com.ekms.terminal.data.TerminalServerCache
@@ -103,6 +105,7 @@ import com.ekms.terminal.hardware.FingerprintEnrollmentOutcome
 import com.ekms.terminal.hardware.FingerprintHardwareController
 import com.ekms.terminal.hardware.FingerprintHardwareState
 import com.ekms.terminal.hardware.FingerprintTemplateStore
+import com.ekms.terminal.hardware.KeyFobScanResult
 import com.ekms.terminal.hardware.NetworkStatus
 import com.ekms.terminal.hardware.NetworkStatusController
 import com.ekms.terminal.hardware.face.FaceCameraController
@@ -115,7 +118,6 @@ import com.ekms.terminal.hardware.UidEnrollmentResult
 import com.ekms.terminal.ui.theme.EkmsTerminalTheme
 import com.ekms.terminal.ui.theme.StatusTone
 import com.ekms.terminal.ui.theme.readout
-import java.security.MessageDigest
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
@@ -224,6 +226,11 @@ fun TerminalAdminApp() {
     }
 
     var route by remember { mutableStateOf(SuperAdminRoute.LOGIN) }
+    // Which personnel record PERSONNEL_DETAIL (and, scoped from there, CARD_ENROLLMENT /
+    // FINGERPRINT_ENROLLMENT / FACE_ENROLLMENT) apply to. Null when CARD_ENROLLMENT is instead
+    // entered from KeyAttachmentScreen's key-card sub-entry, which locks that screen to the Key
+    // category rather than a personnel record.
+    var selectedPersonnelId by remember { mutableStateOf<String?>(null) }
     // Phase 3 login rework: which of the 5 method screens to show under SuperAdminRoute.LOGIN.
     // null means "show the method-chooser (TerminalLoginScreen) itself."
     var loginMethod by remember { mutableStateOf<LoginMethod?>(null) }
@@ -241,7 +248,9 @@ fun TerminalAdminApp() {
     // runs, so a later declaration isn't visible to an earlier-written deferred callback.
     fun postLoginRoute(authenticated: TerminalSession): SuperAdminRoute = when {
         authenticated.requiresPasswordChange -> SuperAdminRoute.CHANGE_PASSWORD
-        authenticated.isAdminTier -> SuperAdminRoute.DASHBOARD
+        // Admin-tier landing point as of this pass — was SuperAdminRoute.DASHBOARD directly.
+        // Technician/Vendor's `else` branch below is untouched.
+        authenticated.isAdminTier -> SuperAdminRoute.LANDING_CHOICE
         else -> SuperAdminRoute.KEY_MENU
     }
     var snapshot by remember { mutableStateOf(store.snapshot()) }
@@ -263,6 +272,16 @@ fun TerminalAdminApp() {
     val keyCardStore = remember(applicationContext) {
         EncryptedUidEnrollmentStore(applicationContext, "key")
     }
+    // Key Attachment (Part 4/Part 3 background auto-scan): a THIRD, separate instance of the
+    // same reusable store — keyed by ManagedKey.id (the server/web-registered key, not the old
+    // terminal-local TerminalKey [keyCardStore] above). Deliberately keyed by key id rather than
+    // by KeySlot id: when a node is reassigned to a different key, the new key's id has never
+    // been enrolled before, so enrollmentFor(newKeyId) == null naturally triggers a re-scan with
+    // no extra "did managedKeyId change" bookkeeping needed.
+    val managedKeyFobStore = remember(applicationContext) {
+        EncryptedUidEnrollmentStore(applicationContext, "managed_key_fob")
+    }
+    val keySlotAssignmentTracker = remember(applicationContext) { KeySlotAssignmentTracker(applicationContext) }
     val fingerprintTemplateStore = remember(applicationContext) { FingerprintTemplateStore(applicationContext) }
     var fingerprintHardwareState by remember { mutableStateOf(FingerprintHardwareState()) }
     val fingerprintHardwareController = remember {
@@ -313,7 +332,12 @@ fun TerminalAdminApp() {
     var checkoutDeadlineResolving by remember { mutableStateOf(false) }
     var pendingCheckoutDecision by remember { mutableStateOf<PendingCheckoutDecision?>(null) }
     var returnFlow by remember { mutableStateOf<ReturnFlow?>(null) }
-    var passwordChangeReturnRoute by remember { mutableStateOf(SuperAdminRoute.DASHBOARD) }
+    // Default is the same post-login landing point postLoginRoute() sends any other admin-tier
+    // session to — the forced first-login password change is a required detour before reaching
+    // it, not a separate landing decision. Explicitly overridden to ADMIN_MENU below for the
+    // voluntary "change my password" entry point reached from within Admin Menu, which is
+    // unrelated to post-login routing and stays untouched.
+    var passwordChangeReturnRoute by remember { mutableStateOf(SuperAdminRoute.LANDING_CHOICE) }
     var serverPersonnel by remember { mutableStateOf(store.cachedPersonnel()) }
     var assignedUnitId by remember { mutableStateOf<String?>(null) }
     val serverLinked = session?.serverAuthenticated == true && apiClient.isAuthenticated
@@ -919,6 +943,70 @@ fun TerminalAdminApp() {
         }
     }
 
+    /**
+     * Key Attachment (Part 3) — background auto-scan-and-save. Called after Bootstrap/Download
+     * bring down a fresh KeySlot list; never touched by Push/Read, which don't carry a snapshot.
+     * Confirmed safe with the door CLOSED by a real-hardware probe (see CLAUDE_TERMINAL.md) — no
+     * unlock/eject, this only reads whatever's already resting in each assigned node.
+     *
+     * A node is a scan candidate if its KeySlot is assigned to a key AND
+     * [managedKeyFobStore] has no stored UID for that specific key id yet — which also covers
+     * "node reused for a different key" for free, since the new key's id has never been
+     * enrolled. [keySlotAssignmentTracker] additionally revokes the OLD key's stale entry when a
+     * node's assignment has changed since the last scan, so a not-yet-physically-swapped fob
+     * can't collide with the store's own AlreadyAssigned check.
+     */
+    fun triggerKeyFobAutoScan(keySlots: List<KeySlot>) {
+        val candidates = keySlots.mapNotNull { slot ->
+            val managedKeyId = slot.managedKeyId ?: return@mapNotNull null
+            val lastKnown = keySlotAssignmentTracker.lastKnownManagedKeyId(slot.nodeAddress)
+            if (lastKnown != null && lastKnown != managedKeyId) {
+                managedKeyFobStore.revoke(lastKnown)
+            }
+            if (managedKeyFobStore.enrollmentFor(managedKeyId) != null) return@mapNotNull null
+            slot
+        }
+        if (candidates.isEmpty()) return
+        val slotByNode = candidates.associateBy { it.nodeAddress }
+
+        hardwareController.autoScanKeyFobs(
+            nodeAddresses = candidates.map { it.nodeAddress },
+            onNodeResult = { nodeAddress, result ->
+                val slot = slotByNode[nodeAddress] ?: return@autoScanKeyFobs
+                val managedKeyId = slot.managedKeyId ?: return@autoScanKeyFobs
+                if (result !is KeyFobScanResult.CardRead) return@autoScanKeyFobs
+
+                val enrollResult = managedKeyFobStore.enroll(managedKeyId, result.uidHex, System.currentTimeMillis())
+                if (enrollResult !is UidEnrollmentResult.Saved) return@autoScanKeyFobs
+                keySlotAssignmentTracker.recordManagedKeyId(nodeAddress, managedKeyId)
+
+                scope.launch {
+                    try {
+                        val terminalId = syncCoordinator.resolveTerminalId()
+                        apiClient.completeKeyFobEnrollment(
+                            managedKeyId,
+                            FobEnrollmentCompleteRequest(
+                                enrollmentReference = enrollResult.summary.enrollmentReference,
+                                terminalId = terminalId,
+                            ),
+                        )
+                    } catch (error: Throwable) {
+                        // Local capture already succeeded and is never undone here — same
+                        // non-blocking-sync shape as KEY_CHECKOUT_SYNC_FAILED.
+                        store.logEvent(
+                            AuditEventType.KEY_FOB_ENROLLMENT_SYNC_FAILED,
+                            session?.userId,
+                            RecordType.KEY,
+                            managedKeyId,
+                            error.message ?: "Unknown error",
+                        )
+                    }
+                }
+            },
+            onSweepComplete = {},
+        )
+    }
+
     fun refreshServerPersonnel() {
         if (!apiClient.isAuthenticated) return
         scope.launch {
@@ -1099,31 +1187,38 @@ fun TerminalAdminApp() {
     // Self-diagnostic: runs automatically on every cold launch, crash-recovery relaunch, and
     // manual restart (rememberSaveable resets on a genuinely new process, not on a mere
     // recomposition/rotation) — shown once, right after the pairing gate, before the app
-    // reaches standby/login. Never blocks progression; see StartupDiagnosticsScreen's doc.
+    // reaches standby/login. Never blocks progression; see TerminalBootSplashScreen's doc.
+    // Same guard reused for the initial probe, TerminalBootSplashScreen's Retry action, and its
+    // auto-recheck-on-resume — one place decides "is it worth calling connect() again."
+    fun probeStartupHardwareIfNeeded() {
+        if (!hardwareState.connected && !hardwareState.busy) hardwareController.connect()
+        if (!fingerprintHardwareState.connected && !fingerprintHardwareState.busy) {
+            fingerprintHardwareController.connect()
+        }
+    }
+
     var showStartupDiagnostics by rememberSaveable { mutableStateOf(true) }
     var startupHardwareProbeStarted by remember { mutableStateOf(false) }
     LaunchedEffect(showStartupDiagnostics) {
         if (showStartupDiagnostics && !startupHardwareProbeStarted) {
             startupHardwareProbeStarted = true
-            if (!hardwareState.connected && !hardwareState.busy) hardwareController.connect()
-            if (!fingerprintHardwareState.connected && !fingerprintHardwareState.busy) {
-                fingerprintHardwareController.connect()
-            }
+            probeStartupHardwareIfNeeded()
         }
     }
 
     if (showStartupDiagnostics) {
         EkmsTerminalTheme(darkTheme = isDarkTheme) {
             Scaffold(
-                topBar = { TopAppBar(title = { Text("eKMS Terminal · Startup Diagnostics") }) },
+                topBar = { TopAppBar(title = { Text("eKMS Terminal · Starting up") }) },
             ) { padding ->
-                StartupDiagnosticsScreen(
+                TerminalBootSplashScreen(
                     padding = padding,
                     hardwareState = hardwareState,
                     fingerprintHardwareState = fingerprintHardwareState,
                     cameraAvailable = cameraAvailable,
                     publicCardReaderState = publicCardReaderState,
                     networkStatus = networkStatus,
+                    onRetryHardware = ::probeStartupHardwareIfNeeded,
                     onContinue = { showStartupDiagnostics = false },
                 )
             }
@@ -1317,6 +1412,34 @@ fun TerminalAdminApp() {
                     notice = notice,
                 )
 
+                SuperAdminRoute.LANDING_CHOICE -> {
+                    val activeSession = session
+                    if (activeSession?.isAdminTier != true) {
+                        LaunchedEffect(Unit) {
+                            route = SuperAdminRoute.LOGIN
+                        }
+                        TerminalPage(padding) {
+                            SuperAdminNoticeCard("Your session has ended. Returning to sign-in…")
+                        }
+                    } else {
+                        TerminalLandingChoiceScreen(
+                            padding = padding,
+                            roleLabel = if (activeSession.isSuperAdmin) "Super Admin" else "Regional Admin",
+                            onTakeKey = {
+                                openAdmin(
+                                    if (activeSession.isSuperAdmin) {
+                                        SuperAdminRoute.KEY_RETRIEVAL
+                                    } else {
+                                        SuperAdminRoute.KEY_MENU
+                                    },
+                                )
+                            },
+                            onAdminPage = { openAdmin(SuperAdminRoute.DASHBOARD) },
+                            onSignOut = ::signOut,
+                        )
+                    }
+                }
+
                 SuperAdminRoute.DASHBOARD -> {
                     val activeSession = session
                     if (activeSession?.isAdminTier != true) {
@@ -1332,11 +1455,8 @@ fun TerminalAdminApp() {
                             snapshot = snapshot,
                             hardwareState = hardwareState,
                             notice = notice,
-                            onEnrollUser = { openAdmin(SuperAdminRoute.ENROLL_USER) },
-                            onEnrollKey = { openAdmin(SuperAdminRoute.ENROLL_KEY) },
-                            onOpenCardEnrollment = { openAdmin(SuperAdminRoute.CARD_ENROLLMENT) },
-                            onOpenFingerprintEnrollment = { openAdmin(SuperAdminRoute.FINGERPRINT_ENROLLMENT) },
-                            onOpenFaceEnrollment = { openAdmin(SuperAdminRoute.FACE_ENROLLMENT) },
+                            onOpenPersonnel = { openAdmin(SuperAdminRoute.PERSONNEL_LIST) },
+                            onOpenKeyAttachment = { openAdmin(SuperAdminRoute.KEY_ATTACHMENT) },
                             onOpenAccessGrants = { openAdmin(SuperAdminRoute.ACCESS_GRANTS) },
                             onOpenKeyRetrieval = { openAdmin(SuperAdminRoute.KEY_RETRIEVAL) },
                             onOpenAdminMenu = { openAdmin(SuperAdminRoute.ADMIN_MENU) },
@@ -1344,6 +1464,48 @@ fun TerminalAdminApp() {
                             onOpenOfficeHours = { openAdmin(SuperAdminRoute.OFFICE_HOURS) },
                             onOpenVendorPasskey = { openAdmin(SuperAdminRoute.VENDOR_PASSKEY) },
                             onSignOut = ::signOut,
+                        )
+                    }
+                }
+
+                SuperAdminRoute.PERSONNEL_LIST -> {
+                    LaunchedEffect(serverLinked) {
+                        if (serverLinked) refreshServerPersonnel()
+                    }
+                    PersonnelListScreen(
+                        padding = padding,
+                        users = personnelForScreens,
+                        notice = notice,
+                        onBack = { route = SuperAdminRoute.DASHBOARD },
+                        onAddPersonnel = { openAdmin(SuperAdminRoute.ENROLL_USER) },
+                        onOpenDetail = { user ->
+                            selectedPersonnelId = user.id
+                            openAdmin(SuperAdminRoute.PERSONNEL_DETAIL)
+                        },
+                    )
+                }
+
+                SuperAdminRoute.PERSONNEL_DETAIL -> {
+                    val detailUser = personnelForScreens.firstOrNull { it.id == selectedPersonnelId }
+                    if (detailUser == null) {
+                        LaunchedEffect(Unit) {
+                            route = SuperAdminRoute.PERSONNEL_LIST
+                        }
+                        TerminalPage(padding) {
+                            SuperAdminNoticeCard("That personnel record is no longer available. Returning to the list…")
+                        }
+                    } else {
+                        PersonnelDetailScreen(
+                            padding = padding,
+                            user = detailUser,
+                            notice = notice,
+                            cardStatus = personnelCardStore.enrollmentFor(detailUser.id),
+                            fingerprintStatus = fingerprintTemplateStore.enrollmentFor(detailUser.id),
+                            faceEnrolled = faceProfileStore.load(detailUser.id) != null,
+                            onBack = { route = SuperAdminRoute.PERSONNEL_LIST },
+                            onOpenCardEnrollment = { openAdmin(SuperAdminRoute.CARD_ENROLLMENT) },
+                            onOpenFingerprintEnrollment = { openAdmin(SuperAdminRoute.FINGERPRINT_ENROLLMENT) },
+                            onOpenFaceEnrollment = { openAdmin(SuperAdminRoute.FACE_ENROLLMENT) },
                         )
                     }
                 }
@@ -1362,12 +1524,11 @@ fun TerminalAdminApp() {
                     }
                     EnrollUserScreen(
                         padding = padding,
-                        users = personnelForScreens,
                         serverLinked = serverLinked,
                         assignedUnitId = assignedUnitId,
                         unitSites = unitSites,
                         notice = notice,
-                        onBack = { route = SuperAdminRoute.DASHBOARD },
+                        onBack = { route = SuperAdminRoute.PERSONNEL_LIST },
                         onSave = { displayName, identifier, password, role, selectedUnitId ->
                             if (serverLinked) {
                                 try {
@@ -1441,48 +1602,104 @@ fun TerminalAdminApp() {
                     )
                 }
 
-                SuperAdminRoute.ENROLL_KEY -> EnrollKeyScreen(
-                    padding = padding,
-                    keys = snapshot.keys,
-                    hardwareState = hardwareState,
-                    notice = notice,
-                    onBack = {
-                        hardwareController.stopMonitoring()
-                        route = SuperAdminRoute.DASHBOARD
-                    },
-                    onOpenEnrollmentSession = hardwareController::openKeyEnrollmentSession,
-                    onPrepareKeyFob = hardwareController::prepareKeyFobForEnrollment,
-                    onSaveKey = { displayName, nodeAddress, rawFobUid ->
-                        val result = store.createKey(
-                            displayName = displayName,
-                            boxAddress = hardwareState.boxAddress,
-                            nodeAddress = nodeAddress,
-                            rawFobUid = rawFobUid,
-                        )
-                        if (result is StoreResult.Success) {
-                            enqueueChange(
-                                RecordType.KEY,
-                                result.value.id,
-                                """{"displayName":"${result.value.displayName}","nodeAddress":${result.value.nodeAddress},"boxAddress":${result.value.boxAddress}}""",
-                            )
-                            refreshSnapshot()
-                        }
-                        result
-                    },
-                    onMonitorReturnedFob = hardwareController::waitForReturnedKeyFob,
-                    onStopMonitoring = hardwareController::stopMonitoring,
-                )
+                SuperAdminRoute.KEY_ATTACHMENT -> {
+                    LaunchedEffect(serverLinked) {
+                        if (serverLinked) refreshServerPersonnel()
+                    }
+                    KeyAttachmentScreen(
+                        padding = padding,
+                        terminalId = retrievalTerminal.id,
+                        keys = retrievalKeys,
+                        initialSlots = retrievalSlots,
+                        isAttached = { managedKeyId -> managedKeyFobStore.enrollmentFor(managedKeyId) != null },
+                        notice = notice,
+                        onBack = {
+                            hardwareController.stopMonitoring()
+                            route = SuperAdminRoute.DASHBOARD
+                        },
+                        onLightOverview = { needsAttachment, alreadyAttached, onReady, onFailure ->
+                            hardwareController.lightKeyAttachmentOverview(needsAttachment, alreadyAttached, onReady, onFailure)
+                        },
+                        onClearOverview = hardwareController::clearKeyAttachmentOverview,
+                        onBeginAttachment = { nodeAddress, onAttached, onTimeout, onFailure ->
+                            hardwareController.beginKeyAttachment(nodeAddress, onAttached, onTimeout, onFailure)
+                        },
+                        onCancelAttachment = hardwareController::cancelKeyAttachment,
+                        onSaveAttachment = { nodeAddress, managedKeyId, rawUidHex ->
+                            val enrollResult = managedKeyFobStore.enroll(managedKeyId, rawUidHex, System.currentTimeMillis())
+                            if (enrollResult is UidEnrollmentResult.Saved) {
+                                keySlotAssignmentTracker.recordManagedKeyId(nodeAddress, managedKeyId)
+                                try {
+                                    val terminalId = syncCoordinator.resolveTerminalId()
+                                    apiClient.completeKeyFobEnrollment(
+                                        managedKeyId,
+                                        FobEnrollmentCompleteRequest(
+                                            enrollmentReference = enrollResult.summary.enrollmentReference,
+                                            terminalId = terminalId,
+                                        ),
+                                    )
+                                } catch (error: Throwable) {
+                                    store.logEvent(
+                                        AuditEventType.KEY_FOB_ENROLLMENT_SYNC_FAILED,
+                                        session?.userId,
+                                        RecordType.KEY,
+                                        managedKeyId,
+                                        error.message ?: "Unknown error",
+                                    )
+                                }
+                                true
+                            } else {
+                                false
+                            }
+                        },
+                        onLightAttachedNode = { nodeAddress -> hardwareController.redLight(nodeAddress, true) },
+                        // Deliberately the raw apiClient.download() call, not
+                        // syncCoordinator.downloadFromServer() — this screen's polling loop only
+                        // needs a fresh KeySlot list to catch deletions; going through the full
+                        // sync coordinator would also update app-wide retrievalKeys/retrievalSlots
+                        // state and could re-trigger the Part 3 background sweep every 2-5s for
+                        // no reason.
+                        onPollSlots = {
+                            try {
+                                apiClient.download(syncCoordinator.resolveTerminalId()).snapshot?.keySlots
+                            } catch (_: Throwable) {
+                                null
+                            }
+                        },
+                        onOpenKeyCardEnrollment = {
+                            hardwareController.stopMonitoring()
+                            selectedPersonnelId = null
+                            openAdmin(SuperAdminRoute.CARD_ENROLLMENT)
+                        },
+                    )
+                }
 
                 SuperAdminRoute.CARD_ENROLLMENT -> {
                     LaunchedEffect(serverLinked) {
                         if (serverLinked) refreshServerPersonnel()
                     }
+                    // Entered either from Personnel Management (scoped to one user, Personnel
+                    // category locked) or from Key Attachment's key-card sub-entry (no user
+                    // selected, Key category locked) — see selectedPersonnelId's doc above.
+                    val cardScopedUser = personnelForScreens.firstOrNull { it.id == selectedPersonnelId }
                     CardEnrollmentScreen(
                         padding = padding,
-                        users = personnelForScreens,
-                        keys = snapshot.keys,
+                        users = listOfNotNull(cardScopedUser),
+                        keys = if (cardScopedUser != null) emptyList() else snapshot.keys,
+                        initialCategory = if (cardScopedUser != null) {
+                            CardEnrollmentCategory.PERSONNEL
+                        } else {
+                            CardEnrollmentCategory.KEY
+                        },
+                        lockCategory = true,
                         notice = notice,
-                        onBack = { route = SuperAdminRoute.DASHBOARD },
+                        onBack = {
+                            route = if (cardScopedUser != null) {
+                                SuperAdminRoute.PERSONNEL_DETAIL
+                            } else {
+                                SuperAdminRoute.KEY_ATTACHMENT
+                            }
+                        },
                         onEnrollPersonnelCard = { userId, rawUid ->
                             if (keyCardStore.isEnrolled(rawUid)) {
                                 UidEnrollmentResult.AlreadyAssigned
@@ -1516,12 +1733,15 @@ fun TerminalAdminApp() {
                     }
                     FingerprintEnrollmentScreen(
                         padding = padding,
-                        // Vendor may only ever enroll NFC card (permanent rule, not a UI
-                        // suggestion) — hard-excluded from selection here, not just discouraged.
-                        users = personnelForScreens.filterNot { it.role == TerminalUserRole.VENDOR },
+                        // Scoped to the Personnel Management record this was opened from. Vendor
+                        // may only ever enroll NFC card (permanent rule, not a UI suggestion) —
+                        // hard-excluded here too, not just by PersonnelDetailScreen hiding the row.
+                        users = personnelForScreens
+                            .filter { it.id == selectedPersonnelId }
+                            .filterNot { it.role == TerminalUserRole.VENDOR },
                         notice = notice,
                         hardwareState = fingerprintHardwareState,
-                        onBack = { route = SuperAdminRoute.DASHBOARD },
+                        onBack = { route = SuperAdminRoute.PERSONNEL_DETAIL },
                         existingEnrollment = fingerprintTemplateStore::enrollmentFor,
                         onEnroll = { userId, onProgress, onOutcome ->
                             fingerprintHardwareController.enrollFingerprint(
@@ -1557,12 +1777,15 @@ fun TerminalAdminApp() {
                     }
                     FaceEnrollmentScreen(
                         padding = padding,
-                        // Vendor may only ever enroll NFC card (permanent rule, not a UI
-                        // suggestion) — hard-excluded from selection here, not just discouraged.
-                        users = personnelForScreens.filterNot { it.role == TerminalUserRole.VENDOR },
+                        // Scoped to the Personnel Management record this was opened from. Vendor
+                        // may only ever enroll NFC card (permanent rule, not a UI suggestion) —
+                        // hard-excluded here too, not just by PersonnelDetailScreen hiding the row.
+                        users = personnelForScreens
+                            .filter { it.id == selectedPersonnelId }
+                            .filterNot { it.role == TerminalUserRole.VENDOR },
                         notice = notice,
                         faceProfileStore = faceProfileStore,
-                        onBack = { route = SuperAdminRoute.DASHBOARD },
+                        onBack = { route = SuperAdminRoute.PERSONNEL_DETAIL },
                         onEnrollmentSaved = { userId, profile ->
                             reportFaceEnrollment(userId, profile.enrollmentReference)
                         },
@@ -1653,6 +1876,7 @@ fun TerminalAdminApp() {
                     onBootstrap = {
                         runSyncAction("Bootstrap") {
                             val response = syncCoordinator.bootstrap()
+                            response.snapshot?.keySlots?.let(::triggerKeyFobAutoScan)
                             val keys = response.snapshot?.keys?.size ?: 0
                             "Bootstrap OK · revision ${response.serverRevision} · $keys keys hydrated."
                         }
@@ -1673,6 +1897,7 @@ fun TerminalAdminApp() {
                     onDownload = {
                         runSyncAction("Download") {
                             val ack = syncCoordinator.downloadFromServer()
+                            ack.snapshot?.keySlots?.let(::triggerKeyFobAutoScan)
                             val keys = ack.snapshot?.keys?.size ?: 0
                             ack.message ?: "Download OK · $keys keys hydrated (revision ${ack.serverRevision})."
                         }
@@ -1809,13 +2034,27 @@ fun TerminalAdminApp() {
                         }
 
                         else -> {
+                            // Role-conditional back action (mirrors KEY_RETRIEVAL's existing
+                            // pattern above) — added this pass because Regional Admin now also
+                            // reaches this screen via TerminalLandingChoiceScreen's "Take Key"
+                            // option and should return to their dashboard, same as Super Admin
+                            // does from KEY_RETRIEVAL. Technician/Vendor's own observed behavior
+                            // is unchanged: session?.isAdminTier is false for both, so they still
+                            // see exactly "Sign out" -> signOut(), byte-for-byte as before.
+                            val activeSession = session
                             TerminalKeyMenuScreen(
                                 padding = padding,
                                 authorizedKeys = authorizedKeysForCurrentUser,
                                 slots = retrievalSlots,
                                 takenKeyIds = takenKeyIds,
-                                backLabel = "Sign out",
-                                onBack = ::signOut,
+                                backLabel = if (activeSession?.isAdminTier == true) "Back to dashboard" else "Sign out",
+                                onBack = {
+                                    if (activeSession?.isAdminTier == true) {
+                                        route = SuperAdminRoute.DASHBOARD
+                                    } else {
+                                        signOut()
+                                    }
+                                },
                                 onConfirmSelection = ::beginMultiKeyTake,
                             )
                         }
@@ -1888,11 +2127,8 @@ private fun SuperAdminDashboardScreen(
     snapshot: TerminalAdminSnapshot,
     hardwareState: CabinetHardwareState,
     notice: String?,
-    onEnrollUser: () -> Unit,
-    onEnrollKey: () -> Unit,
-    onOpenCardEnrollment: () -> Unit,
-    onOpenFingerprintEnrollment: () -> Unit,
-    onOpenFaceEnrollment: () -> Unit,
+    onOpenPersonnel: () -> Unit,
+    onOpenKeyAttachment: () -> Unit,
     onOpenAccessGrants: () -> Unit,
     onOpenKeyRetrieval: () -> Unit,
     onOpenAdminMenu: () -> Unit,
@@ -1928,40 +2164,28 @@ private fun SuperAdminDashboardScreen(
         }
         notice?.let { message -> SuperAdminNoticeCard(message) }
 
-        SoftHeroAction(
-            title = "Take keys",
-            subtitle = "Open the cabinet grid",
-            onClick = onOpenKeyRetrieval,
-        )
-
+        // "Take keys" demoted from SoftHeroAction to a normal SoftNavTile (an earlier pass) — the
+        // hero-weight either/or choice now lives on TerminalLandingChoiceScreen, which every
+        // admin-tier session already passes through before ever reaching this dashboard; leaving
+        // it as a lone hero here read as visually disconnected from the rest of the grid. First
+        // tile, top-left, per instruction — still the most-reached admin action even with the
+        // landing chooser's own "Take Key" option, so keeping it first stays the right call.
+        // Card/Fingerprint/Face enrollment tiles removed (this pass): Personnel Management is now
+        // the only path to any of them, scoped per-user from its detail view. That drops the grid
+        // back to an even 8 tiles / 4 rows, so the odd-row Spacer balancing hack is gone too.
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.spacedBy(10.dp),
         ) {
-            SoftNavTile(label = "Card enrollment", onClick = onOpenCardEnrollment, modifier = Modifier.weight(1f))
+            SoftNavTile(label = "Take keys", onClick = onOpenKeyRetrieval, modifier = Modifier.weight(1f))
             SoftNavTile(label = "Permission Settings", onClick = onOpenAccessGrants, modifier = Modifier.weight(1f))
         }
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.spacedBy(10.dp),
         ) {
-            SoftNavTile(label = "Personnel Management", onClick = onEnrollUser, modifier = Modifier.weight(1f))
-            SoftNavTile(label = "Key enrollment", onClick = onEnrollKey, modifier = Modifier.weight(1f))
-        }
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(10.dp),
-        ) {
-            SoftNavTile(
-                label = "Fingerprint enrollment",
-                onClick = onOpenFingerprintEnrollment,
-                modifier = Modifier.weight(1f),
-            )
-            SoftNavTile(
-                label = "Face enrollment",
-                onClick = onOpenFaceEnrollment,
-                modifier = Modifier.weight(1f),
-            )
+            SoftNavTile(label = "Personnel Management", onClick = onOpenPersonnel, modifier = Modifier.weight(1f))
+            SoftNavTile(label = "Key Attachment", onClick = onOpenKeyAttachment, modifier = Modifier.weight(1f))
         }
         Row(
             modifier = Modifier.fillMaxWidth(),
@@ -2174,7 +2398,6 @@ private fun looksLikeEmail(value: String): Boolean {
 @Composable
 private fun EnrollUserScreen(
     padding: PaddingValues,
-    users: List<TerminalUser>,
     serverLinked: Boolean,
     assignedUnitId: String?,
     unitSites: List<SiteDto>,
@@ -2243,9 +2466,9 @@ private fun EnrollUserScreen(
     }
 
     TerminalPage(padding) {
-        BackButton(onBack)
+        BackButton(onBack, label = "Back to Personnel Management")
         HeaderCard(
-            title = "Personnel Management",
+            title = "Add personnel",
             description = if (serverLinked) {
                 "Same as Personnel Management on the web portal: display name, email, role, unit, and password. New records appear on the website immediately."
             } else {
@@ -2384,18 +2607,6 @@ private fun EnrollUserScreen(
                 attention = true,
             )
         }
-
-        Text("Personnel", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-        users.forEach { user ->
-            Card(modifier = Modifier.fillMaxWidth()) {
-                Box(modifier = Modifier.padding(16.dp)) {
-                    Text(
-                        user.displayName + "\n" + user.username + " · " + user.role.label +
-                                (if (user.isPreset) "\nBuilt-in Super Admin" else ""),
-                    )
-                }
-            }
-        }
     }
 
     feedback?.let { result ->
@@ -2473,362 +2684,6 @@ private fun EnrollUserScreen(
                 }
             },
         )
-    }
-}
-
-@Composable
-private fun EnrollKeyScreen(
-    padding: PaddingValues,
-    keys: List<TerminalKey>,
-    hardwareState: CabinetHardwareState,
-    notice: String?,
-    onBack: () -> Unit,
-    onOpenEnrollmentSession: ((() -> Unit), (String) -> Unit) -> Unit,
-    onPrepareKeyFob: (Int, (String) -> Unit, (String) -> Unit) -> Unit,
-    onSaveKey: (String, Int, String) -> StoreResult<TerminalKey>,
-    onMonitorReturnedFob: (Int, String, () -> Unit, (String) -> Unit) -> Unit,
-    onStopMonitoring: () -> Unit,
-) {
-    var keyName by remember { mutableStateOf("") }
-    var nodeAddressText by remember { mutableStateOf("") }
-    var phase by remember { mutableStateOf(GuidedKeyEnrollmentPhase.OPENING_DOOR) }
-    var statusMessage by remember {
-        mutableStateOf("Opening the cabinet and ejecting the door for this key-enrolment session…")
-    }
-    var cabinetFobUid by remember { mutableStateOf<String?>(null) }
-    var terminalFobUid by remember { mutableStateOf<String?>(null) }
-    var terminalReaderState by remember { mutableStateOf<TerminalNfcReaderState>(TerminalNfcReaderState.Idle) }
-    var scanGeneration by remember { mutableStateOf(0) }
-    var mismatchCount by remember { mutableStateOf(0) }
-    val nodeAddress = nodeAddressText.toIntOrNull()
-    val canUseSelectedNode = nodeAddress != null && nodeAddress in 0..MAX_KEY_NODE_ADDRESS
-    val slotAlreadyRegistered = canUseSelectedNode && keys.any { key ->
-        key.boxAddress == hardwareState.boxAddress && key.nodeAddress == nodeAddress
-    }
-    val terminalReader = remember {
-        TerminalNfcReaderController(
-            onStateChanged = { state -> terminalReaderState = state },
-            onFobDetected = { rawUid -> terminalFobUid = rawUid },
-        )
-    }
-
-    fun resetForNextKey(message: String) {
-        terminalReader.stopScan()
-        keyName = ""
-        nodeAddressText = ""
-        cabinetFobUid = null
-        terminalFobUid = null
-        mismatchCount = 0
-        phase = GuidedKeyEnrollmentPhase.READY_FOR_DETAILS
-        statusMessage = message
-    }
-
-    fun monitorReturnedFob(expectedUid: String, afterSecureMessage: String) {
-        val selectedNode = nodeAddress ?: return
-        phase = GuidedKeyEnrollmentPhase.WAITING_FOR_RETURN
-        statusMessage = "Key details are saved. Return the fob to the red-lit node; the slot will lock automatically."
-        onMonitorReturnedFob(
-            selectedNode,
-            expectedUid,
-            {
-                resetForNextKey(afterSecureMessage)
-            },
-            { error ->
-                phase = GuidedKeyEnrollmentPhase.RETURN_RECOVERY
-                statusMessage = "$error Return the fob to the selected node, then retry the return check."
-            },
-        )
-    }
-
-    fun prepareSelectedFob() {
-        val selectedNode = nodeAddress
-        if (!canUseSelectedNode || selectedNode == null) {
-            statusMessage = "Enter a raw node address from 0 to $MAX_KEY_NODE_ADDRESS."
-            return
-        }
-        if (slotAlreadyRegistered) {
-            statusMessage = "This Box/Node already has a registered key. Choose an unused node."
-            return
-        }
-
-        mismatchCount = 0
-        cabinetFobUid = null
-        terminalFobUid = null
-        phase = GuidedKeyEnrollmentPhase.PREPARING_FOB
-        statusMessage = "Blue light is turning on while the key fob is released and read…"
-        onPrepareKeyFob(
-            selectedNode,
-            { nodeFobUid ->
-                cabinetFobUid = nodeFobUid
-                phase = GuidedKeyEnrollmentPhase.AWAITING_TERMINAL_SCAN
-                statusMessage = "Take the released fob and scan it at the Terminal NFC reader."
-                scanGeneration += 1
-            },
-            { error ->
-                phase = GuidedKeyEnrollmentPhase.READY_FOR_DETAILS
-                statusMessage = "$error Check the physical fob and start this key again."
-            },
-        )
-    }
-
-    DisposableEffect(terminalReader) {
-        onDispose {
-            terminalReader.close()
-            onStopMonitoring()
-        }
-    }
-
-    LaunchedEffect(Unit) {
-        onOpenEnrollmentSession(
-            {
-                phase = GuidedKeyEnrollmentPhase.READY_FOR_DETAILS
-                statusMessage = "Cabinet door ejected. Enter the key name and its raw node address."
-            },
-            { error ->
-                phase = GuidedKeyEnrollmentPhase.OPEN_FAILURE
-                statusMessage = error
-            },
-        )
-    }
-
-    LaunchedEffect(phase, scanGeneration, cabinetFobUid) {
-        if (phase == GuidedKeyEnrollmentPhase.AWAITING_TERMINAL_SCAN && cabinetFobUid != null) {
-            terminalReader.startScan()
-        } else {
-            terminalReader.stopScan()
-        }
-    }
-
-    LaunchedEffect(terminalFobUid) {
-        val scannedUid = terminalFobUid ?: return@LaunchedEffect
-        val expectedUid = cabinetFobUid
-        if (phase != GuidedKeyEnrollmentPhase.AWAITING_TERMINAL_SCAN || expectedUid == null) {
-            terminalFobUid = null
-            return@LaunchedEffect
-        }
-
-        terminalFobUid = null
-        if (!sameFobUid(expectedUid, scannedUid)) {
-            mismatchCount += 1
-            statusMessage = "This fob does not match the selected node. Scan the released fob again. " +
-                    "Attempt $mismatchCount."
-            scanGeneration += 1
-            return@LaunchedEffect
-        }
-
-        val selectedNode = nodeAddress
-        if (selectedNode == null) {
-            phase = GuidedKeyEnrollmentPhase.READY_FOR_DETAILS
-            statusMessage = "The selected node is no longer valid. Start again."
-            return@LaunchedEffect
-        }
-
-        phase = GuidedKeyEnrollmentPhase.SAVING_KEY
-        statusMessage = "Fob verified. Saving the protected key record…"
-        when (val result = onSaveKey(keyName, selectedNode, expectedUid)) {
-            is StoreResult.Success -> {
-                monitorReturnedFob(
-                    expectedUid,
-                    "Key ${result.value.displayName} is enrolled and its slot is secured. Ready for the next key.",
-                )
-            }
-
-            is StoreResult.Error -> {
-                monitorReturnedFob(
-                    expectedUid,
-                    "No key record was created: ${result.message} The fob was returned and the slot is secured. Ready for the next key.",
-                )
-            }
-        }
-    }
-
-    TerminalPage(padding) {
-        val canLeaveScreen = phase == GuidedKeyEnrollmentPhase.READY_FOR_DETAILS ||
-                phase == GuidedKeyEnrollmentPhase.OPEN_FAILURE
-        BackButton(onBack = onBack, enabled = canLeaveScreen)
-        HeaderCard(
-            title = "Guided key enrolment",
-            description = "The cabinet door is ejected when this screen opens. The Terminal then guides one key fob through release, protected NFC comparison, save, return and automatic slot secure.",
-        )
-        notice?.let { message -> SuperAdminNoticeCard(message) }
-        HardwareStatusCard(hardwareState)
-
-        SuperAdminNoticeCard(statusMessage)
-
-        when (phase) {
-            GuidedKeyEnrollmentPhase.OPENING_DOOR -> {
-                Box(
-                    modifier = Modifier.fillMaxWidth(),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    CircularProgressIndicator()
-                }
-                Text("Opening the cabinet and ejecting its door…")
-            }
-
-            GuidedKeyEnrollmentPhase.OPEN_FAILURE -> {
-                Button(
-                    onClick = {
-                        phase = GuidedKeyEnrollmentPhase.OPENING_DOOR
-                        statusMessage = "Retrying cabinet connection and door eject…"
-                        onOpenEnrollmentSession(
-                            {
-                                phase = GuidedKeyEnrollmentPhase.READY_FOR_DETAILS
-                                statusMessage = "Cabinet door ejected. Enter the key name and its raw node address."
-                            },
-                            { error ->
-                                phase = GuidedKeyEnrollmentPhase.OPEN_FAILURE
-                                statusMessage = error
-                            },
-                        )
-                    },
-                    modifier = Modifier.fillMaxWidth(),
-                    enabled = !hardwareState.busy,
-                ) {
-                    Text("Retry door eject")
-                }
-            }
-
-            GuidedKeyEnrollmentPhase.READY_FOR_DETAILS -> {
-                OutlinedTextField(
-                    value = keyName,
-                    onValueChange = { keyName = it },
-                    modifier = Modifier.fillMaxWidth(),
-                    label = { Text("Key name") },
-                    singleLine = true,
-                )
-                OutlinedTextField(
-                    value = nodeAddressText,
-                    onValueChange = { value ->
-                        nodeAddressText = value.filter { character -> character.isDigit() }
-                    },
-                    modifier = Modifier.fillMaxWidth(),
-                    label = { Text("Raw Node Address (0–$MAX_KEY_NODE_ADDRESS)") },
-                    singleLine = true,
-                    isError = nodeAddressText.isNotBlank() && (!canUseSelectedNode || slotAlreadyRegistered),
-                    supportingText = {
-                        Text(
-                            when {
-                                slotAlreadyRegistered -> "This Box/Node already has an enrolled key."
-                                else -> "Box ${hardwareState.boxAddress} · use the supplier raw address; eKMS does not subtract 1."
-                            },
-                        )
-                    },
-                )
-                Button(
-                    onClick = ::prepareSelectedFob,
-                    modifier = Modifier.fillMaxWidth(),
-                    enabled = hardwareState.connected && !hardwareState.busy &&
-                            !hardwareState.keyReturnMonitoring && keyName.trim().length >= 2 &&
-                            canUseSelectedNode && !slotAlreadyRegistered,
-                ) {
-                    Text("Start guided enrolment")
-                }
-                Text(
-                    "After this one action, blue light, fob release, cabinet UID read, Terminal NFC comparison, key save, red-light return detection and slot secure are automatic.",
-                    style = MaterialTheme.typography.bodySmall,
-                )
-            }
-
-            GuidedKeyEnrollmentPhase.PREPARING_FOB -> {
-                Box(
-                    modifier = Modifier.fillMaxWidth(),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    CircularProgressIndicator()
-                }
-                Text("Locating the selected slot and reading its fob…")
-            }
-
-            GuidedKeyEnrollmentPhase.AWAITING_TERMINAL_SCAN -> {
-                Box(
-                    modifier = Modifier.fillMaxWidth(),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    CircularProgressIndicator()
-                }
-                Text(
-                    when (val readerState = terminalReaderState) {
-                        TerminalNfcReaderState.Connecting -> "Connecting the Terminal NFC reader…"
-                        TerminalNfcReaderState.WaitingForFob -> "Scan the released fob at the Terminal NFC reader."
-                        TerminalNfcReaderState.FobCaptured -> "Comparing the scanned fob…"
-                        is TerminalNfcReaderState.Error -> readerState.message
-                        else -> "Preparing the Terminal NFC reader…"
-                    },
-                )
-                if (terminalReaderState is TerminalNfcReaderState.Error) {
-                    OutlinedButton(
-                        onClick = { scanGeneration += 1 },
-                        modifier = Modifier.fillMaxWidth(),
-                    ) {
-                        Text("Retry Terminal NFC scan")
-                    }
-                }
-                if (mismatchCount > 0) {
-                    Text("The fob must match the selected cabinet node before it can be saved.")
-                }
-            }
-
-            GuidedKeyEnrollmentPhase.SAVING_KEY -> {
-                Box(
-                    modifier = Modifier.fillMaxWidth(),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    CircularProgressIndicator()
-                }
-                Text("Saving the verified key details…")
-            }
-
-            GuidedKeyEnrollmentPhase.WAITING_FOR_RETURN -> {
-                Box(
-                    modifier = Modifier.fillMaxWidth(),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    CircularProgressIndicator()
-                }
-                Text("Return the same fob to the red-lit node. The Terminal is detecting it automatically.")
-                Text(
-                    "Do not leave this screen until the slot reports that it is secured.",
-                    style = MaterialTheme.typography.bodySmall,
-                )
-            }
-
-            GuidedKeyEnrollmentPhase.RETURN_RECOVERY -> {
-                val expectedUid = cabinetFobUid
-                OutlinedButton(
-                    onClick = {
-                        val selectedNode = nodeAddress
-                        if (expectedUid != null && selectedNode != null) {
-                            phase = GuidedKeyEnrollmentPhase.WAITING_FOR_RETURN
-                            statusMessage = "Retrying detection of the returned fob…"
-                            onMonitorReturnedFob(
-                                selectedNode,
-                                expectedUid,
-                                {
-                                    resetForNextKey("The fob was returned and the slot is secured. Ready for the next key.")
-                                },
-                                { error ->
-                                    phase = GuidedKeyEnrollmentPhase.RETURN_RECOVERY
-                                    statusMessage = "$error Return the fob to the selected node, then retry the return check."
-                                },
-                            )
-                        }
-                    },
-                    modifier = Modifier.fillMaxWidth(),
-                    enabled = cabinetFobUid != null && nodeAddress != null && !hardwareState.busy,
-                ) {
-                    Text("Retry returned-fob detection")
-                }
-            }
-        }
-
-        Text("Enrolled keys", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-        if (keys.isEmpty()) {
-            Text("No physical key has been enrolled yet.")
-        }
-        keys.forEach { key ->
-            KeyCard(key)
-        }
     }
 }
 
@@ -3174,13 +3029,14 @@ private fun PasswordField(
 internal fun BackButton(
     onBack: () -> Unit,
     enabled: Boolean = true,
+    label: String = "Back to Super Admin dashboard",
 ) {
     OutlinedButton(
         onClick = onBack,
         modifier = Modifier.fillMaxWidth(),
         enabled = enabled,
     ) {
-        Text("Back to Super Admin dashboard")
+        Text(label)
     }
 }
 
@@ -3226,42 +3082,24 @@ private fun CapturedFobCard(capturedFob: CapturedFob?) {
     }
 }
 
-@Composable
-private fun KeyCard(key: TerminalKey) {
-    Card(modifier = Modifier.fillMaxWidth()) {
-        Box(modifier = Modifier.padding(16.dp)) {
-            Text(
-                key.displayName + "\nBox " + key.boxAddress + " · Node " + key.nodeAddress +
-                        "\nPhysical fob enrolled",
-            )
-        }
-    }
-}
-
-private enum class GuidedKeyEnrollmentPhase {
-    OPENING_DOOR,
-    OPEN_FAILURE,
-    READY_FOR_DETAILS,
-    PREPARING_FOB,
-    AWAITING_TERMINAL_SCAN,
-    SAVING_KEY,
-    WAITING_FOR_RETURN,
-    RETURN_RECOVERY,
-}
-
-/** Constant-time comparison for two raw UIDs kept only during this session. */
-private fun sameFobUid(first: String, second: String): Boolean =
-    MessageDigest.isEqual(
-        first.toByteArray(Charsets.US_ASCII),
-        second.toByteArray(Charsets.US_ASCII),
-    )
-
 private enum class SuperAdminRoute {
     LOGIN,
     CHANGE_PASSWORD,
+    /** Admin-tier (Super Admin / Regional Admin) post-login landing point — see
+     * [TerminalLandingChoiceScreen]. Technician/Vendor never reach this; they route straight to
+     * [KEY_MENU] as before this route existed. */
+    LANDING_CHOICE,
     DASHBOARD,
+    /** Personnel Management list — see [PersonnelListScreen]. */
+    PERSONNEL_LIST,
+    /** Personnel Management per-user detail — see [PersonnelDetailScreen]. Reads [selectedPersonnelId]. */
+    PERSONNEL_DETAIL,
     ENROLL_USER,
-    ENROLL_KEY,
+    /** The dashboard's key-fob workflow — operates on real, server-synced KeySlot/ManagedKey
+     * records. See [KeyAttachmentScreen]. Replaces the old TerminalKey-based Guided Key
+     * Enrollment screen, fully removed (not just retired) once its one remaining reachable
+     * feature — Key-card NFC enrollment's entry point — moved onto this screen instead. */
+    KEY_ATTACHMENT,
     CARD_ENROLLMENT,
     FINGERPRINT_ENROLLMENT,
     FACE_ENROLLMENT,

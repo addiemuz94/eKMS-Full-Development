@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useState, type FormEvent } from 'react'
 import { Check, Plus, X } from 'lucide-react'
 import { api, ApiError } from '../api/client'
-import type { KeyDto, SiteDto } from '../api/types'
+import { assignKeyToNextAvailableNode, countAvailableNodes } from '../api/keySlotAssignment'
+import type { KeyDto, KeySlotDto, SiteDto, TerminalDto } from '../api/types'
 import { Button, LinearProgress, useConfirm } from '../components/ui'
 
 type SortDir = 'asc' | 'desc'
@@ -10,6 +11,8 @@ export function KeysPage() {
   const { confirmAction, dialog } = useConfirm()
   const [keys, setKeys] = useState<KeyDto[]>([])
   const [sites, setSites] = useState<SiteDto[]>([])
+  const [terminals, setTerminals] = useState<TerminalDto[]>([])
+  const [keySlots, setKeySlots] = useState<KeySlotDto[]>([])
   const [query, setQuery] = useState('')
   const [siteFilter, setSiteFilter] = useState('all')
   const [enrollFilter, setEnrollFilter] = useState<'all' | 'enrolled' | 'not-enrolled'>('all')
@@ -20,14 +23,23 @@ export function KeysPage() {
   const [editingKey, setEditingKey] = useState<KeyDto | null>(null)
   const [displayName, setDisplayName] = useState('')
   const [siteId, setSiteId] = useState('')
+  const [selectedTerminalId, setSelectedTerminalId] = useState('')
+  const [availableNodes, setAvailableNodes] = useState<number | null>(null)
 
   async function reload() {
     setBusy(true)
     setError(null)
     try {
-      const [keyRows, siteRows] = await Promise.all([api.listKeys(), api.listSites()])
+      const [keyRows, siteRows, terminalRows, slotRows] = await Promise.all([
+        api.listKeys(),
+        api.listSites(),
+        api.listTerminals(),
+        api.listKeySlots(),
+      ])
       setKeys(keyRows)
       setSites(siteRows)
+      setTerminals(terminalRows)
+      setKeySlots(slotRows)
       if (!siteId && siteRows[0]) setSiteId(siteRows[0].id)
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'Failed to load keys')
@@ -39,6 +51,33 @@ export function KeysPage() {
   useEffect(() => {
     void reload()
   }, [])
+
+  // Which terminal(s) belong to the site currently selected in the Add-key dialog — recomputed
+  // whenever siteId changes while the dialog is open for a NEW key (never for editing an
+  // existing one; changing an existing key's unit doesn't touch its node assignment — see the
+  // known-gap note in CLAUDE_WEB.md).
+  const terminalsForSelectedSite = useMemo(
+    () => terminals.filter((t) => t.siteId === siteId),
+    [terminals, siteId],
+  )
+
+  useEffect(() => {
+    if (editingKey || !open) return
+    if (terminalsForSelectedSite.length === 1) {
+      setSelectedTerminalId(terminalsForSelectedSite[0].id)
+      void countAvailableNodes(terminalsForSelectedSite[0]).then(setAvailableNodes)
+    } else {
+      setSelectedTerminalId('')
+      setAvailableNodes(null)
+    }
+  }, [open, editingKey, terminalsForSelectedSite])
+
+  function nodeLabelFor(key: KeyDto): string {
+    const slot = keySlots.find((s) => s.managedKeyId === key.id)
+    if (!slot) return 'Not assigned'
+    const terminal = terminals.find((t) => t.id === slot.terminalId)
+    return `Node ${slot.nodeAddress}` + (terminal ? ` (${terminal.name})` : '')
+  }
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase()
@@ -79,7 +118,23 @@ export function KeysPage() {
           expectedRevision: editingKey.revision,
         })
       } else {
-        await api.createKey({ siteId, displayName: displayName.trim() })
+        const created = await api.createKey({ siteId, displayName: displayName.trim() })
+        const targetTerminal = terminalsForSelectedSite.find((t) => t.id === selectedTerminalId)
+        if (targetTerminal) {
+          const assignment = await assignKeyToNextAvailableNode(targetTerminal, created.id)
+          if (!assignment.ok) {
+            setError(
+              assignment.reason === 'CAPACITY_FULL'
+                ? `“${targetTerminal.name}” has no free key nodes left (${targetTerminal.configuredSlotCount} configured). The key was created but is not assigned to a cabinet slot.`
+                : `Key was created, but assigning a cabinet node failed: ${assignment.message}`,
+            )
+          }
+        } else if (terminalsForSelectedSite.length === 0) {
+          const site = sites.find((s) => s.id === siteId)
+          setError(
+            `“${site?.name ?? 'This unit'}” has no cabinet registered yet — the key was created without a slot assignment.`,
+          )
+        }
       }
       setOpen(false)
       setEditingKey(null)
@@ -153,6 +208,7 @@ export function KeysPage() {
               <tr>
                 <th>Key</th>
                 <th>Unit</th>
+                <th>Cabinet node</th>
                 <th>Enrollment</th>
                 <th className="col-actions">Actions</th>
               </tr>
@@ -162,6 +218,7 @@ export function KeysPage() {
                 <tr key={key.id}>
                   <td className="cell-title">{key.displayName}</td>
                   <td>{sites.find((s) => s.id === key.siteId)?.name ?? '—'}</td>
+                  <td>{nodeLabelFor(key)}</td>
                   <td>
                     {key.fobEnrollmentReference
                       ? <span className="badge badge-success">Enrolled</span>
@@ -210,9 +267,50 @@ export function KeysPage() {
                 ))}
               </select>
             </div>
+            {!editingKey && terminalsForSelectedSite.length > 1 && (
+              <div className="field">
+                <label>Cabinet</label>
+                <select
+                  value={selectedTerminalId}
+                  onChange={(e) => {
+                    setSelectedTerminalId(e.target.value)
+                    const t = terminalsForSelectedSite.find((x) => x.id === e.target.value)
+                    if (t) void countAvailableNodes(t).then(setAvailableNodes)
+                  }}
+                  required
+                >
+                  <option value="" disabled>
+                    Select the cabinet this key's node will be assigned in
+                  </option>
+                  {terminalsForSelectedSite.map((t) => (
+                    <option key={t.id} value={t.id}>{t.name} (Box {t.boxAddress})</option>
+                  ))}
+                </select>
+              </div>
+            )}
+            {!editingKey && terminalsForSelectedSite.length === 0 && (
+              <p className="dialog-copy muted">
+                No cabinet is registered for this unit yet — the key will be created without a
+                node assignment.
+              </p>
+            )}
+            {!editingKey && selectedTerminalId && availableNodes != null && (
+              <p className={availableNodes === 0 ? 'dialog-copy error-banner' : 'dialog-copy muted'}>
+                {availableNodes === 0
+                  ? 'This cabinet has no free key nodes left — add more capacity before adding another key here.'
+                  : `${availableNodes} free key node(s) on the selected cabinet.`}
+              </p>
+            )}
             <div className="dialog-actions">
               <Button variant="outlined" icon={X} onClick={() => { setOpen(false); setEditingKey(null) }}>Cancel</Button>
-              <Button type="submit" icon={Check} loading={busy}>{editingKey ? 'Save changes' : 'Save'}</Button>
+              <Button
+                type="submit"
+                icon={Check}
+                loading={busy}
+                disabled={!editingKey && terminalsForSelectedSite.length === 1 && availableNodes === 0}
+              >
+                {editingKey ? 'Save changes' : 'Save'}
+              </Button>
             </div>
           </form>
         </div>

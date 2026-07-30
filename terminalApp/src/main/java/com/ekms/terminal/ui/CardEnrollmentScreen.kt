@@ -51,8 +51,13 @@ fun CardEnrollmentScreen(
     onEnrollKeyCard: (keyId: String, rawUid: String) -> UidEnrollmentResult,
     onRevokePersonnelCard: (userId: String) -> UidEnrollmentSummary?,
     onRevokeKeyCard: (keyId: String) -> UidEnrollmentSummary?,
+    initialCategory: CardEnrollmentCategory = CardEnrollmentCategory.PERSONNEL,
+    /** Personnel Management (per-user) and Key enrollment's key-card sub-entry each scope this
+     * screen to one category — hides the Personnel/Key toggle rather than letting the operator
+     * wander into the other category from a screen entered for one specific record. */
+    lockCategory: Boolean = false,
 ) {
-    var category by remember { mutableStateOf(CardEnrollmentCategory.PERSONNEL) }
+    var category by remember { mutableStateOf(initialCategory) }
     var selectedUserId by remember(users) { mutableStateOf(users.firstOrNull()?.id.orEmpty()) }
     var selectedKeyId by remember(keys) { mutableStateOf(keys.firstOrNull()?.id.orEmpty()) }
     var readerState by remember { mutableStateOf<PublicCardReaderState>(PublicCardReaderState.Idle) }
@@ -126,20 +131,22 @@ fun CardEnrollmentScreen(
         notice?.let { message -> SuperAdminNoticeCard(message) }
         resultMessage?.let { message -> SuperAdminNoticeCard(message) }
 
-        Text("Card kind", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
-        Box(modifier = Modifier.fillMaxWidth()) {
-            OutlinedButton(
-                onClick = {
-                    category = if (category == CardEnrollmentCategory.PERSONNEL) {
-                        CardEnrollmentCategory.KEY
-                    } else {
-                        CardEnrollmentCategory.PERSONNEL
-                    }
-                },
-                modifier = Modifier.fillMaxWidth(),
-                enabled = !scanning,
-            ) {
-                Text("Selected: " + category.label + " · change")
+        if (!lockCategory) {
+            Text("Card kind", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+            Box(modifier = Modifier.fillMaxWidth()) {
+                OutlinedButton(
+                    onClick = {
+                        category = if (category == CardEnrollmentCategory.PERSONNEL) {
+                            CardEnrollmentCategory.KEY
+                        } else {
+                            CardEnrollmentCategory.PERSONNEL
+                        }
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                    enabled = !scanning,
+                ) {
+                    Text("Selected: " + category.label + " · change")
+                }
             }
         }
 
@@ -211,7 +218,7 @@ fun CardEnrollmentScreen(
     }
 }
 
-private enum class CardEnrollmentCategory(val label: String) {
+enum class CardEnrollmentCategory(val label: String) {
     PERSONNEL("Personnel card"),
     KEY("Key card"),
 }

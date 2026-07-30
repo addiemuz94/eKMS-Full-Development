@@ -130,6 +130,10 @@ fun TerminalCloseToDeadlineScreen(
                     onClick = ::submitManual,
                     modifier = Modifier.fillMaxWidth(),
                     enabled = manualTime.isNotBlank(),
+                    // Confirmed decision (see CLAUDE_TERMINAL.md Completed history): this
+                    // screen's click sound is allowed even though it's temporally adjacent to
+                    // the Take Flow beep-loop/voice-line HAL interaction bug — uses
+                    // IconActionButton's playSound=true default, no override needed.
                 )
             }
         }

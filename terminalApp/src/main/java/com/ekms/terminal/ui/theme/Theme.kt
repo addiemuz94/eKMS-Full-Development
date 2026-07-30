@@ -6,9 +6,12 @@ import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.compositeOver
+import androidx.compose.ui.platform.LocalContext
+import com.ekms.terminal.hardware.AudioFeedbackController
 
 /**
  * Brand tokens with no direct Material3 [androidx.compose.material3.ColorScheme]
@@ -66,6 +69,43 @@ val DarkEkmsColors = EkmsColors(
 )
 
 val LocalEkmsColors = staticCompositionLocalOf { EkmsColors() }
+
+/**
+ * App-wide UI click feedback (Part 2 of the immersive-mode/click-sound pass). A plain `() ->
+ * Unit` rather than exposing the whole [AudioFeedbackController] — shared components
+ * (`SoftCard`, `SoftPrimaryButton`, `IconActionButton`, etc.) only ever need "play the click,"
+ * never the beep/voice-line API surface, so the composition local's shape stays minimal rather
+ * than coupling every button-ish component to the full controller class. Default is a no-op so
+ * a `@Preview` or any composable rendered outside [EkmsTerminalTheme] doesn't crash.
+ *
+ * Provided from inside [EkmsTerminalTheme] rather than threaded down from [TerminalAdminApp]'s
+ * top level deliberately: `TerminalAdminApp` calls `EkmsTerminalTheme { ... }` from three
+ * separate call sites (pairing gate, boot splash, main scaffold — each an early-return branch),
+ * and wrapping the CompositionLocalProvider here means all three automatically get click
+ * support with zero changes to any of those call sites. Trade-off, flagged rather than silently
+ * accepted: because those three call sites are different positions in the composition tree, the
+ * underlying [AudioFeedbackController] instance below is recreated (and its click sample
+ * reloaded) at the pairing->boot-splash and boot-splash->main transitions — a minor, one-time-
+ * per-launch inefficiency, not a correctness bug (`ensureClickSoundPoolReady()`-style lazy
+ * reload handles it gracefully), not worth the larger refactor of hoisting this above
+ * `TerminalAdminApp`'s early-return branches.
+ */
+val LocalAudioClick = staticCompositionLocalOf<() -> Unit> { {} }
+
+/**
+ * Creates (once per [EkmsTerminalTheme] composition — see [LocalAudioClick]'s doc for why that's
+ * not quite "once per app launch") the [AudioFeedbackController] instance that backs
+ * [LocalAudioClick], and returns its [AudioFeedbackController.playClick] bound as a plain
+ * lambda. This instance is never used for [AudioFeedbackController.beep]/
+ * [AudioFeedbackController.playVoiceLine] — those stay on their own screen-scoped instances in
+ * the Key Take/Return Flow screens, untouched by this pass.
+ */
+@Composable
+private fun rememberAudioClickPlayer(): () -> Unit {
+    val context = LocalContext.current
+    val controller = remember(context) { AudioFeedbackController(context) }
+    return remember(controller) { { controller.playClick() } }
+}
 
 /**
  * Semantic tones with a dedicated "soft chip/card" fill (Phase 9B fix) — success/warning/info.
@@ -248,7 +288,10 @@ fun EkmsTerminalTheme(darkTheme: Boolean = isSystemInDarkTheme(), content: @Comp
         )
     }
 
-    CompositionLocalProvider(LocalEkmsColors provides ekmsColors) {
+    CompositionLocalProvider(
+        LocalEkmsColors provides ekmsColors,
+        LocalAudioClick provides rememberAudioClickPlayer(),
+    ) {
         MaterialTheme(
             colorScheme = colorScheme,
             typography = EkmsTypography,

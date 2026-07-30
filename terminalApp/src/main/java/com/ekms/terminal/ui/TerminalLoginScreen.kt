@@ -29,6 +29,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
+import com.ekms.terminal.ui.theme.LocalAudioClick
 import com.ekms.terminal.ui.theme.LocalEkmsColors
 
 /** Which method screen to show under [SuperAdminRoute.LOGIN] once a logo is tapped. `null`
@@ -165,6 +166,7 @@ internal fun ThemeModeToggle(
     onToggle: () -> Unit,
 ) {
     val colors = LocalEkmsColors.current
+    val playClick = LocalAudioClick.current
     Row(
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -176,7 +178,7 @@ internal fun ThemeModeToggle(
         )
         Switch(
             checked = isDarkTheme,
-            onCheckedChange = { onToggle() },
+            onCheckedChange = { playClick(); onToggle() },
             colors = SwitchDefaults.colors(
                 checkedTrackColor = colors.primary,
                 checkedThumbColor = Color.White,

@@ -38,6 +38,10 @@ object ApiPaths {
     /** Super Admin. {id} is terminals.id. GET/PATCH cabinet behavioral settings. */
     const val ADMIN_TERMINAL_CABINET_SETTINGS = "/v1/admin/terminals/{id}/cabinet-settings"
     const val ADMIN_KEYS = "/v1/admin/keys"
+    /** TERMINAL_DEVICE-only (see auth.js's allowlist). {id} is managed_keys.id. Reports an
+     * opaque fob enrollment reference for a key already assigned a KeySlot — never a raw NFC
+     * UID. See [FobEnrollmentCompleteRequest]/[FobEnrollmentResponse]. */
+    const val ADMIN_KEY_FOB_ENROLLMENT_COMPLETE = "/v1/admin/keys/{id}/fob-enrollment/complete"
     const val ADMIN_KEY_SLOTS = "/v1/admin/key-slots"
     const val ADMIN_ACCESS_GRANTS = "/v1/admin/access-grants"
     const val ADMIN_KEY_CHECKOUTS = "/v1/admin/key-checkouts"
@@ -518,6 +522,18 @@ data class KeyUpsertRequest(
     val displayName: String,
     val fobEnrollmentReference: String? = null,
     val expectedRevision: Long? = null,
+)
+
+/**
+ * Request body for [ApiPaths.ADMIN_KEY_FOB_ENROLLMENT_COMPLETE]. [enrollmentReference] is an
+ * opaque reference only (e.g. `cardref_<uuid>`, the same convention
+ * `EncryptedUidEnrollmentStore` already generates) — never a raw NFC UID, enforced server-side
+ * too (boundary #2).
+ */
+@Serializable
+data class FobEnrollmentCompleteRequest(
+    val enrollmentReference: String,
+    val terminalId: String,
 )
 
 /**

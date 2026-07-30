@@ -208,6 +208,13 @@ enum class AuditEventType {
     KEY_FOB_REPLACED,
     KEY_FOB_REVOKED,
     KEY_FOB_ENROLLMENT_DENIED,
+    /** Terminal-local only: the background auto-scan (Key Attachment) captured and locally
+     * stored a fob's UID successfully, but the completion report to the backend
+     * (ManagedKey.fobEnrollmentReference) failed (offline, timeout, server error). The local
+     * capture is never undone or blocked on this — same non-blocking-sync shape as
+     * KEY_CHECKOUT_SYNC_FAILED. A later sync does not automatically retry the report, since the
+     * local store already considers this key enrolled — flagged as a known gap. */
+    KEY_FOB_ENROLLMENT_SYNC_FAILED,
     KEY_SLOT_CREATED,
     KEY_SLOT_UPDATED,
     ACCESS_GRANT_CREATED,
