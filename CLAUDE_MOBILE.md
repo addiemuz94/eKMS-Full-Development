@@ -47,6 +47,7 @@ Treat the newest Completed entry below as current for any other mobileApp topic.
 - **Default server = production (Haikal, Jul 2026).** `MobileApiClient.baseUrl` treats blank prefs as `https://kms-cvt.com` (same constant as terminal). Reinstall APK to pick up the blank-guard. Admin override not required for production.
 - **mobileApp Idempotency-Key on mutations (Haikal, Jul 2026).** Apply/Approve/Reject failed with `Mutating requests require Idempotency-Key header` because `MobileApiClient.send` never sent the header (web + terminal already do). Fixed: every non-GET request sends a fresh UUID `Idempotency-Key`. Rebuild/reinstall mobile APK before retesting Only B Apply.
 - **Loopback server URL → production (Haikal, Jul 2026).** Blank prefs already defaulted to `https://kms-cvt.com`, but a previously saved `http://127.0.0.1` / `localhost` still won and broke emulator/device connects. `resolveProductionBaseUrl` now remaps blank + loopback hosts to production on terminal and mobile.
+- **Technician approved PIN picker (Haikal, Jul 2026).** Approved requests are a dropdown; PIN is hidden until selected. API adds `siteName` + `cabinetNames` so the PIN card shows location and which key cabinet to use. Redeploy API + rebuild mobile APK.
 
 ### Known issues / not yet resolved
 

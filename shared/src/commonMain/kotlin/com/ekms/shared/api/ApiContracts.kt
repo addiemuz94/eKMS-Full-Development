@@ -1103,6 +1103,10 @@ data class KeyAccessRequestDto(
     /** TECHNICIAN or VENDOR — reuses [UserRole]'s existing values, no new enum. */
     val requesterRole: UserRole,
     val siteId: String,
+    /** Display name of [siteId] — filled by list/get/create for mobile PIN/cabinet copy. */
+    val siteName: String? = null,
+    /** Active key-cabinet names at [siteId] — which terminal(s) to use the passkey on. */
+    val cabinetNames: List<String> = emptyList(),
     /** Multi-key support: mirrors [AccessGrantDto.keyIds] rather than a single key id — a
      * request can cover one key or several (mirroring Key Menu's multi-key take), decided as
      * the schema shape that's easiest to extend either way. */

@@ -108,10 +108,25 @@ fun KeyAccessApprovalScreen(apiClient: MobileApiClient, onNotice: (String) -> Un
                 Card(modifier = Modifier.fillMaxWidth()) {
                     Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                         Text(
-                            "${request.requesterRole.name} · ${request.keyIds.size} key(s)",
+                            request.siteName?.takeIf { it.isNotBlank() }
+                                ?: "${request.requesterRole.name} · ${request.keyIds.size} key(s)",
                             style = MaterialTheme.typography.titleMedium,
                             fontWeight = FontWeight.SemiBold,
                         )
+                        if (!request.siteName.isNullOrBlank()) {
+                            Text(
+                                "${request.requesterRole.name} · ${request.keyIds.size} key(s)",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                        if (request.cabinetNames.isNotEmpty()) {
+                            Text(
+                                "Cabinet: ${request.cabinetNames.joinToString(", ")}",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
                         request.reason?.takeIf { it.isNotBlank() }?.let {
                             Text(it, style = MaterialTheme.typography.bodyMedium)
                         }

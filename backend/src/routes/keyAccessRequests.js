@@ -183,12 +183,14 @@ async function requestKeyIds(requestId) {
  * (`ApproveKeyAccessRequestResponse`) is unrelated and still returns it directly to whoever
  * calls approve, unchanged.
  */
-function mapRequest(row, keyIds, viewerUserId) {
+function mapRequest(row, keyIds, viewerUserId, siteName = null, cabinetNames = []) {
   return {
     id: row.id,
     requesterUserId: row.requester_user_id,
     requesterRole: row.requester_role,
     siteId: row.site_id,
+    siteName,
+    cabinetNames,
     keyIds,
     requestedAtEpochMillis: Number(row.requested_at_epoch_ms),
     requestedDurationMinutes: Number(row.requested_duration_minutes),
@@ -204,6 +206,25 @@ function mapRequest(row, keyIds, viewerUserId) {
     passkeyExpiresAtEpochMillis:
       row.passkey_expires_at_epoch_ms == null ? null : Number(row.passkey_expires_at_epoch_ms),
   };
+}
+
+/** Site + cabinet names for mobile/portal display (technician PIN screen needs cabinet). */
+async function mapRequestEnriched(row, keyIds, viewerUserId) {
+  const [sites] = await pool.execute(
+    `SELECT name FROM sites WHERE id = :id LIMIT 1`,
+    { id: row.site_id },
+  );
+  const [terminals] = await pool.execute(
+    `SELECT name FROM terminals WHERE site_id = :siteId AND lifecycle_state = 'ACTIVE' ORDER BY name ASC`,
+    { siteId: row.site_id },
+  );
+  return mapRequest(
+    row,
+    keyIds,
+    viewerUserId,
+    sites[0]?.name ?? null,
+    terminals.map((t) => t.name),
+  );
 }
 
 router.get('/', async (req, res) => {
@@ -223,7 +244,7 @@ router.get('/', async (req, res) => {
     const [rows] = await pool.execute(sql, params);
     const items = [];
     for (const row of rows) {
-      items.push(mapRequest(row, await requestKeyIds(row.id), req.auth?.sub));
+      items.push(await mapRequestEnriched(row, await requestKeyIds(row.id), req.auth?.sub));
     }
     return res.json({ items });
   }
@@ -262,7 +283,7 @@ router.get('/', async (req, res) => {
   const [rows] = await pool.execute(sql, params);
   const items = [];
   for (const row of rows) {
-    items.push(mapRequest(row, await requestKeyIds(row.id), req.auth?.sub));
+    items.push(await mapRequestEnriched(row, await requestKeyIds(row.id), req.auth?.sub));
   }
   res.json({ items });
 });
@@ -277,7 +298,7 @@ router.get('/:id', async (req, res) => {
   if (!(await assertMayReadRequest(req, rows[0]))) {
     return notFound(res, 'Key access request not found');
   }
-  return res.json(mapRequest(rows[0], await requestKeyIds(rows[0].id), req.auth?.sub));
+  return res.json(await mapRequestEnriched(rows[0], await requestKeyIds(rows[0].id), req.auth?.sub));
 });
 
 const createSchema = z.object({
@@ -396,7 +417,7 @@ router.post('/', async (req, res) => {
   });
 
   const [rows] = await pool.execute(`SELECT * FROM key_access_requests WHERE id = :id`, { id });
-  return res.status(201).json(mapRequest(rows[0], parsed.data.keyIds, req.auth?.sub));
+  return res.status(201).json(await mapRequestEnriched(rows[0], parsed.data.keyIds, req.auth?.sub));
 });
 
 router.post('/:id/approve', async (req, res) => {
@@ -485,7 +506,7 @@ router.post('/:id/reject', async (req, res) => {
   const [rows] = await pool.execute(`SELECT * FROM key_access_requests WHERE id = :id`, {
     id: req.params.id,
   });
-  return res.json(mapRequest(rows[0], await requestKeyIds(req.params.id), req.auth?.sub));
+  return res.json(await mapRequestEnriched(rows[0], await requestKeyIds(req.params.id), req.auth?.sub));
 });
 
 export default router;

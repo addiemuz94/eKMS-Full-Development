@@ -13,6 +13,10 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.ExposedDropdownMenuBox
+import androidx.compose.material3.ExposedDropdownMenuDefaults
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
@@ -44,9 +48,10 @@ import java.time.format.DateTimeParseException
 
 /**
  * Only B — exception Key Access Apply. Technician/Vendor pick a site outside standing
- * assignments, key(s) at that site, calendar pickup/return, and a reason. PIN after RA approval.
+ * assignments, key(s) at that site, calendar pickup/return, and a reason. PIN after RA approval
+ * is shown only after selecting an approved request from the dropdown (with site + cabinet).
  */
-@OptIn(ExperimentalLayoutApi::class)
+@OptIn(ExperimentalLayoutApi::class, ExperimentalMaterial3Api::class)
 @Composable
 fun KeyAccessRequestScreen(
     apiClient: MobileApiClient,
@@ -66,6 +71,8 @@ fun KeyAccessRequestScreen(
     var returnText by remember { mutableStateOf(defaultReturnText()) }
     var submitting by remember { mutableStateOf(false) }
     var loadingKeys by remember { mutableStateOf(false) }
+    var selectedApprovedId by remember { mutableStateOf<String?>(null) }
+    var approvedMenuExpanded by remember { mutableStateOf(false) }
 
     suspend fun reload() {
         loading = true
@@ -73,6 +80,13 @@ fun KeyAccessRequestScreen(
         try {
             exceptionSites = apiClient.listExceptionSites()
             myRequests = apiClient.listKeyAccessRequests(status = "ALL")
+            val approvedIds = myRequests
+                .filter { it.status == KeyAccessRequestStatus.APPROVED }
+                .map { it.id }
+                .toSet()
+            if (selectedApprovedId !in approvedIds) {
+                selectedApprovedId = null
+            }
         } catch (e: Exception) {
             loadError = e.message ?: "Couldn't load exception sites and requests."
         } finally {
@@ -167,10 +181,24 @@ fun KeyAccessRequestScreen(
             loadError != null -> Text(loadError!!, color = MaterialTheme.colorScheme.error)
             else -> {
                 val approved = myRequests.filter { it.status == KeyAccessRequestStatus.APPROVED }
-                approved.forEach { request -> ApprovedPasskeyCard(request) }
+                if (approved.isNotEmpty()) {
+                    ApprovedPasskeyPicker(
+                        approved = approved,
+                        selectedId = selectedApprovedId,
+                        menuExpanded = approvedMenuExpanded,
+                        onExpandedChange = { approvedMenuExpanded = it },
+                        onSelect = { id ->
+                            selectedApprovedId = id
+                            approvedMenuExpanded = false
+                        },
+                    )
+                }
 
                 Card(modifier = Modifier.fillMaxWidth()) {
-                    Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Column(
+                        modifier = Modifier.padding(16.dp),
+                        verticalArrangement = Arrangement.spacedBy(12.dp),
+                    ) {
                         Text("New request", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
                         if (exceptionSites.isEmpty()) {
                             Text(
@@ -266,44 +294,131 @@ fun KeyAccessRequestScreen(
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun ApprovedPasskeyCard(request: KeyAccessRequestDto) {
+private fun ApprovedPasskeyPicker(
+    approved: List<KeyAccessRequestDto>,
+    selectedId: String?,
+    menuExpanded: Boolean,
+    onExpandedChange: (Boolean) -> Unit,
+    onSelect: (String) -> Unit,
+) {
+    val selected = approved.firstOrNull { it.id == selectedId }
+
     Card(
         modifier = Modifier.fillMaxWidth(),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer),
     ) {
         Column(
             modifier = Modifier.fillMaxWidth().padding(20.dp),
-            verticalArrangement = Arrangement.spacedBy(6.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
         ) {
             Text(
-                "Approved — your passkey",
-                style = MaterialTheme.typography.labelLarge,
+                "Approved passkeys",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.SemiBold,
                 color = MaterialTheme.colorScheme.onPrimaryContainer,
             )
             Text(
-                text = request.generatedPasskey ?: "····",
-                style = MaterialTheme.typography.displaySmall.readout(),
+                "Select an approval to reveal its PIN and which cabinet to use.",
+                style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onPrimaryContainer,
-                fontWeight = FontWeight.Bold,
             )
-            request.passkeyExpiresAtEpochMillis?.let { expiresAt ->
+
+            ExposedDropdownMenuBox(
+                expanded = menuExpanded,
+                onExpandedChange = onExpandedChange,
+            ) {
+                OutlinedTextField(
+                    value = selected?.let { approvedDropdownLabel(it) } ?: "Select an approved request",
+                    onValueChange = {},
+                    readOnly = true,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .menuAnchor(),
+                    trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = menuExpanded) },
+                    colors = ExposedDropdownMenuDefaults.outlinedTextFieldColors(),
+                )
+                ExposedDropdownMenu(
+                    expanded = menuExpanded,
+                    onDismissRequest = { onExpandedChange(false) },
+                ) {
+                    approved.forEach { request ->
+                        DropdownMenuItem(
+                            text = {
+                                Column {
+                                    Text(approvedDropdownLabel(request), fontWeight = FontWeight.SemiBold)
+                                    Text(
+                                        cabinetSummary(request),
+                                        style = MaterialTheme.typography.bodySmall,
+                                    )
+                                }
+                            },
+                            onClick = { onSelect(request.id) },
+                        )
+                    }
+                }
+            }
+
+            if (selected != null) {
+                HorizontalDivider(color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.3f))
                 Text(
-                    "Enter at the terminal Passkey login. Valid until ${formatEpochMillis(expiresAt)}.",
+                    "Location: ${selected.siteName?.takeIf { it.isNotBlank() } ?: selected.siteId}",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onPrimaryContainer,
+                    fontWeight = FontWeight.SemiBold,
+                )
+                Text(
+                    "Cabinet: ${cabinetSummary(selected)}",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onPrimaryContainer,
                 )
+                Text(
+                    "PIN",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = MaterialTheme.colorScheme.onPrimaryContainer,
+                )
+                Text(
+                    text = selected.generatedPasskey ?: "····",
+                    style = MaterialTheme.typography.displaySmall.readout(),
+                    color = MaterialTheme.colorScheme.onPrimaryContainer,
+                    fontWeight = FontWeight.Bold,
+                )
+                selected.passkeyExpiresAtEpochMillis?.let { expiresAt ->
+                    Text(
+                        "Enter at that cabinet's Passkey login. Valid until ${formatEpochMillis(expiresAt)}.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onPrimaryContainer,
+                    )
+                }
             }
         }
     }
 }
 
+private fun approvedDropdownLabel(request: KeyAccessRequestDto): String {
+    val site = request.siteName?.takeIf { it.isNotBlank() } ?: "Location"
+    val reason = request.reason?.takeIf { it.isNotBlank() }?.let { " · $it" }.orEmpty()
+    return "$site$reason"
+}
+
+private fun cabinetSummary(request: KeyAccessRequestDto): String =
+    when {
+        request.cabinetNames.isEmpty() -> "No key cabinet registered at this location yet"
+        request.cabinetNames.size == 1 -> request.cabinetNames.first()
+        else -> request.cabinetNames.joinToString(", ")
+    }
+
 @Composable
 private fun KeyAccessRequestRow(request: KeyAccessRequestDto) {
     Card(modifier = Modifier.fillMaxWidth()) {
-        Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
             Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                Text("${request.keyIds.size} key(s)", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+                Text(
+                    request.siteName?.takeIf { it.isNotBlank() } ?: "${request.keyIds.size} key(s)",
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.SemiBold,
+                )
                 Text(
                     request.status.name,
                     style = MaterialTheme.typography.labelMedium,
@@ -314,6 +429,18 @@ private fun KeyAccessRequestRow(request: KeyAccessRequestDto) {
                     },
                 )
             }
+            if (request.cabinetNames.isNotEmpty()) {
+                Text(
+                    "Cabinet: ${cabinetSummary(request)}",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            Text(
+                "${request.keyIds.size} key(s)",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
             request.reason?.takeIf { it.isNotBlank() }?.let {
                 Text(it, style = MaterialTheme.typography.bodySmall)
             }
