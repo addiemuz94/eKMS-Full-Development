@@ -37,6 +37,7 @@ import io.ktor.serialization.kotlinx.json.json
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
+import java.util.UUID
 
 /**
  * HTTP client for the eKMS backend — mobileApp's foundation piece for real Super Admin
@@ -313,6 +314,10 @@ class MobileApiClient(context: Context) {
             if (authenticated) {
                 val token = accessToken ?: throw MobileApiException(401, "Not signed in to the server")
                 header(HttpHeaders.Authorization, "Bearer $token")
+            }
+            // Backend idempotency middleware requires this on every POST/PATCH/DELETE under /v1/admin.
+            if (method != HttpMethod.Get) {
+                header("Idempotency-Key", UUID.randomUUID().toString())
             }
             if (body != null) {
                 setBody(body)
