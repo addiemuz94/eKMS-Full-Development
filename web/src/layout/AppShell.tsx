@@ -22,16 +22,10 @@ const GROUPS: NavGroup[] = [
     icon: 'groupSettings',
     items: [
       { to: '/terminals', label: 'Terminals', icon: 'terminals' },
-      { to: '/units', label: 'Unit Settings', icon: 'units' },
       { to: '/personnel', label: 'Personnel Management', icon: 'personnel' },
       { to: '/keys', label: 'Key Settings', icon: 'keys' },
       { to: '/permissions', label: 'Permission Settings', icon: 'permissions' },
       { to: '/key-access', label: 'Key Access', icon: 'keyAccess' },
-      { to: '/events', label: 'Event Setup', icon: 'events' },
-      { to: '/schedules', label: 'Schedule Settings', icon: 'schedules' },
-      { to: '/multi-auth', label: 'Multi-authentication Rules', icon: 'multiAuth' },
-      { to: '/user-groups', label: 'User Groups', icon: 'userGroups' },
-      { to: '/key-groups', label: 'Key Groups', icon: 'keyGroups' },
     ],
   },
   {
