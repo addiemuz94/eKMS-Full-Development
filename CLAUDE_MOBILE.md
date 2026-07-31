@@ -53,6 +53,8 @@ Treat the newest Completed entry below as current for any other mobileApp topic.
 
 - **Cabinet login site scoping + Key Access revoke on web (Haikal, Jul 2026).** Technician/Vendor standing login (password/NFC/fingerprint/face) is blocked unless the cabinet's unit is in their `assignedSiteIds`; Super Admin / Regional Admin unchanged. Passkey/Only B still works via server-validated PIN. New `POST .../key-access-requests/:id/revoke` clears an approved PIN (`REVOKED`). Portal **Key Access** page (`/key-access`) lists requests with Approve / Reject / Revoke. Rebuild terminal + mobile APKs; API + `web/dist` redeployed.
 
+- **Passkey KEY_MENU empty keys + pickup window + mobile date/time pickers (Haikal, Jul 2026).** Passkey sessions now keep approved `keyIds` for KEY_MENU (exception techs have no AccessGrant). Take also falls back to local TerminalKey node mapping. `passkey-login` rejects PIN before `pickupAt`. Mobile Apply uses Material date→time pickers. Redeploy API; rebuild terminal + mobile APKs. If keys still missing after PIN, attach them to cabinet slots (Key Attachment) and Download/sync.
+
 ### Known issues / not yet resolved
 
 - **Only B Apply → approve → PIN not yet smoke-tested end-to-end on phone** — portal Technician + exception site/Region; mobile Apply → RA approve → PIN; then **Adi** passkey→take on F7G18P.

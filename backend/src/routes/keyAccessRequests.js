@@ -627,21 +627,14 @@ export async function passkeyLogin(req, res) {
     return badRequest(res, 'terminalId must reference an active terminal');
   }
 
-  // Deliberately does NOT mark the request "consumed" on a successful login — unlike a pairing
-  // code (strictly single-use), a passkey stays valid for repeated logins throughout its whole
-  // approved window (e.g. a vendor tapping in and out of a site visit more than once). Flagged:
-  // if single-use-per-approval turns out to be the intended behavior instead, add a
-  // `used_at_epoch_ms` guard here the same way pair-with-code guards on
-  // `pairing_code_consumed_at_epoch_ms`.
   const now = nowMs();
   const [rows] = await pool.execute(
     `SELECT * FROM key_access_requests
      WHERE generated_passkey = :code
        AND site_id = :siteId
        AND status = 'APPROVED'
-       AND passkey_expires_at_epoch_ms > :now
      LIMIT 1`,
-    { code: parsed.data.passkey, siteId: terminal.site_id, now },
+    { code: parsed.data.passkey, siteId: terminal.site_id },
   );
   const request = rows[0];
 
@@ -651,9 +644,41 @@ export async function passkeyLogin(req, res) {
       eventType: 'KEY_ACCESS_SESSION_LOGIN_FAILED',
       terminalId: terminal.id,
       siteId: terminal.site_id,
-      detail: 'Invalid, expired, or wrong-site passkey',
+      detail: 'Invalid, wrong-site, or non-approved passkey',
     });
     return res.status(401).json({ error: 'UNAUTHORIZED', message: 'Invalid or expired passkey' });
+  }
+
+  const expiresAt = Number(request.passkey_expires_at_epoch_ms);
+  if (!Number.isFinite(expiresAt) || expiresAt <= now) {
+    await recordLoginAttempt(ipAddress, false);
+    await writeAudit({
+      eventType: 'KEY_ACCESS_SESSION_LOGIN_FAILED',
+      terminalId: terminal.id,
+      siteId: terminal.site_id,
+      entityType: 'KEY_ACCESS_REQUEST',
+      entityId: request.id,
+      detail: 'Expired passkey',
+    });
+    return res.status(401).json({ error: 'UNAUTHORIZED', message: 'Passkey has expired' });
+  }
+
+  // Only B calendar window: PIN must not work before pickup.
+  if (request.pickup_at_epoch_ms != null && Number(request.pickup_at_epoch_ms) > now) {
+    await recordLoginAttempt(ipAddress, false);
+    await writeAudit({
+      eventType: 'KEY_ACCESS_SESSION_LOGIN_FAILED',
+      terminalId: terminal.id,
+      siteId: terminal.site_id,
+      entityType: 'KEY_ACCESS_REQUEST',
+      entityId: request.id,
+      detail: 'Passkey used before pickup window',
+    });
+    const pickupAt = Number(request.pickup_at_epoch_ms);
+    return res.status(401).json({
+      error: 'UNAUTHORIZED',
+      message: `Passkey not valid until pickup time (${new Date(pickupAt).toLocaleString('en-MY', { timeZone: 'Asia/Kuala_Lumpur' })})`,
+    });
   }
 
   const keyIds = await requestKeyIds(request.id);

@@ -330,6 +330,8 @@ fun TerminalAdminApp() {
         mutableStateOf(initialServerSnapshot?.accessGrants ?: KeySlotDemoData.accessGrants())
     }
     var takenKeyIds by remember { mutableStateOf(emptySet<String>()) }
+    /** Only B passkey session: approved key ids bypass AccessGrant filtering on KEY_MENU. */
+    var passkeySessionKeyIds by remember { mutableStateOf<Set<String>?>(null) }
     var takeFlow by remember { mutableStateOf<TakeFlow?>(null) }
     var multiKeyQueue by remember { mutableStateOf<MultiKeyTakeQueue?>(null) }
     var multiKeyQueuePending by remember { mutableStateOf(false) }
@@ -358,27 +360,35 @@ fun TerminalAdminApp() {
         snapshot.users
     }
 
-    // Key Menu: which keys the signed-in Technician/Vendor may take, straight from
-    // AccessGrant.keyIds — no parallel authorization model. A grant with an expired/not-yet-
-    // started validity window is excluded, same as the model's own fields are meant to be used
-    // for; Super Admin never needs this (their access is implicit, never a grant row).
-    val authorizedKeysForCurrentUser = remember(retrievalAccessGrants, retrievalKeys, session?.userId) {
-        val userId = session?.userId
-        if (userId == null) {
-            emptyList()
+    // Key Menu: standing grants OR Only B passkey-approved key ids for this session.
+    val authorizedKeysForCurrentUser = remember(
+        retrievalAccessGrants,
+        retrievalKeys,
+        session?.userId,
+        passkeySessionKeyIds,
+    ) {
+        val passkeyIds = passkeySessionKeyIds
+        if (passkeyIds != null) {
+            retrievalKeys.filter { key -> key.id in passkeyIds }
         } else {
-            val nowMillis = System.currentTimeMillis()
-            val authorizedKeyIds = retrievalAccessGrants
-                .asSequence()
-                .filter { grant -> grant.userId == userId }
-                .filter { grant ->
-                    val validFrom = grant.validFromEpochMillis
-                    val validUntil = grant.validUntilEpochMillis
-                    (validFrom == null || nowMillis >= validFrom) && (validUntil == null || nowMillis <= validUntil)
-                }
-                .flatMap { grant -> grant.keyIds.asSequence() }
-                .toSet()
-            retrievalKeys.filter { key -> key.id in authorizedKeyIds }
+            val userId = session?.userId
+            if (userId == null) {
+                emptyList()
+            } else {
+                val nowMillis = System.currentTimeMillis()
+                val authorizedKeyIds = retrievalAccessGrants
+                    .asSequence()
+                    .filter { grant -> grant.userId == userId }
+                    .filter { grant ->
+                        val validFrom = grant.validFromEpochMillis
+                        val validUntil = grant.validUntilEpochMillis
+                        (validFrom == null || nowMillis >= validFrom) &&
+                            (validUntil == null || nowMillis <= validUntil)
+                    }
+                    .flatMap { grant -> grant.keyIds.asSequence() }
+                    .toSet()
+                retrievalKeys.filter { key -> key.id in authorizedKeyIds }
+            }
         }
     }
 
@@ -487,13 +497,31 @@ fun TerminalAdminApp() {
      * on-screen selection).
      */
     fun beginPasskeyKeyTake(approvedKeyIds: Set<String>, expiresAtEpochMillis: Long) {
+        val localKeys = store.snapshot().keys
         val pairs = approvedKeyIds.mapNotNull { keyId ->
-            val key = retrievalKeys.firstOrNull { it.id == keyId } ?: return@mapNotNull null
-            val slot = retrievalSlots.firstOrNull { it.managedKeyId == keyId } ?: return@mapNotNull null
-            key to slot
+            val key = retrievalKeys.firstOrNull { it.id == keyId }
+            val slot = retrievalSlots.firstOrNull { it.managedKeyId == keyId }
+            if (key != null && slot != null) {
+                return@mapNotNull key to slot
+            }
+            // Fallback: Key Attachment / local TerminalKey may know the node even when the
+            // synced KeySlot row is missing managedKeyId (common after partial sync).
+            val terminalKey = localKeys.firstOrNull { it.id == keyId && it.nodeAddress > 0 }
+            if (terminalKey != null) {
+                return@mapNotNull managedKeyAndSlotFor(terminalKey)
+            }
+            null
         }
         if (pairs.isEmpty()) {
-            notice = "None of the approved keys are currently assigned to a cabinet slot."
+            val knownNames = approvedKeyIds.mapNotNull { id ->
+                retrievalKeys.firstOrNull { it.id == id }?.displayName
+                    ?: localKeys.firstOrNull { it.id == id }?.displayName
+            }
+            notice = if (knownNames.isEmpty()) {
+                "Approved keys are not on this cabinet yet. Download/sync the cabinet, attach keys to slots, then try the PIN again."
+            } else {
+                "Approved key(s) (${knownNames.joinToString()}) are not assigned to a slot on this cabinet. Attach them in Key Attachment, then try again."
+            }
             return
         }
         startMultiKeyQueue(pairs, CheckoutDeadlineChoice.passkeyRequest(expiresAtEpochMillis))
@@ -516,6 +544,9 @@ fun TerminalAdminApp() {
                 val response = apiClient.passkeyLogin(code, retrievalTerminal.id)
                 val role = runCatching { TerminalUserRole.valueOf(response.requesterRole) }
                     .getOrDefault(TerminalUserRole.TECHNICIAN)
+                // Refresh keys/slots before take so a recent portal attachment is visible.
+                runCatching { refreshSnapshot() }
+                passkeySessionKeyIds = response.keyIds
                 session = TerminalSession(
                     userId = response.requesterUserId,
                     displayName = response.requesterDisplayName.ifBlank { "Passkey visitor" },
@@ -529,8 +560,10 @@ fun TerminalAdminApp() {
                 route = SuperAdminRoute.KEY_MENU
                 beginPasskeyKeyTake(response.keyIds, response.expiresAtEpochMillis)
             } catch (error: TerminalApiException) {
+                passkeySessionKeyIds = null
                 notice = error.message
             } catch (error: Exception) {
+                passkeySessionKeyIds = null
                 notice = error.message ?: "Passkey sign-in failed."
             } finally {
                 syncBusy = false
@@ -1072,6 +1105,9 @@ fun TerminalAdminApp() {
         hardwareController.disconnect()
         apiClient.clearSession()
         session = null
+        passkeySessionKeyIds = null
+        multiKeyQueue = null
+        multiKeyQueuePending = false
         capturedFob = null
         notice = null
         loginMethod = null

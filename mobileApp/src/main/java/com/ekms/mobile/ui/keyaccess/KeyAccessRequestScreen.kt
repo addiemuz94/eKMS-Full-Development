@@ -41,10 +41,8 @@ import com.ekms.shared.api.KeyAccessRequestStatus
 import com.ekms.shared.api.KeyDto
 import com.ekms.shared.api.SiteDto
 import kotlinx.coroutines.launch
-import java.time.LocalDateTime
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
-import java.time.format.DateTimeParseException
 
 /**
  * Only B — exception Key Access Apply. Technician/Vendor pick a site outside standing
@@ -67,8 +65,8 @@ fun KeyAccessRequestScreen(
     var selectedSiteId by remember { mutableStateOf<String?>(null) }
     var selectedKeyIds by remember { mutableStateOf<Set<String>>(emptySet()) }
     var reason by remember { mutableStateOf("") }
-    var pickupText by remember { mutableStateOf(defaultPickupText()) }
-    var returnText by remember { mutableStateOf(defaultReturnText()) }
+    var pickupEpochMillis by remember { mutableStateOf(defaultPickupEpochMillis()) }
+    var returnEpochMillis by remember { mutableStateOf(defaultReturnEpochMillis()) }
     var submitting by remember { mutableStateOf(false) }
     var loadingKeys by remember { mutableStateOf(false) }
     var selectedApprovedId by remember { mutableStateOf<String?>(null) }
@@ -117,12 +115,8 @@ fun KeyAccessRequestScreen(
 
     fun submit() {
         val siteId = selectedSiteId ?: return
-        val pickup = parseLocalDateTimeToEpoch(pickupText)
-        val returnAt = parseLocalDateTimeToEpoch(returnText)
-        if (pickup == null || returnAt == null) {
-            onNotice("Use pickup/return as yyyy-MM-dd HH:mm")
-            return
-        }
+        val pickup = pickupEpochMillis
+        val returnAt = returnEpochMillis
         if (returnAt <= pickup) {
             onNotice("Return must be after pickup.")
             return
@@ -246,19 +240,15 @@ fun KeyAccessRequestScreen(
                                 }
                             }
 
-                            OutlinedTextField(
-                                value = pickupText,
-                                onValueChange = { pickupText = it },
-                                modifier = Modifier.fillMaxWidth(),
-                                label = { Text("Pickup (yyyy-MM-dd HH:mm)") },
-                                singleLine = true,
+                            DateTimePickerField(
+                                label = "Pickup",
+                                epochMillis = pickupEpochMillis,
+                                onEpochMillisChange = { pickupEpochMillis = it },
                             )
-                            OutlinedTextField(
-                                value = returnText,
-                                onValueChange = { returnText = it },
-                                modifier = Modifier.fillMaxWidth(),
-                                label = { Text("Return (yyyy-MM-dd HH:mm)") },
-                                singleLine = true,
+                            DateTimePickerField(
+                                label = "Return",
+                                epochMillis = returnEpochMillis,
+                                onEpochMillisChange = { returnEpochMillis = it },
                             )
                             OutlinedTextField(
                                 value = reason,
@@ -479,21 +469,3 @@ internal fun formatEpochMillis(epochMillis: Long): String {
     val zoned = instant.atZone(ZoneId.systemDefault())
     return DateTimeFormatter.ofPattern("MMM d, HH:mm").format(zoned)
 }
-
-private val localDateTimeFmt: DateTimeFormatter = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm")
-
-private fun defaultPickupText(): String =
-    LocalDateTime.now().plusHours(1).withMinute(0).withSecond(0).withNano(0).format(localDateTimeFmt)
-
-private fun defaultReturnText(): String =
-    LocalDateTime.now().plusHours(5).withMinute(0).withSecond(0).withNano(0).format(localDateTimeFmt)
-
-private fun parseLocalDateTimeToEpoch(text: String): Long? =
-    try {
-        LocalDateTime.parse(text.trim(), localDateTimeFmt)
-            .atZone(ZoneId.systemDefault())
-            .toInstant()
-            .toEpochMilli()
-    } catch (_: DateTimeParseException) {
-        null
-    }
