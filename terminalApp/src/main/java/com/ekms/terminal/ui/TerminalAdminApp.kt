@@ -139,6 +139,10 @@ fun TerminalAdminApp() {
     val applicationContext = LocalContext.current.applicationContext
     val store = remember(applicationContext) { TerminalAdminStore(applicationContext) }
     val apiClient = remember(applicationContext) { TerminalApiClient(applicationContext) }
+    // Migrate legacy blank serverAddress → production and keep API client in sync.
+    remember(store, apiClient) {
+        apiClient.syncBaseUrlFromSettings(store.ensureDefaultServerAddress().serverAddress)
+    }
     val syncOutbox = remember(applicationContext) { TerminalSyncOutbox(applicationContext) }
     val serverCache = remember(applicationContext) { TerminalServerCache(applicationContext) }
     val syncCoordinator = remember(apiClient, syncOutbox, store, serverCache) {

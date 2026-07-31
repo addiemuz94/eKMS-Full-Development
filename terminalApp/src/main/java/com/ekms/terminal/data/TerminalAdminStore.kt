@@ -430,11 +430,26 @@ class TerminalAdminStore(context: Context) {
         val normalized = settings.copy(
             cabinetName = settings.cabinetName.trim(),
             cabinetId = settings.cabinetId.trim(),
-            serverAddress = settings.serverAddress.trim(),
+            serverAddress = settings.serverAddress.trim().ifBlank {
+                TerminalApiClient.DEFAULT_BASE_URL
+            },
             activationCode = settings.activationCode.trim(),
         )
         saveCabinetSettings(normalized)
         return StoreResult.Success(normalized)
+    }
+
+    /**
+     * Ensures device-local [TerminalCabinetSettings.serverAddress] is production when blank
+     * (legacy installs saved `""`). Returns the settings after any migration write.
+     */
+    @Synchronized
+    fun ensureDefaultServerAddress(): TerminalCabinetSettings {
+        val current = readCabinetSettings()
+        if (current.serverAddress.isNotBlank()) return current
+        val migrated = current.copy(serverAddress = TerminalApiClient.DEFAULT_BASE_URL)
+        saveCabinetSettings(migrated)
+        return migrated
     }
 
     /**
@@ -670,16 +685,19 @@ class TerminalAdminStore(context: Context) {
     private fun readCabinetSettings(): TerminalCabinetSettings {
         val encoded = preferences.getString(KEY_CABINET_SETTINGS, null)
             ?: return TerminalCabinetSettings(
+                serverAddress = TerminalApiClient.DEFAULT_BASE_URL,
                 configuredKeyNodeCount = DEFAULT_KEY_NODE_COUNT,
                 takeWarningTimeSeconds = DEFAULT_TAKE_WARNING_TIME_SECONDS,
                 doorCloseWarningTimeSeconds = DEFAULT_DOOR_CLOSE_WARNING_TIME_SECONDS,
             )
         return runCatching {
             val item = JSONObject(encoded)
-            TerminalCabinetSettings(
+            val loaded = TerminalCabinetSettings(
                 cabinetName = item.optString("cabinetName", ""),
                 cabinetId = item.optString("cabinetId", ""),
-                serverAddress = item.optString("serverAddress", ""),
+                serverAddress = item.optString("serverAddress", "").ifBlank {
+                    TerminalApiClient.DEFAULT_BASE_URL
+                },
                 activationCode = item.optString("activationCode", ""),
                 configuredKeyNodeCount = if (item.has("configuredKeyNodeCount")) {
                     item.getInt("configuredKeyNodeCount")
@@ -700,8 +718,16 @@ class TerminalAdminStore(context: Context) {
                     DEFAULT_DOOR_CLOSE_WARNING_TIME_SECONDS
                 },
             )
+            // Persist production default when a legacy blank serverAddress was stored.
+            if (item.optString("serverAddress", "").isBlank() &&
+                loaded.serverAddress == TerminalApiClient.DEFAULT_BASE_URL
+            ) {
+                saveCabinetSettings(loaded)
+            }
+            loaded
         }.getOrElse {
             TerminalCabinetSettings(
+                serverAddress = TerminalApiClient.DEFAULT_BASE_URL,
                 configuredKeyNodeCount = DEFAULT_KEY_NODE_COUNT,
                 takeWarningTimeSeconds = DEFAULT_TAKE_WARNING_TIME_SECONDS,
                 doorCloseWarningTimeSeconds = DEFAULT_DOOR_CLOSE_WARNING_TIME_SECONDS,
@@ -830,7 +856,8 @@ data class TerminalAdminSnapshot(
 data class TerminalCabinetSettings(
     val cabinetName: String = "",
     val cabinetId: String = "",
-    val serverAddress: String = "",
+    /** Device-local API base; defaults to production. Admin Menu / pairing Advanced may override for LAN. */
+    val serverAddress: String = TerminalApiClient.DEFAULT_BASE_URL,
     val activationCode: String = "",
     val configuredKeyNodeCount: Int = 24,
     val keyReturnCertificationEnabled: Boolean = false,

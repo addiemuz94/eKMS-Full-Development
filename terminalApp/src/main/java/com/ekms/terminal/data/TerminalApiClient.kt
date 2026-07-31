@@ -91,9 +91,16 @@ class TerminalApiClient(context: Context) {
      * to encode a URL, so something has to supply one before pairing.
      */
     var baseUrl: String
-        get() = preferences.getString(KEY_BASE_URL, DEFAULT_BASE_URL)?.trim().orEmpty().trimEnd('/')
+        get() {
+            val stored = preferences.getString(KEY_BASE_URL, null)?.trim().orEmpty().trimEnd('/')
+            // Blank prefs (or a cleared value) must still hit production — never an empty base URL.
+            return stored.ifBlank { DEFAULT_BASE_URL }
+        }
         set(value) {
-            preferences.edit().putString(KEY_BASE_URL, value.trim().trimEnd('/')).apply()
+            val trimmed = value.trim().trimEnd('/')
+            preferences.edit()
+                .putString(KEY_BASE_URL, trimmed.ifBlank { DEFAULT_BASE_URL })
+                .apply()
         }
 
     var accessToken: String?
@@ -123,9 +130,7 @@ class TerminalApiClient(context: Context) {
 
     fun syncBaseUrlFromSettings(serverAddress: String) {
         val trimmed = serverAddress.trim().trimEnd('/')
-        if (trimmed.isNotBlank()) {
-            baseUrl = trimmed
-        }
+        baseUrl = trimmed.ifBlank { DEFAULT_BASE_URL }
     }
 
     suspend fun login(identifier: String, password: String, deviceId: String): LoginResponse {

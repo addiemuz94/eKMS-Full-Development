@@ -74,9 +74,16 @@ class MobileApiClient(context: Context) {
      * has no pairing-code-style onboarding, so there's no separate "fresh device" base URL case
      * to consider; a Super Admin can still override via a future settings screen if needed. */
     var baseUrl: String
-        get() = preferences.getString(KEY_BASE_URL, DEFAULT_BASE_URL)?.trim().orEmpty().trimEnd('/')
+        get() {
+            val stored = preferences.getString(KEY_BASE_URL, null)?.trim().orEmpty().trimEnd('/')
+            // Blank prefs must still hit production — never an empty base URL.
+            return stored.ifBlank { DEFAULT_BASE_URL }
+        }
         set(value) {
-            preferences.edit().putString(KEY_BASE_URL, value.trim().trimEnd('/')).apply()
+            val trimmed = value.trim().trimEnd('/')
+            preferences.edit()
+                .putString(KEY_BASE_URL, trimmed.ifBlank { DEFAULT_BASE_URL })
+                .apply()
         }
 
     var accessToken: String?
