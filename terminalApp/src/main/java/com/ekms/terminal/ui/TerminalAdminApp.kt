@@ -484,6 +484,59 @@ fun TerminalAdminApp() {
         }
     }
 
+    // TerminalKey (terminal-local, embeds box/node address) has no shared-
+    // model equivalent yet — see docs/Backend_Integration_Handover.md's
+    // "two incompatible key schemas" gap (ManagedKey+KeySlot, shared/demo,
+    // vs TerminalKey, terminal-local). Synthesizes the pair the existing
+    // return-flow plumbing expects from the one real card-swipe case that
+    // needs it, rather than reworking that plumbing's type wholesale.
+    // Declared above passkey/card-login callers — Kotlin local functions are not hoisted.
+    fun managedKeyAndSlotFor(terminalKey: TerminalKey): Pair<ManagedKey, KeySlot> {
+        val nowMillis = System.currentTimeMillis()
+        val lifecycle = LifecycleMetadata(createdAtEpochMillis = nowMillis, updatedAtEpochMillis = nowMillis)
+        val managedKey = ManagedKey(
+            id = terminalKey.id,
+            siteId = retrievalTerminal.siteId,
+            displayName = terminalKey.displayName,
+            lifecycle = lifecycle,
+        )
+        val slot = KeySlot(
+            id = "slot_" + terminalKey.id,
+            terminalId = retrievalTerminal.id,
+            nodeAddress = terminalKey.nodeAddress,
+            managedKeyId = terminalKey.id,
+            lifecycle = lifecycle,
+        )
+        return managedKey to slot
+    }
+
+    fun refreshSnapshot() {
+        snapshot = store.snapshot()
+        pendingOutboxCount = syncOutbox.pending().size
+        val serverSnapshot = syncCoordinator.cachedSnapshot()
+        if (serverSnapshot != null) {
+            retrievalTerminal = serverSnapshot.terminal.toManagedTerminalOption().copy(
+                configuredSlotCount = snapshot.cabinetSettings.configuredKeyNodeCount
+                    .takeIf { it > 0 }
+                    ?: serverSnapshot.terminal.configuredSlotCount,
+            )
+            retrievalKeys = serverSnapshot.keys
+            retrievalSlots = serverSnapshot.keySlots
+            retrievalAccessGrants = serverSnapshot.accessGrants
+        }
+    }
+
+    /**
+     * Blocks Technician/Vendor standing login at cabinets outside their unit assignments.
+     * Returns false when denied (sets [notice]); true when the session may proceed.
+     */
+    fun acceptStandingLogin(candidate: TerminalSession): Boolean {
+        val siteId = retrievalTerminal.siteId
+        if (candidate.mayLoginAtCabinet(siteId)) return true
+        notice = "You are not assigned to this key cabinet's unit. Sign in only at your assigned location, or use an approved passkey for exception access."
+        return false
+    }
+
     /**
      * Migration 009 follow-up: entry point for a passkey-authenticated take, reached from
      * [runPasskeyLogin] on a successful `POST /v1/terminal/passkey-login`. Deliberately does
@@ -639,31 +692,6 @@ fun TerminalAdminApp() {
             is TakeFlowOutcome.DoorLeftOpen ->
                 store.logEvent(AuditEventType.KEY_TAKE_DOOR_LEFT_OPEN, actorUserId, RecordType.KEY, outcome.key.id)
         }
-    }
-
-    // TerminalKey (terminal-local, embeds box/node address) has no shared-
-    // model equivalent yet — see docs/Backend_Integration_Handover.md's
-    // "two incompatible key schemas" gap (ManagedKey+KeySlot, shared/demo,
-    // vs TerminalKey, terminal-local). Synthesizes the pair the existing
-    // return-flow plumbing expects from the one real card-swipe case that
-    // needs it, rather than reworking that plumbing's type wholesale.
-    fun managedKeyAndSlotFor(terminalKey: TerminalKey): Pair<ManagedKey, KeySlot> {
-        val nowMillis = System.currentTimeMillis()
-        val lifecycle = LifecycleMetadata(createdAtEpochMillis = nowMillis, updatedAtEpochMillis = nowMillis)
-        val managedKey = ManagedKey(
-            id = terminalKey.id,
-            siteId = retrievalTerminal.siteId,
-            displayName = terminalKey.displayName,
-            lifecycle = lifecycle,
-        )
-        val slot = KeySlot(
-            id = "slot_" + terminalKey.id,
-            terminalId = retrievalTerminal.id,
-            nodeAddress = terminalKey.nodeAddress,
-            managedKeyId = terminalKey.id,
-            lifecycle = lifecycle,
-        )
-        return managedKey to slot
     }
 
     // Return Flow rework follow-up: wrong-slot identity check. Called from
@@ -976,22 +1004,6 @@ fun TerminalAdminApp() {
         }
     }
 
-    fun refreshSnapshot() {
-        snapshot = store.snapshot()
-        pendingOutboxCount = syncOutbox.pending().size
-        val serverSnapshot = syncCoordinator.cachedSnapshot()
-        if (serverSnapshot != null) {
-            retrievalTerminal = serverSnapshot.terminal.toManagedTerminalOption().copy(
-                configuredSlotCount = snapshot.cabinetSettings.configuredKeyNodeCount
-                    .takeIf { it > 0 }
-                    ?: serverSnapshot.terminal.configuredSlotCount,
-            )
-            retrievalKeys = serverSnapshot.keys
-            retrievalSlots = serverSnapshot.keySlots
-            retrievalAccessGrants = serverSnapshot.accessGrants
-        }
-    }
-
     /**
      * Key Attachment (Part 3) — background auto-scan-and-save. Called after Bootstrap/Download
      * bring down a fresh KeySlot list; never touched by Push/Read, which don't carry a snapshot.
@@ -1133,17 +1145,6 @@ fun TerminalAdminApp() {
 
             is AuthOutcome.Failed -> notice = outcome.message
         }
-    }
-
-    /**
-     * Blocks Technician/Vendor standing login at cabinets outside their unit assignments.
-     * Returns false when denied (sets [notice]); true when the session may proceed.
-     */
-    fun acceptStandingLogin(candidate: TerminalSession): Boolean {
-        val siteId = retrievalTerminal.siteId
-        if (candidate.mayLoginAtCabinet(siteId)) return true
-        notice = "You are not assigned to this key cabinet's unit. Sign in only at your assigned location, or use an approved passkey for exception access."
-        return false
     }
 
     fun runServerLogin(username: String, password: String) {

@@ -54,20 +54,21 @@ Treat the newest Completed entry below as current for any other mobileApp topic.
 - **Cabinet login site scoping + Key Access revoke on web (Haikal, Jul 2026).** Technician/Vendor standing login (password/NFC/fingerprint/face) is blocked unless the cabinet's unit is in their `assignedSiteIds`; Super Admin / Regional Admin unchanged. Passkey/Only B still works via server-validated PIN. New `POST .../key-access-requests/:id/revoke` clears an approved PIN (`REVOKED`). Portal **Key Access** page (`/key-access`) lists requests with Approve / Reject / Revoke. Rebuild terminal + mobile APKs; API + `web/dist` redeployed.
 
 - **Passkey KEY_MENU empty keys + pickup window + mobile date/time pickers (Haikal, Jul 2026).** Passkey sessions now keep approved `keyIds` for KEY_MENU (exception techs have no AccessGrant). Take also falls back to local TerminalKey node mapping. `passkey-login` rejects PIN before `pickupAt`. Mobile Apply uses Material date→time pickers. Redeploy API; rebuild terminal + mobile APKs. If keys still missing after PIN, attach them to cabinet slots (Key Attachment) and Download/sync.
+- **Only B smoke + compile fixes (Haikal, Jul 2026).** Live test: Technician Apply → RA Approve → Technician can use approved access (PIN / Access tab). Portal **Key Access** grant + revoke work. **Still broken:** Key Attachment / key enrollment on the cabinet — approved keys are not usable for take until nodes are attached and synced (see Known issues). Compile fixes this push: `KeyAccessApprovalScreen` wrong `import androidx.compose.ui.Modifier.modifier`; `TerminalAdminApp` local helpers (`managedKeyAndSlotFor` / `refreshSnapshot` / `acceptStandingLogin`) moved above first use (Kotlin locals are not hoisted).
 
 ### Known issues / not yet resolved
 
-- **Only B Apply → approve → PIN not yet smoke-tested end-to-end on phone** — portal Technician + exception site/Region; mobile Apply → RA approve → PIN; then **Adi** passkey→take on F7G18P.
+- **Key Attachment / enrollment still broken for Only B take** — Technician Apply → RA Approve → access works, but cabinet **Key Attachment** (dashboard "Key enrollment" / Key Attachment) is not reliably binding approved keys to physical nodes, so passkey→take still fails or shows no slot. Needs dedicated fix + hardware re-verify (also tracked in `CLAUDE_TERMINAL.md`).
 - **Alerts are request-status only** — no FCM push yet (Phase 3). Door-left-open / abandoned-return standing alerts not built.
 - **Dashboard map + directions** not built — Phase 4. Overview is counts/cards only.
 - **Vendor docs / PIC / two-stage approval** not built — Phase 2 (Haikal).
 - **Digital Key** — infeasible on current reader hardware for production; "Coming Soon" in app. Do not reopen without hardware change — see `CLAUDE_SHARED.md` Hardware Feature Findings.
-- **Passkey → real F7G18P take with due time** — never hardware-verified end-to-end. **Adi's part** on office cabinet. Broader terminal Known issues: see `CLAUDE_TERMINAL.md`.
+- **Passkey → real F7G18P take with due time** — blocked on Key Attachment above; then **Adi's part** on office cabinet for full take/return. Broader terminal Known issues: see `CLAUDE_TERMINAL.md`.
 
 ### Next steps (in order)
 
-1. **[Haikal] Only B phone smoke** — reinstall mobile APK (production default URL). Portal: Technician with standing sites; exception site with keys + `region_id` for RA. Technician Apply → RA Approve → PIN. Negative: home-site Apply must fail.
-2. **[Adi] Passkey → take** — F7G18P: enter PIN → take key → due time = return datetime. Also pairing e2e, Key Attachment, Return Flow / beep / boot, Key Menu as time allows.
+1. **[Haikal / Adi] Fix Key Attachment** — approved Only B keys must bind to cabinet slots and survive Download/sync so passkey→take works. Re-verify on F7G18P.
+2. **[Adi] Passkey → take** — after Attachment: enter PIN → take key → due time = return datetime. Also pairing e2e, Return Flow / beep / boot as time allows.
 3. **[Haikal] Phase 2** — Vendor docs (5 MB DB BLOB) + PIC + two-stage approval.
 4. **[Haikal] Phase 3** — FCM push + richer Alerts.
 5. **[Haikal] Phase 4** — dashboard map + directions.

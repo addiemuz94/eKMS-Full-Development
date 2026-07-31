@@ -54,6 +54,7 @@ See `CLAUDE_TERMINAL.md`'s "Web Portal — Registration Workflow: terminalApp's 
   - **New "Cabinet node" column** on both the wizard's Keys step table and the standalone Keys page's table (`Node N (Cabinet Name)` / "Not assigned") — visibility only, no new interaction.
   - **Known, explicitly out-of-scope gap**: `KeysPage.tsx`'s existing Edit action lets a Super Admin change an existing key's `siteId` (move it to a different unit) — this does **not** unlink/reassign its `KeySlot`, since only "add" and "delete" were in scope this pass. Editing a key's unit today leaves its old cabinet's node assignment pointing at a key that's nominally now at a different site — flagged, not fixed.
   - Verify: `npm run build` (tsc + vite) and `npm run lint` (oxlint) both pass clean — only pre-existing-pattern warnings (the same "missing `reload` dependency" `useEffect` warning already present on every other page in this app). **Not run against a dev server or the live API this pass** — no live click-through of the new auto-assign/capacity/multi-cabinet UI.
+- **Key Access page grant/revoke live-verified (Haikal, Jul 2026).** Portal `/key-access` Approve / Reject / Revoke work against production. Only B mobile Apply → RA Approve path confirmed in the same session; terminal Key Attachment still open — see `CLAUDE_MOBILE.md` / `CLAUDE_TERMINAL.md`.
 
 ### Known issues / not yet resolved
 
