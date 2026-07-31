@@ -76,14 +76,12 @@ class MobileApiClient(context: Context) {
      * to consider; a Super Admin can still override via a future settings screen if needed. */
     var baseUrl: String
         get() {
-            val stored = preferences.getString(KEY_BASE_URL, null)?.trim().orEmpty().trimEnd('/')
-            // Blank prefs must still hit production — never an empty base URL.
-            return stored.ifBlank { DEFAULT_BASE_URL }
+            val stored = preferences.getString(KEY_BASE_URL, null)
+            return resolveProductionBaseUrl(stored)
         }
         set(value) {
-            val trimmed = value.trim().trimEnd('/')
             preferences.edit()
-                .putString(KEY_BASE_URL, trimmed.ifBlank { DEFAULT_BASE_URL })
+                .putString(KEY_BASE_URL, resolveProductionBaseUrl(value))
                 .apply()
         }
 
@@ -345,6 +343,19 @@ class MobileApiClient(context: Context) {
         private const val KEY_PROFILE = "profile"
         const val DEFAULT_BASE_URL = "https://kms-cvt.com"
         private const val DEFAULT_DEVICE_ID = "mobile-android"
+
+        /** Same rule as terminalApp: blank / localhost / emulator loopback → production VPS. */
+        fun resolveProductionBaseUrl(raw: String?): String {
+            val trimmed = raw?.trim()?.trimEnd('/').orEmpty()
+            if (trimmed.isBlank()) return DEFAULT_BASE_URL
+            val lower = trimmed.lowercase()
+            val host = lower.removePrefix("https://").removePrefix("http://").substringBefore('/')
+                .substringBefore(':')
+            if (host == "localhost" || host == "127.0.0.1" || host == "10.0.2.2" || host == "::1") {
+                return DEFAULT_BASE_URL
+            }
+            return trimmed
+        }
     }
 }
 

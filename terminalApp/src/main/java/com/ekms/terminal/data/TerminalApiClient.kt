@@ -92,14 +92,12 @@ class TerminalApiClient(context: Context) {
      */
     var baseUrl: String
         get() {
-            val stored = preferences.getString(KEY_BASE_URL, null)?.trim().orEmpty().trimEnd('/')
-            // Blank prefs (or a cleared value) must still hit production — never an empty base URL.
-            return stored.ifBlank { DEFAULT_BASE_URL }
+            val stored = preferences.getString(KEY_BASE_URL, null)
+            return resolveProductionBaseUrl(stored)
         }
         set(value) {
-            val trimmed = value.trim().trimEnd('/')
             preferences.edit()
-                .putString(KEY_BASE_URL, trimmed.ifBlank { DEFAULT_BASE_URL })
+                .putString(KEY_BASE_URL, resolveProductionBaseUrl(value))
                 .apply()
         }
 
@@ -129,8 +127,7 @@ class TerminalApiClient(context: Context) {
     }
 
     fun syncBaseUrlFromSettings(serverAddress: String) {
-        val trimmed = serverAddress.trim().trimEnd('/')
-        baseUrl = trimmed.ifBlank { DEFAULT_BASE_URL }
+        baseUrl = resolveProductionBaseUrl(serverAddress)
     }
 
     suspend fun login(identifier: String, password: String, deviceId: String): LoginResponse {
@@ -624,6 +621,22 @@ class TerminalApiClient(context: Context) {
         private const val KEY_ACCESS_TOKEN = "access_token"
         private const val KEY_REFRESH_TOKEN = "refresh_token"
         const val DEFAULT_BASE_URL = "https://kms-cvt.com"
+
+        /**
+         * Blank or loopback URLs (localhost / 127.0.0.1 / emulator 10.0.2.2) are not valid
+         * production targets — force the live VPS. LAN IPs (192.168.x.x) are left alone.
+         */
+        fun resolveProductionBaseUrl(raw: String?): String {
+            val trimmed = raw?.trim()?.trimEnd('/').orEmpty()
+            if (trimmed.isBlank()) return DEFAULT_BASE_URL
+            val lower = trimmed.lowercase()
+            val host = lower.removePrefix("https://").removePrefix("http://").substringBefore('/')
+                .substringBefore(':')
+            if (host == "localhost" || host == "127.0.0.1" || host == "10.0.2.2" || host == "::1") {
+                return DEFAULT_BASE_URL
+            }
+            return trimmed
+        }
     }
 }
 
