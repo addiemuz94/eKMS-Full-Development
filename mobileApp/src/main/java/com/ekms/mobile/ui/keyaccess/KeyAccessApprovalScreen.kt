@@ -31,15 +31,22 @@ import kotlinx.coroutines.launch
  * (clears the PIN so terminal passkey-login fails). Scoping is server-side.
  */
 @Composable
-fun KeyAccessApprovalScreen(apiClient: MobileApiClient, onNotice: (String) -> Unit) {
+fun KeyAccessApprovalScreen(
+    apiClient: MobileApiClient,
+    refreshEpoch: Int = 0,
+    onLiveStatus: (serverOk: Boolean, syncing: Boolean) -> Unit = { _, _ -> },
+    onNotice: (String) -> Unit,
+) {
     val scope = rememberCoroutineScope()
     var loading by remember { mutableStateOf(true) }
     var loadError by remember { mutableStateOf<String?>(null) }
     var requests by remember { mutableStateOf<List<KeyAccessRequestDto>>(emptyList()) }
     var busyRequestId by remember { mutableStateOf<String?>(null) }
+    var hasData by remember { mutableStateOf(false) }
 
-    suspend fun reload() {
-        loading = true
+    suspend fun reload(showLoading: Boolean = true) {
+        if (showLoading) loading = true
+        onLiveStatus(true, true)
         loadError = null
         try {
             requests = apiClient.listKeyAccessRequests(status = "ALL")
@@ -48,14 +55,17 @@ fun KeyAccessApprovalScreen(apiClient: MobileApiClient, onNotice: (String) -> Un
                         it.status == KeyAccessRequestStatus.PENDING_RA ||
                         it.status == KeyAccessRequestStatus.APPROVED
                 }
+            hasData = true
+            onLiveStatus(true, false)
         } catch (e: Exception) {
             loadError = e.message ?: "Couldn't load key access requests."
+            onLiveStatus(false, false)
         } finally {
             loading = false
         }
     }
 
-    LaunchedEffect(Unit) { reload() }
+    LaunchedEffect(refreshEpoch) { reload(showLoading = !hasData) }
 
     fun approve(id: String) {
         busyRequestId = id
@@ -112,7 +122,7 @@ fun KeyAccessApprovalScreen(apiClient: MobileApiClient, onNotice: (String) -> Un
 
         when {
             loading -> CircularProgressIndicator()
-            loadError != null -> Text(loadError!!, color = MaterialTheme.colorScheme.error)
+            loadError != null && !hasData -> Text(loadError!!, color = MaterialTheme.colorScheme.error)
             else -> {
                 Text("Pending", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
                 if (pending.isEmpty()) {

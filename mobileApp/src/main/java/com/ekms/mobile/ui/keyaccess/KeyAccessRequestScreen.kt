@@ -61,6 +61,8 @@ import java.time.format.DateTimeFormatter
 fun KeyAccessRequestScreen(
     apiClient: MobileApiClient,
     profile: AuthUserProfile,
+    refreshEpoch: Int = 0,
+    onLiveStatus: (serverOk: Boolean, syncing: Boolean) -> Unit = { _, _ -> },
     onNotice: (String) -> Unit,
 ) {
     val scope = rememberCoroutineScope()
@@ -86,6 +88,7 @@ fun KeyAccessRequestScreen(
     var selectedApprovedId by remember { mutableStateOf<String?>(null) }
     var approvedMenuExpanded by remember { mutableStateOf(false) }
     var busyPicId by remember { mutableStateOf<String?>(null) }
+    var hasData by remember { mutableStateOf(false) }
 
     val docPicker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
         if (uri == null) return@rememberLauncherForActivityResult
@@ -110,8 +113,9 @@ fun KeyAccessRequestScreen(
         }
     }
 
-    suspend fun reload() {
-        loading = true
+    suspend fun reload(showLoading: Boolean = true) {
+        if (showLoading) loading = true
+        onLiveStatus(true, true)
         loadError = null
         try {
             exceptionSites = apiClient.listExceptionSites()
@@ -126,14 +130,17 @@ fun KeyAccessRequestScreen(
             if (selectedApprovedId !in approvedIds) {
                 selectedApprovedId = null
             }
+            hasData = true
+            onLiveStatus(true, false)
         } catch (e: Exception) {
             loadError = e.message ?: "Couldn't load exception sites and requests."
+            onLiveStatus(false, false)
         } finally {
             loading = false
         }
     }
 
-    LaunchedEffect(Unit) { reload() }
+    LaunchedEffect(refreshEpoch) { reload(showLoading = !hasData) }
 
     LaunchedEffect(selectedSiteId) {
         val siteId = selectedSiteId

@@ -14,6 +14,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -42,6 +43,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -1080,7 +1082,7 @@ fun TerminalAdminApp() {
         )
     }
 
-    fun refreshServerPersonnel() {
+    fun refreshServerPersonnel(quiet: Boolean = false) {
         if (!apiClient.isAuthenticated) return
         scope.launch {
             try {
@@ -1095,7 +1097,9 @@ fun TerminalAdminApp() {
                 store.replaceCachedPersonnel(mapped)
                 serverPersonnel = mapped
             } catch (error: Throwable) {
-                notice = "Could not load personnel from server: ${error.message ?: "Unknown error"}"
+                if (!quiet) {
+                    notice = "Could not load personnel from server: ${error.message ?: "Unknown error"}"
+                }
             }
         }
     }
@@ -1253,6 +1257,55 @@ fun TerminalAdminApp() {
         onDispose { networkStatusController.stop() }
     }
 
+    // Live portal pull: keep keys/slots/grants/cabinet settings current while online.
+    // Skips during take/return/Key Attachment so we don't fight hardware flows or the 3s slot poll.
+    var liveServerConnected by remember { mutableStateOf(false) }
+    var liveSyncInProgress by remember { mutableStateOf(false) }
+    val syncBusyLive by rememberUpdatedState(syncBusy)
+    val takeFlowLive by rememberUpdatedState(takeFlow)
+    val multiKeyQueueLive by rememberUpdatedState(multiKeyQueue)
+    val multiKeyQueuePendingLive by rememberUpdatedState(multiKeyQueuePending)
+    val pendingCheckoutLive by rememberUpdatedState(pendingCheckoutDecision)
+    val returnFlowLive by rememberUpdatedState(returnFlow)
+    val routeLive by rememberUpdatedState(route)
+    val serverLinkedLive by rememberUpdatedState(serverLinked)
+    LaunchedEffect(networkStatus.hasInternet) {
+        while (true) {
+            val hardwareBusy = takeFlowLive != null ||
+                multiKeyQueueLive != null ||
+                multiKeyQueuePendingLive ||
+                pendingCheckoutLive != null ||
+                (returnFlowLive != null && returnFlowLive !is ReturnFlow.SessionIdle) ||
+                routeLive == SuperAdminRoute.KEY_ATTACHMENT ||
+                syncBusyLive
+            val canPull = networkStatus.hasInternet &&
+                apiClient.isAuthenticated &&
+                snapshot.cabinetSettings.cabinetId.isNotBlank() &&
+                !hardwareBusy
+            if (canPull) {
+                liveSyncInProgress = true
+                val ok = runCatching {
+                    syncCoordinator.downloadFromServer()
+                    refreshSnapshot()
+                    if (serverLinkedLive) refreshServerPersonnel(quiet = true)
+                }.isSuccess
+                if (!ok) {
+                    runCatching { apiClient.refreshAccessToken() }
+                    liveServerConnected = runCatching {
+                        syncCoordinator.downloadFromServer()
+                        refreshSnapshot()
+                    }.isSuccess
+                } else {
+                    liveServerConnected = true
+                }
+                liveSyncInProgress = false
+            } else if (!networkStatus.hasInternet) {
+                liveServerConnected = false
+            }
+            delay(TerminalApiClient.LIVE_SYNC_INTERVAL_MILLIS)
+        }
+    }
+
     // Presence-only camera check for the startup diagnostic — see StartupDiagnosticsScreen's
     // cameraDiagnostic doc for why this does not instantiate the full FaceCameraController.
     val cameraManager = remember(applicationContext) {
@@ -1316,6 +1369,22 @@ fun TerminalAdminApp() {
                                 else -> "eKMS Terminal · " + (session?.displayName ?: "Session")
                             },
                         )
+                    },
+                    actions = {
+                        val chipText = when {
+                            liveSyncInProgress -> "Syncing…"
+                            !networkStatus.hasInternet -> "Offline"
+                            liveServerConnected && apiClient.isAuthenticated -> "Connected"
+                            apiClient.isAuthenticated -> "Reconnecting…"
+                            else -> "Not linked"
+                        }
+                        SoftAssistChip(
+                            text = chipText,
+                            success = liveServerConnected && networkStatus.hasInternet,
+                            attention = !networkStatus.hasInternet ||
+                                (apiClient.isAuthenticated && !liveServerConnected),
+                        )
+                        Spacer(modifier = Modifier.width(12.dp))
                     },
                 )
             },
