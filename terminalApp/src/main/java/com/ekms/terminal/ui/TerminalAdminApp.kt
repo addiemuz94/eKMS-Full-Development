@@ -1423,18 +1423,27 @@ fun TerminalAdminApp() {
                     key = activeReturnFlow.matchedKey,
                     slot = activeReturnFlow.matchedSlot,
                     abandonAtEpochMillis = activeReturnFlow.abandonAtEpochMillis,
-                    // Every other node with a real ManagedKey bound to it — the expected node
-                    // itself is excluded inside pollForKeyInsertion. Bounded to assigned slots,
-                    // not the full 1..127 address space and NOT every KeySlot row: an ACTIVE
-                    // KeySlot with managedKeyId == null is a normal, persistent state (e.g. a
-                    // deleted key's node, left unlinked-not-deleted so it can be reused — see
-                    // web/src/api/keySlotAssignment.ts) and must never alarm on physical
-                    // presence, since it has no key to be "wrong" relative to. Bug found (Jul
-                    // 2026): this previously mapped every retrievalSlots row regardless of
-                    // managedKeyId, so an unassigned-but-ACTIVE slot's node was swept and
-                    // falsely flagged wrong-slot/unresolved-presence. See that method's doc.
+                    // Every other node whose key is CURRENTLY CHECKED OUT (a genuinely empty,
+                    // landable slot right now) — the expected node itself is excluded inside
+                    // pollForKeyInsertion. NOT every assigned node in the cabinet: a key that's
+                    // still attached/resting in its own (locked or unlocked) slot reads its own
+                    // UID just fine via testMicroSwitchAndCard (0x17 needs no unlock — confirmed
+                    // by the door-closed probe) and was previously swept as a false "wrong slot"
+                    // hit every single cycle, forever, since it never leaves. Bug found (Jul
+                    // 2026, from ad hoc hardware testing): with only 2 assigned nodes, this made
+                    // Return Flow via NFC scan always flag "the other" node, regardless of which
+                    // key was actually scanned — confirmed via hardware that both nodes were
+                    // physically correct throughout. Restricting to takenKeyIds (populated only
+                    // on a confirmed physical fob removal during Take Flow, cleared only on a
+                    // successful return — see handleReturnFlowOutcome) means a node is only ever
+                    // a wrong-slot candidate while its own key is genuinely out of the cabinet.
+                    // Bounded to assigned slots, not the full 1..127 address space and NOT every
+                    // KeySlot row: an ACTIVE KeySlot with managedKeyId == null is a normal,
+                    // persistent state (e.g. a deleted key's node, left unlinked-not-deleted so
+                    // it can be reused — see web/src/api/keySlotAssignment.ts) and must never
+                    // alarm on physical presence, since it has no key to be "wrong" relative to.
                     wrongSlotCandidateNodeAddresses = retrievalSlots.mapNotNull { slot ->
-                        slot.nodeAddress.takeIf { slot.managedKeyId != null }
+                        slot.nodeAddress.takeIf { slot.managedKeyId != null && slot.managedKeyId in takenKeyIds }
                     },
                     checkoutSummary = activeReturnFlow.checkoutSummary,
                     doorCloseWarningTimeSeconds = snapshot.cabinetSettings.doorCloseWarningTimeSeconds,
@@ -1827,6 +1836,23 @@ fun TerminalAdminApp() {
                         onBeginAttachment = hardwareController::beginKeyAttachment,
                         onCancelAttachment = hardwareController::cancelKeyAttachment,
                         onSaveAttachment = { nodeAddress, managedKeyId, rawUidHex ->
+                            // Reinsert-save bug fix (Jul 2026, see CLAUDE_TERMINAL.md): mirrors
+                            // triggerKeyFobAutoScan's own stale-entry reconciliation, which this
+                            // guided flow never applied. If this node's assignment changed since
+                            // the last time a fob was captured here (the tracked previous key id
+                            // differs from the one being attached now), the old key's UID entry
+                            // is revoked first — otherwise the still-owned-by-the-old-key entry
+                            // would collide with this enroll() call below and produce
+                            // AlreadyAssigned for what is, from the operator's point of view, a
+                            // perfectly legitimate reattachment. This does NOT cover a genuinely
+                            // different physical fob showing up here unexpectedly (e.g. reusing
+                            // one spare test fob across several nodes during ad hoc testing) —
+                            // that case has no tracked reassignment to justify overriding, so it
+                            // still correctly blocks below with a specific message.
+                            val lastKnownForNode = keySlotAssignmentTracker.lastKnownManagedKeyId(nodeAddress)
+                            if (lastKnownForNode != null && lastKnownForNode != managedKeyId) {
+                                managedKeyFobStore.revoke(lastKnownForNode)
+                            }
                             val enrollResult = managedKeyFobStore.enroll(managedKeyId, rawUidHex, System.currentTimeMillis())
                             // AlreadyEnrolledToSelectedRecord happens when this is the reused
                             // attach-flow tail end of a brand-new registration (onRegisterNewKey
@@ -1834,6 +1860,23 @@ fun TerminalAdminApp() {
                             // too, not just Saved, so that path doesn't falsely report failure.
                             val uidSaved = enrollResult is UidEnrollmentResult.Saved ||
                                 enrollResult is UidEnrollmentResult.AlreadyEnrolledToSelectedRecord
+                            // Real root cause of the reported "Fob captured, but saving the
+                            // enrollment failed" regression report: NOT the keyCardStore write
+                            // below (it runs strictly after uidSaved is already computed here and
+                            // cannot affect it) — it's this pre-existing AlreadyAssigned branch,
+                            // unchanged by that fix. Surfaced with a specific, actionable message
+                            // instead of the generic UI failure text so it's no longer
+                            // indistinguishable from an actual bug.
+                            if (enrollResult is UidEnrollmentResult.AlreadyAssigned) {
+                                val conflictingKeyId = managedKeyFobStore.recordIdFor(rawUidHex)
+                                val conflictingKeyName = retrievalKeys
+                                    .firstOrNull { it.id == conflictingKeyId }
+                                    ?.displayName
+                                    ?: conflictingKeyId
+                                    ?: "a different key"
+                                notice = "This fob is already registered to $conflictingKeyName, not this key. " +
+                                    "Detach it from that key first, or attach the correct fob for this key."
+                            }
                             if (enrollResult is UidEnrollmentResult.Saved) {
                                 keySlotAssignmentTracker.recordManagedKeyId(nodeAddress, managedKeyId)
                                 try {
@@ -1951,13 +1994,57 @@ fun TerminalAdminApp() {
                                     )
                                     var slotFailureMessage: String? = null
                                     try {
-                                        apiClient.createKeySlot(
-                                            KeySlotUpsertRequest(
-                                                terminalId = retrievalTerminal.id,
-                                                nodeAddress = nodeAddress,
-                                                managedKeyId = createdKey.id,
-                                            ),
-                                        )
+                                        // Node-capacity bug fix (Jul 2026, see
+                                        // CLAUDE_TERMINAL.md): a node's KeySlot row can already
+                                        // exist, ACTIVE, with managedKeyId == null — e.g. a
+                                        // deleted key's slot, left unlinked-not-deleted so the
+                                        // node stays reusable (see
+                                        // web/src/api/keySlotAssignment.ts's identical
+                                        // reasoning). key-slots.js's duplicate-node check
+                                        // rejects ANY second ACTIVE row at the same node
+                                        // regardless of managedKeyId, so a blind createKeySlot
+                                        // POST always failed with "Node address already assigned
+                                        // on this terminal" for such a node — even though web
+                                        // (and this screen's own discovery sweep) both correctly
+                                        // treat it as free. Mirrors web's
+                                        // assignKeyToNextAvailableNode: fetch the live list,
+                                        // reuse via PATCH when an unassigned row already exists,
+                                        // only POST-create when none does. A live fetch (not the
+                                        // app-wide retrievalSlots cache) is required — the
+                                        // domain KeySlot type carries no revision field, and a
+                                        // PATCH needs the real current one.
+                                        val existingSlot = try {
+                                            apiClient.listKeySlots(retrievalTerminal.id)
+                                                .firstOrNull { it.nodeAddress == nodeAddress }
+                                        } catch (_: Throwable) {
+                                            // listKeySlots is not yet on
+                                            // TERMINAL_DEVICE_ALLOWED_ROUTES — a
+                                            // TERMINAL_DEVICE-only session 403s here. Falls back
+                                            // to the original create-only behavior rather than
+                                            // failing registration outright, so a genuinely-new
+                                            // node (no pre-existing row) still works exactly as
+                                            // before for those sessions.
+                                            null
+                                        }
+                                        if (existingSlot != null && existingSlot.managedKeyId == null) {
+                                            apiClient.updateKeySlot(
+                                                existingSlot.id,
+                                                KeySlotUpsertRequest(
+                                                    terminalId = retrievalTerminal.id,
+                                                    nodeAddress = nodeAddress,
+                                                    managedKeyId = createdKey.id,
+                                                    expectedRevision = existingSlot.revision,
+                                                ),
+                                            )
+                                        } else {
+                                            apiClient.createKeySlot(
+                                                KeySlotUpsertRequest(
+                                                    terminalId = retrievalTerminal.id,
+                                                    nodeAddress = nodeAddress,
+                                                    managedKeyId = createdKey.id,
+                                                ),
+                                            )
+                                        }
                                     } catch (slotError: Throwable) {
                                         slotFailureMessage = slotError.message ?: "Unknown error"
                                     }

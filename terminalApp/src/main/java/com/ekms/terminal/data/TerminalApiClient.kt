@@ -14,6 +14,7 @@ import com.ekms.shared.api.FobEnrollmentResponse
 import com.ekms.shared.api.KeyCheckoutDto
 import com.ekms.shared.api.KeyDto
 import com.ekms.shared.api.KeySlotDto
+import com.ekms.shared.api.KeySlotListResponse
 import com.ekms.shared.api.KeySlotUpsertRequest
 import com.ekms.shared.api.KeyUpsertRequest
 import com.ekms.shared.api.LoginRequest
@@ -592,6 +593,43 @@ class TerminalApiClient(context: Context) {
             send(
                 method = HttpMethod.Post,
                 path = ApiPaths.ADMIN_KEY_SLOTS,
+                body = json.encodeToString(request),
+                authenticated = true,
+                idempotent = true,
+            ),
+        )
+    }
+
+    /** Key Attachment new-key-registration's node-capacity bug fix (Jul 2026, see
+     * CLAUDE_TERMINAL.md): needed to detect an already-existing, unassigned (`managedKeyId ==
+     * null`) `KeySlot` row at the target node before deciding whether to [createKeySlot] (POST)
+     * or [updateKeySlot] (PATCH) — mirrors `web/src/api/client.ts`'s `listKeySlots`. Same
+     * route/shape; **not yet on `TERMINAL_DEVICE_ALLOWED_ROUTES`** (see auth.js) — a
+     * TERMINAL_DEVICE-only session gets a real 403 here, by design caught at the call site and
+     * treated as "couldn't check, fall back to create" rather than failing registration outright. */
+    suspend fun listKeySlots(terminalId: String): List<KeySlotDto> {
+        ensureBaseUrl()
+        return decode<KeySlotListResponse>(
+            send(
+                method = HttpMethod.Get,
+                path = "${ApiPaths.ADMIN_KEY_SLOTS}?terminalId=$terminalId",
+                body = null,
+                authenticated = true,
+                idempotent = false,
+            ),
+        ).items
+    }
+
+    /** Key Attachment new-key-registration's node-capacity bug fix (see [listKeySlots]'s doc) —
+     * reuses an existing unassigned `KeySlot` row instead of a duplicate-rejected `createKeySlot`
+     * POST. Same route/shape as `web/src/api/client.ts`'s `updateKeySlot`; **not yet on
+     * `TERMINAL_DEVICE_ALLOWED_ROUTES`**, same caveat as [listKeySlots]. */
+    suspend fun updateKeySlot(id: String, request: KeySlotUpsertRequest): KeySlotDto {
+        ensureBaseUrl()
+        return decode(
+            send(
+                method = HttpMethod.Patch,
+                path = "${ApiPaths.ADMIN_KEY_SLOTS}/$id",
                 body = json.encodeToString(request),
                 authenticated = true,
                 idempotent = true,
