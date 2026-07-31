@@ -1101,6 +1101,11 @@ button {
   color: inherit;
 }
 
+.map-filter-hint {
+  margin: 0;
+  font-size: 0.78rem;
+}
+
 .metric-wide {
   grid-column: span 2;
 }
@@ -1140,6 +1145,15 @@ button {
   gap: 12px;
   align-items: flex-start;
   margin-bottom: 12px;
+}
+
+.activity-filter {
+  min-width: 220px;
+}
+
+.activity-limit-note {
+  margin: 10px 0 0;
+  font-size: 0.82rem;
 }
 
 .filter-chips {

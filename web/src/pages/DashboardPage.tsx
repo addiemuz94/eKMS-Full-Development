@@ -143,15 +143,15 @@ export function DashboardPage() {
   }, [keySlots, selectedTerminalId])
 
   const activityRows = useMemo((): ActivityRow[] => {
+    let rows: ActivityRow[] = []
     if (activityKind === 'keys') {
-      return keyOps.map((row, idx) => ({
+      rows = keyOps.map((row, idx) => ({
         id: String(row.id ?? idx),
         when: Number(row.occurredAtEpochMillis ?? 0),
         label: String(row.eventType ?? 'Key event'),
         detail: String(row.detail ?? row.entityId ?? '—'),
       }))
-    }
-    if (activityKind === 'sync') {
+    } else if (activityKind === 'sync') {
       const fromAudit = auditEvents
         .filter((row) => SYNC_EVENT_TYPES.has(String(row.eventType ?? '')))
         .map((row, idx) => ({
@@ -178,16 +178,18 @@ export function DashboardPage() {
           label: 'Sync conflict',
           detail: `${String(c.entityType)} · rev ${String(c.serverRevision)}`,
         }))
-      return [...fromConflicts, ...fromAudit].sort((a, b) => b.when - a.when).slice(0, 80)
+      rows = [...fromConflicts, ...fromAudit]
+    } else {
+      rows = auditEvents
+        .filter((row) => !SYNC_EVENT_TYPES.has(String(row.eventType ?? '')))
+        .map((row, idx) => ({
+          id: String(row.id ?? idx),
+          when: Number(row.occurredAtEpochMillis ?? 0),
+          label: String(row.eventType ?? 'Audit event'),
+          detail: String(row.detail ?? row.entityId ?? '—'),
+        }))
     }
-    return auditEvents
-      .filter((row) => !SYNC_EVENT_TYPES.has(String(row.eventType ?? '')))
-      .map((row, idx) => ({
-        id: String(row.id ?? idx),
-        when: Number(row.occurredAtEpochMillis ?? 0),
-        label: String(row.eventType ?? 'Audit event'),
-        detail: String(row.detail ?? row.entityId ?? '—'),
-      }))
+    return rows.sort((a, b) => b.when - a.when).slice(0, 10)
   }, [activityKind, auditEvents, keyOps, syncConflicts, selectedTerminalId, selectedSiteId, terminals])
 
   async function onDownloadReport() {
@@ -356,26 +358,18 @@ export function DashboardPage() {
                       : 'All visible terminals and units'}
                 </p>
               </div>
-              <div className="filter-chips" role="tablist" aria-label="Activity type">
-                {(
-                  [
-                    ['audit', 'Audit events'],
-                    ['sync', 'Sync-related'],
-                    ['keys', 'Key checkout / return'],
-                  ] as const
-                ).map(([kind, label]) => (
-                  <button
-                    key={kind}
-                    type="button"
-                    role="tab"
-                    aria-selected={activityKind === kind}
-                    className={`filter-chip${activityKind === kind ? ' selected' : ''}`}
-                    onClick={() => setActivityKind(kind)}
-                  >
-                    {label}
-                  </button>
-                ))}
-              </div>
+              <label className="map-filter-label activity-filter">
+                Log type
+                <select
+                  value={activityKind}
+                  onChange={(e) => setActivityKind(e.target.value as ActivityKind)}
+                  aria-label="Activity log type"
+                >
+                  <option value="audit">Audit events</option>
+                  <option value="sync">Sync-related</option>
+                  <option value="keys">Key checkout / return</option>
+                </select>
+              </label>
             </div>
 
             {activityError && <div className="error-banner">{activityError}</div>}
@@ -401,6 +395,7 @@ export function DashboardPage() {
                     ))}
                   </tbody>
                 </table>
+                <p className="muted activity-limit-note">Showing up to 10 most recent rows.</p>
               </div>
             ) : (
               !activityLoading && (

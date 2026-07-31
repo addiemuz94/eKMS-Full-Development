@@ -85,16 +85,29 @@ export function latLngForTerminal(
   return { lat: 4.2105, lng: 101.9758, known: false }
 }
 
+export type RegionFilterMode = 'admin' | 'province'
+
+function siteMatchesRegionFilter(
+  site: SiteDto,
+  regionFilter: string,
+  mode: RegionFilterMode,
+): boolean {
+  if (regionFilter === 'all') return true
+  if (mode === 'admin') return site.regionId === regionFilter
+  return (site.province ?? '').trim() === regionFilter
+}
+
 export function buildTerminalPoints(
   sites: SiteDto[],
   terminals: TerminalDto[],
   regionFilter: string,
   siteFilter: string,
+  regionMode: RegionFilterMode = 'province',
 ): TerminalMapPoint[] {
   const siteById = new Map(sites.map((s) => [s.id, s]))
   let filteredSites = sites
   if (regionFilter !== 'all') {
-    filteredSites = filteredSites.filter((s) => s.regionId === regionFilter)
+    filteredSites = filteredSites.filter((s) => siteMatchesRegionFilter(s, regionFilter, regionMode))
   }
   if (siteFilter !== 'all') {
     filteredSites = filteredSites.filter((s) => s.id === siteFilter)
@@ -119,6 +132,14 @@ export function buildTerminalPoints(
     })
 }
 
+/** Prefer admin Regions when any unit is linked; otherwise Malaysian state/province on the unit. */
+export function resolveRegionFilterMode(sites: SiteDto[], regions: RegionDto[]): RegionFilterMode {
+  if (regions.length === 0) return 'province'
+  const regionIds = new Set(regions.map((r) => r.id))
+  if (sites.some((s) => s.regionId && regionIds.has(s.regionId))) return 'admin'
+  return 'province'
+}
+
 export function TerminalsMap({
   sites,
   terminals,
@@ -137,18 +158,41 @@ export function TerminalsMap({
   const markersRef = useRef<L.MarkerClusterGroup | null>(null)
   const tileLayerRef = useRef<L.TileLayer | null>(null)
   const icons = useMemo(() => makeIcons(), [])
+  const regionMode = useMemo(() => resolveRegionFilterMode(sites, regions), [sites, regions])
+
+  const regionOptions = useMemo(() => {
+    if (regionMode === 'admin') {
+      return regions
+        .slice()
+        .sort((a, b) => a.displayOrder - b.displayOrder || a.name.localeCompare(b.name))
+        .map((r) => ({ value: r.id, label: r.name }))
+    }
+    const names = new Set<string>()
+    for (const site of sites) {
+      const province = site.province?.trim()
+      if (province) names.add(province)
+    }
+    return [...names].sort((a, b) => a.localeCompare(b)).map((name) => ({ value: name, label: name }))
+  }, [regionMode, regions, sites])
 
   const points = useMemo(
-    () => buildTerminalPoints(sites, terminals, regionFilter, siteFilter),
-    [sites, terminals, regionFilter, siteFilter],
+    () => buildTerminalPoints(sites, terminals, regionFilter, siteFilter, regionMode),
+    [sites, terminals, regionFilter, siteFilter, regionMode],
   )
 
   const selected = points.find((point) => point.id === selectedTerminalId) ?? null
 
   const sitesInRegion = useMemo(() => {
     if (regionFilter === 'all') return sites
-    return sites.filter((s) => s.regionId === regionFilter)
-  }, [sites, regionFilter])
+    return sites.filter((s) => siteMatchesRegionFilter(s, regionFilter, regionMode))
+  }, [sites, regionFilter, regionMode])
+
+  useEffect(() => {
+    if (regionFilter === 'all') return
+    if (!regionOptions.some((option) => option.value === regionFilter)) {
+      onRegionFilterChange('all')
+    }
+  }, [regionFilter, regionOptions, onRegionFilterChange])
 
   useEffect(() => {
     if (!mapEl.current || mapRef.current) return
@@ -158,19 +202,21 @@ export function TerminalsMap({
         zoomControl: true,
         attributionControl: true,
         minZoom: 5,
-        maxZoom: 18,
+        maxZoom: 20,
       })
 
       const initial = tileForBasemap('satellite')
       tileLayerRef.current = L.tileLayer(initial.url, {
         attribution: initial.attribution,
-        maxZoom: 19,
+        maxZoom: 20,
+        maxNativeZoom: 19,
       }).addTo(map)
 
       map.fitBounds(MALAYSIA_BOUNDS, { padding: [24, 24] })
       markersRef.current = L.markerClusterGroup({
         showCoverageOnHover: false,
         maxClusterRadius: 50,
+        disableClusteringAtZoom: 16,
       }).addTo(map)
       mapRef.current = map
 
@@ -194,7 +240,8 @@ export function TerminalsMap({
     tileLayerRef.current?.remove()
     tileLayerRef.current = L.tileLayer(next.url, {
       attribution: next.attribution,
-      maxZoom: 19,
+      maxZoom: 20,
+      maxNativeZoom: 19,
     }).addTo(map)
   }, [basemap])
 
@@ -220,10 +267,10 @@ export function TerminalsMap({
     }
 
     if (points.length === 1) {
-      map.setView([points[0].lat, points[0].lng], 10)
+      map.setView([points[0].lat, points[0].lng], 17)
     } else if (points.length > 1) {
       const bounds = L.latLngBounds(points.map((p) => [p.lat, p.lng] as [number, number]))
-      map.fitBounds(bounds.pad(0.25), { maxZoom: 10 })
+      map.fitBounds(bounds.pad(0.2), { maxZoom: 17 })
     } else {
       map.fitBounds(MALAYSIA_BOUNDS, { padding: [24, 24] })
     }
@@ -233,7 +280,7 @@ export function TerminalsMap({
   useEffect(() => {
     if (!selected || !mapRef.current) return
     const map = mapRef.current
-    const targetZoom = Math.min(map.getMaxZoom(), Math.max(map.getZoom(), 12))
+    const targetZoom = Math.min(map.getMaxZoom(), Math.max(map.getZoom(), 17))
     map.flyTo([selected.lat, selected.lng], targetZoom, { animate: true })
   }, [selected])
 
@@ -289,7 +336,7 @@ export function TerminalsMap({
 
           <div className="map-filter-stack">
             <label className="map-filter-label">
-              Region
+              {regionMode === 'admin' ? 'Region' : 'State / region'}
               <select
                 value={regionFilter}
                 onChange={(e) => {
@@ -298,14 +345,26 @@ export function TerminalsMap({
                   onSelectTerminal(null)
                 }}
               >
-                <option value="all">All regions</option>
-                {regions.map((region) => (
-                  <option key={region.id} value={region.id}>
-                    {region.name}
+                <option value="all">
+                  {regionMode === 'admin' ? 'All regions' : 'All states'}
+                </option>
+                {regionOptions.map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.label}
                   </option>
                 ))}
               </select>
             </label>
+            {regionMode === 'province' && regionOptions.length === 0 && (
+              <p className="muted map-filter-hint">
+                Set each unit&apos;s Malaysian state on Unit Settings so this filter has options.
+              </p>
+            )}
+            {regionMode === 'admin' && regionOptions.length === 0 && (
+              <p className="muted map-filter-hint">
+                No admin regions yet — assign a region on each unit to enable this filter.
+              </p>
+            )}
             <label className="map-filter-label">
               Unit
               <select

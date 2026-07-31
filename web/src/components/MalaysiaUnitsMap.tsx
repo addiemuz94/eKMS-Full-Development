@@ -82,19 +82,21 @@ export function MalaysiaUnitsMap({ sites }: Props) {
         zoomControl: true,
         attributionControl: true,
         minZoom: 5,
-        maxZoom: 18,
+        maxZoom: 20,
       })
 
       const initial = tileForBasemap('satellite')
       tileLayerRef.current = L.tileLayer(initial.url, {
         attribution: initial.attribution,
-        maxZoom: 19,
+        maxZoom: 20,
+        maxNativeZoom: 19,
       }).addTo(map)
 
       map.fitBounds(MALAYSIA_BOUNDS, { padding: [24, 24] })
       markersRef.current = L.markerClusterGroup({
         showCoverageOnHover: false,
         maxClusterRadius: 50,
+        disableClusteringAtZoom: 16,
       }).addTo(map)
       mapRef.current = map
 
@@ -119,7 +121,8 @@ export function MalaysiaUnitsMap({ sites }: Props) {
     tileLayerRef.current?.remove()
     tileLayerRef.current = L.tileLayer(next.url, {
       attribution: next.attribution,
-      maxZoom: 19,
+      maxZoom: 20,
+      maxNativeZoom: 19,
     }).addTo(map)
   }, [basemap])
 
@@ -142,10 +145,10 @@ export function MalaysiaUnitsMap({ sites }: Props) {
     }
 
     if (points.length === 1) {
-      map.setView([points[0].lat, points[0].lng], 8)
+      map.setView([points[0].lat, points[0].lng], 17)
     } else if (points.length > 1) {
       const bounds = L.latLngBounds(points.map((p) => [p.lat, p.lng] as [number, number]))
-      map.fitBounds(bounds.pad(0.35), { maxZoom: 8 })
+      map.fitBounds(bounds.pad(0.2), { maxZoom: 17 })
     } else {
       map.fitBounds(MALAYSIA_BOUNDS, { padding: [24, 24] })
     }
@@ -155,7 +158,7 @@ export function MalaysiaUnitsMap({ sites }: Props) {
   useEffect(() => {
     if (!selected || !mapRef.current) return
     const map = mapRef.current
-    const targetZoom = Math.min(map.getMaxZoom(), Math.max(map.getZoom(), 11))
+    const targetZoom = Math.min(map.getMaxZoom(), Math.max(map.getZoom(), 17))
     map.flyTo([selected.lat, selected.lng], targetZoom, { animate: true })
   }, [selected])
 
