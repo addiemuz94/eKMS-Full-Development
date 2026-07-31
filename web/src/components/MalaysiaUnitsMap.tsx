@@ -5,21 +5,27 @@ import 'leaflet.markercluster'
 import 'leaflet.markercluster/dist/MarkerCluster.css'
 import 'leaflet.markercluster/dist/MarkerCluster.Default.css'
 import type { SiteDto } from '../api/types'
+import { SegmentedControl } from './ui'
 import { MALAYSIA_BOUNDS, latLngForSite } from '../geo/malaysiaLocations'
 
 type Props = {
   sites: SiteDto[]
 }
 
-const LIGHT_TILE_URL = 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png'
-const LIGHT_TILE_ATTRIBUTION = '&copy; OpenStreetMap'
-// CartoDB's free, no-key "dark_all" basemap — verified reachable (returns real PNG tiles) before wiring in.
-const DARK_TILE_URL = 'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png'
-const DARK_TILE_ATTRIBUTION =
-  '&copy; OpenStreetMap contributors &copy; <a href="https://carto.com/attributions">CARTO</a>'
+type MapBasemap = 'satellite' | 'street'
 
-function isDarkThemeActive() {
-  return document.documentElement.getAttribute('data-theme') === 'dark'
+const STREET_TILE_URL = 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png'
+const STREET_TILE_ATTRIBUTION = '&copy; OpenStreetMap'
+const SATELLITE_TILE_URL =
+  'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}'
+const SATELLITE_TILE_ATTRIBUTION =
+  'Tiles &copy; Esri — Source: Esri, Maxar, Earthstar Geographics, and the GIS User Community'
+
+function tileForBasemap(basemap: MapBasemap) {
+  if (basemap === 'satellite') {
+    return { url: SATELLITE_TILE_URL, attribution: SATELLITE_TILE_ATTRIBUTION }
+  }
+  return { url: STREET_TILE_URL, attribution: STREET_TILE_ATTRIBUTION }
 }
 
 function makeIcons() {
@@ -42,11 +48,11 @@ function makeIcons() {
 export function MalaysiaUnitsMap({ sites }: Props) {
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [mapError, setMapError] = useState<string | null>(null)
+  const [basemap, setBasemap] = useState<MapBasemap>('satellite')
   const mapEl = useRef<HTMLDivElement | null>(null)
   const mapRef = useRef<L.Map | null>(null)
   const markersRef = useRef<L.MarkerClusterGroup | null>(null)
   const tileLayerRef = useRef<L.TileLayer | null>(null)
-  const tileIsDarkRef = useRef(false)
   const icons = useMemo(() => makeIcons(), [])
 
   const points = useMemo(
@@ -76,13 +82,12 @@ export function MalaysiaUnitsMap({ sites }: Props) {
         zoomControl: true,
         attributionControl: true,
         minZoom: 5,
-        maxZoom: 12,
+        maxZoom: 18,
       })
 
-      const dark = isDarkThemeActive()
-      tileIsDarkRef.current = dark
-      tileLayerRef.current = L.tileLayer(dark ? DARK_TILE_URL : LIGHT_TILE_URL, {
-        attribution: dark ? DARK_TILE_ATTRIBUTION : LIGHT_TILE_ATTRIBUTION,
+      const initial = tileForBasemap('satellite')
+      tileLayerRef.current = L.tileLayer(initial.url, {
+        attribution: initial.attribution,
         maxZoom: 19,
       }).addTo(map)
 
@@ -99,31 +104,24 @@ export function MalaysiaUnitsMap({ sites }: Props) {
       setMapError(err instanceof Error ? err.message : 'Map failed to start')
     }
 
-    // No theme toggle exists yet (Phase 9-web-A is tokens/CSS only) — this observer is dormant
-    // until a future pass starts setting data-theme on <html>, so the tile source stays in sync
-    // without another code change then.
-    const themeObserver = new MutationObserver(() => {
-      const map = mapRef.current
-      if (!map) return
-      const dark = isDarkThemeActive()
-      if (dark === tileIsDarkRef.current) return
-      tileIsDarkRef.current = dark
-      tileLayerRef.current?.remove()
-      tileLayerRef.current = L.tileLayer(dark ? DARK_TILE_URL : LIGHT_TILE_URL, {
-        attribution: dark ? DARK_TILE_ATTRIBUTION : LIGHT_TILE_ATTRIBUTION,
-        maxZoom: 19,
-      }).addTo(map)
-    })
-    themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] })
-
     return () => {
-      themeObserver.disconnect()
       mapRef.current?.remove()
       mapRef.current = null
       markersRef.current = null
       tileLayerRef.current = null
     }
   }, [])
+
+  useEffect(() => {
+    const map = mapRef.current
+    if (!map) return
+    const next = tileForBasemap(basemap)
+    tileLayerRef.current?.remove()
+    tileLayerRef.current = L.tileLayer(next.url, {
+      attribution: next.attribution,
+      maxZoom: 19,
+    }).addTo(map)
+  }, [basemap])
 
   useEffect(() => {
     const map = mapRef.current
@@ -168,6 +166,15 @@ export function MalaysiaUnitsMap({ sites }: Props) {
           <h2>Units in Malaysia</h2>
           <p className="muted">Map of Malaysia with unit markers by state and city.</p>
         </div>
+        <SegmentedControl
+          ariaLabel="Map basemap"
+          value={basemap}
+          onChange={setBasemap}
+          options={[
+            { value: 'satellite', label: 'Satellite' },
+            { value: 'street', label: 'Map' },
+          ]}
+        />
       </div>
 
       <div className="map-layout">

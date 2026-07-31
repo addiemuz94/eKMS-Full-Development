@@ -5,6 +5,7 @@ const router = Router();
 
 router.get('/', async (req, res) => {
   const siteId = req.query.siteId;
+  const terminalId = req.query.terminalId;
   const actorUserId = req.query.actorUserId;
   const fromMs = req.query.fromEpochMillis ? Number(req.query.fromEpochMillis) : null;
   const toMs = req.query.toEpochMillis ? Number(req.query.toEpochMillis) : null;
@@ -15,6 +16,10 @@ router.get('/', async (req, res) => {
   if (siteId) {
     sql += ` AND site_id = :siteId`;
     params.siteId = siteId;
+  }
+  if (terminalId) {
+    sql += ` AND terminal_id = :terminalId`;
+    params.terminalId = terminalId;
   }
   if (actorUserId) {
     sql += ` AND actor_user_id = :actorUserId`;

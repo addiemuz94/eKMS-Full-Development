@@ -6,6 +6,7 @@ import type {
   ListResponse,
   LoginResponse,
   RegeneratePairingCodeResponse,
+  RegionDto,
   SiteDto,
   TerminalCabinetSettingsDto,
   TerminalDto,
@@ -20,6 +21,7 @@ export type Session = {
   refreshToken: string
   displayName: string
   email: string
+  role: string
 }
 
 export function loadSession(): Session | null {
@@ -160,9 +162,13 @@ export const api = {
       refreshToken: login.refreshToken,
       displayName: login.profile.displayName,
       email: login.profile.email,
+      role: login.profile.role || login.role || '',
     })
     return login
   },
+
+  getBootstrapStatus: () =>
+    request<{ hasSuperAdmin: boolean; superAdminCount: number }>('GET', '/v1/admin/bootstrap-status'),
 
   logout() {
     setAccessToken(null)
@@ -171,6 +177,9 @@ export const api = {
 
   listSites: () =>
     request<ListResponse<SiteDto>>('GET', '/v1/admin/sites').then((r) => r.items),
+
+  listRegions: () =>
+    request<ListResponse<RegionDto>>('GET', '/v1/admin/regions').then((r) => r.items),
   createSite: (payload: Record<string, unknown>) =>
     request<SiteDto>('POST', '/v1/admin/sites', payload, { idempotent: true }),
   updateSite: (id: string, payload: Record<string, unknown>) =>
@@ -331,15 +340,71 @@ export const api = {
   purgeRecycleBin: (payload: { recordType: string; recordId: string }) =>
     request('POST', '/v1/admin/recycle-bin/purge', payload, { idempotent: true }),
 
-  listAuditEvents: () =>
-    request<ListResponse<AuditEvent>>('GET', '/v1/audit/events?limit=200').then(
+  listAuditEvents: (filter?: {
+    siteId?: string
+    terminalId?: string
+    limit?: number
+  }) => {
+    const params = new URLSearchParams()
+    if (filter?.siteId) params.set('siteId', filter.siteId)
+    if (filter?.terminalId) params.set('terminalId', filter.terminalId)
+    params.set('limit', String(filter?.limit ?? 200))
+    const qs = params.toString()
+    return request<ListResponse<AuditEvent>>('GET', `/v1/audit/events?${qs}`).then(
       (r) => r.items ?? [],
-    ),
+    )
+  },
 
-  listKeyOperations: () =>
-    request<ListResponse<Record<string, unknown>>>('GET', '/v1/reports/key-operations').then(
-      (r) => r.items ?? [],
-    ),
+  listKeyOperations: (filter?: {
+    siteId?: string
+    terminalId?: string
+    limit?: number
+  }) => {
+    const params = new URLSearchParams()
+    if (filter?.siteId) params.set('siteId', filter.siteId)
+    if (filter?.terminalId) params.set('terminalId', filter.terminalId)
+    if (filter?.limit) params.set('limit', String(filter.limit))
+    const qs = params.toString()
+    return request<ListResponse<Record<string, unknown>>>(
+      'GET',
+      `/v1/reports/key-operations${qs ? `?${qs}` : ''}`,
+    ).then((r) => r.items ?? [])
+  },
+
+  createReportExport: (payload: {
+    kind: 'KEY_OPERATIONS' | 'SYSTEM_OPERATION_LOGS' | 'EQUIPMENT_OPERATION_LOGS'
+    format: 'PDF' | 'EXCEL'
+    filter?: {
+      siteId?: string
+      terminalId?: string
+      fromEpochMillis?: number
+      untilEpochMillis?: number
+      limit?: number
+    }
+  }) =>
+    request<{
+      jobId: string
+      downloadPath: string
+      rowCount: number
+    }>('POST', '/v1/reports/exports', payload, { idempotent: true }),
+
+  async downloadReportExport(downloadPath: string, filename: string) {
+    if (!accessToken) throw new ApiError(401, 'Not signed in')
+    const res = await fetch(downloadPath, {
+      headers: { Authorization: `Bearer ${accessToken}` },
+    })
+    if (!res.ok) {
+      const text = await res.text()
+      throw new ApiError(res.status, text || `HTTP ${res.status}`)
+    }
+    const blob = await res.blob()
+    const url = URL.createObjectURL(blob)
+    const anchor = document.createElement('a')
+    anchor.href = url
+    anchor.download = filename
+    anchor.click()
+    URL.revokeObjectURL(url)
+  },
   listSystemLogs: () =>
     request<ListResponse<Record<string, unknown>>>('GET', '/v1/reports/system-operation-logs').then(
       (r) => r.items ?? [],

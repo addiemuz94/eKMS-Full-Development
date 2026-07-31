@@ -85,7 +85,8 @@ async function replaceRegionAssignments(conn, userId, regionIds) {
 router.get('/', async (req, res) => {
   const state = req.query.state || 'ACTIVE';
   const siteId = req.query.siteId;
-  let sql = `SELECT * FROM users WHERE lifecycle_state = :state`;
+  // GOD_ADMIN is developer/bootstrap-only — never appear in personnel lists.
+  let sql = `SELECT * FROM users WHERE lifecycle_state = :state AND role <> 'GOD_ADMIN'`;
   const params = { state };
   if (siteId) {
     sql += ` AND id IN (SELECT user_id FROM user_site_assignments WHERE site_id = :siteId)`;
@@ -100,11 +101,26 @@ router.get('/', async (req, res) => {
   res.json({ items });
 });
 
+/** Bootstrap status for God Admin onboarding UI. */
+router.get('/bootstrap-status', async (req, res) => {
+  const [rows] = await pool.execute(
+    `SELECT COUNT(*) AS c FROM users
+     WHERE role = 'SUPER_ADMIN' AND lifecycle_state = 'ACTIVE'`,
+  );
+  return res.json({
+    hasSuperAdmin: Number(rows[0].c) > 0,
+    superAdminCount: Number(rows[0].c),
+  });
+});
+
 router.get('/:id', async (req, res) => {
   const [rows] = await pool.execute(`SELECT * FROM users WHERE id = :id LIMIT 1`, {
     id: req.params.id,
   });
   if (!rows[0]) return notFound(res, 'User not found');
+  if (rows[0].role === 'GOD_ADMIN' && req.auth?.role !== 'GOD_ADMIN') {
+    return notFound(res, 'User not found');
+  }
   return res.json(mapUser(rows[0], await assignedSites(rows[0].id), await assignedRegions(rows[0].id)));
 });
 
@@ -114,16 +130,35 @@ router.post('/', async (req, res) => {
     email: z.string().email(),
     role: z.enum(['SUPER_ADMIN', 'REGIONAL_ADMIN', 'TECHNICIAN', 'VENDOR']),
     assignedSiteIds: z.array(z.string().uuid()).default([]),
-    // Region assignment (migration 009) — optional, defaults to none. Only meaningful for
-    // REGIONAL_ADMIN; no role-based requirement is enforced here (unlike assignedSiteIds below)
-    // since a Regional Admin with zero region assignments simply can't yet approve any
-    // key-access request, which is a valid (if not very useful) starting state, not an error.
     assignedRegionIds: z.array(z.string().uuid()).default([]),
     password: z.string().min(8).optional(),
     staffId: z.string().max(128).nullable().optional(),
   });
   const parsed = schema.safeParse(req.body);
   if (!parsed.success) return badRequest(res, 'Invalid user payload');
+
+  // God Admin may only create the first Super Admin.
+  if (req.auth?.role === 'GOD_ADMIN') {
+    if (parsed.data.role !== 'SUPER_ADMIN') {
+      return res.status(403).json({
+        error: 'FORBIDDEN',
+        message: 'God Admin may only register a Super Admin',
+      });
+    }
+    if (!parsed.data.password) {
+      return badRequest(res, 'Password is required for the first Super Admin');
+    }
+    const [saCount] = await pool.execute(
+      `SELECT COUNT(*) AS c FROM users
+       WHERE role = 'SUPER_ADMIN' AND lifecycle_state = 'ACTIVE'`,
+    );
+    if (Number(saCount[0].c) > 0) {
+      return res.status(403).json({
+        error: 'FORBIDDEN',
+        message: 'A Super Admin already exists — God Admin bootstrap is complete',
+      });
+    }
+  }
 
   if (parsed.data.role !== 'SUPER_ADMIN' && parsed.data.assignedSiteIds.length === 0) {
     return badRequest(res, 'REGIONAL_ADMIN, TECHNICIAN, and VENDOR require at least one assigned site');
@@ -198,6 +233,9 @@ router.patch('/:id', async (req, res) => {
     { id: req.params.id },
   );
   if (!existing[0]) return notFound(res, 'User not found');
+  if (existing[0].role === 'GOD_ADMIN') {
+    return res.status(403).json({ error: 'FORBIDDEN', message: 'God Admin cannot be edited' });
+  }
   if (Number(existing[0].revision) !== parsed.data.expectedRevision) return conflict(res);
 
   const now = nowMs();
@@ -250,6 +288,9 @@ router.post('/:id/account-status', async (req, res) => {
     { id: req.params.id },
   );
   if (!existing[0]) return notFound(res, 'User not found');
+  if (existing[0].role === 'GOD_ADMIN') {
+    return res.status(403).json({ error: 'FORBIDDEN', message: 'God Admin cannot be modified' });
+  }
   if (Number(existing[0].revision) !== parsed.data.expectedRevision) return conflict(res);
 
   const now = nowMs();
@@ -289,6 +330,9 @@ router.delete('/:id', async (req, res) => {
     { id: req.params.id },
   );
   if (!existing[0]) return notFound(res, 'User not found');
+  if (existing[0].role === 'GOD_ADMIN') {
+    return res.status(403).json({ error: 'FORBIDDEN', message: 'God Admin cannot be deleted' });
+  }
   if (existing[0].id === req.auth.sub) {
     return badRequest(res, 'Cannot soft-delete the signed-in Super Admin');
   }

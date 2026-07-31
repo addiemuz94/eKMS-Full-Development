@@ -142,6 +142,7 @@ async function buildSnapshot(terminalRow) {
   const [userRows] = await pool.execute(
     `SELECT u.* FROM users u
      WHERE u.lifecycle_state = 'ACTIVE'
+       AND u.role <> 'GOD_ADMIN'
        AND (
          u.role = 'SUPER_ADMIN'
          OR u.id IN (SELECT user_id FROM user_site_assignments WHERE site_id = :siteId)

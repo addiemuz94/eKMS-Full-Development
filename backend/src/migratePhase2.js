@@ -61,6 +61,7 @@ async function migrate() {
   await applySqlFile('008_regional_admin_checkouts_office_hours_vendor_passkey.sql', { ignoreDuplicates: true });
   await applySqlFile('009_regions_and_key_access_requests.sql', { ignoreDuplicates: true });
   await applySqlFile('010_key_access_exception_calendar.sql', { ignoreDuplicates: true });
+  await applySqlFile('011_vendor_key_access_and_fcm.sql', { ignoreDuplicates: true });
   process.exit(0);
 }
 

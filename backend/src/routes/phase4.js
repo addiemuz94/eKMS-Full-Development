@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { z } from 'zod';
 import pool from '../db.js';
+import { queryKeyCheckoutReportRows, streamKeyOperationsPdf } from '../reportPdf.js';
 import { badRequest, conflict, newId, notFound, nowMs, writeAudit } from '../util.js';
 
 function softDeleteRouter({ table, mapRow, createSchema, updateSchema, insertSql, updateSql, entityType }) {
@@ -677,13 +678,20 @@ reportsRouter.post('/exports', async (req, res) => {
   const parsed = schema.safeParse(req.body);
   if (!parsed.success) return badRequest(res, 'Invalid export request');
 
-  const fakeReq = { query: { ...parsed.data.filter } };
-  const eventMap = {
-    KEY_OPERATIONS: ['KEY_TAKEN', 'KEY_RETURNED'],
-    SYSTEM_OPERATION_LOGS: ['LOGIN_SUCCEEDED', 'LOGIN_DENIED', 'APPOINTMENT_REVIEWED'],
-    EQUIPMENT_OPERATION_LOGS: ['KEY_TAKEN', 'KEY_RETURNED', 'KEY_FOB_ENROLLED'],
-  };
-  const rows = await queryAudit(fakeReq, eventMap[parsed.data.kind]);
+  const filter = parsed.data.filter;
+  let rowCount = 0;
+  if (parsed.data.kind === 'KEY_OPERATIONS') {
+    const checkoutRows = await queryKeyCheckoutReportRows(pool, filter);
+    rowCount = checkoutRows.length;
+  } else {
+    const fakeReq = { query: { ...filter } };
+    const eventMap = {
+      SYSTEM_OPERATION_LOGS: ['LOGIN_SUCCEEDED', 'LOGIN_DENIED', 'APPOINTMENT_REVIEWED'],
+      EQUIPMENT_OPERATION_LOGS: ['KEY_TAKEN', 'KEY_RETURNED', 'KEY_FOB_ENROLLED'],
+    };
+    rowCount = (await queryAudit(fakeReq, eventMap[parsed.data.kind])).length;
+  }
+
   const id = newId();
   const now = nowMs();
   await pool.execute(
@@ -695,8 +703,8 @@ reportsRouter.post('/exports', async (req, res) => {
       id,
       kind: parsed.data.kind,
       format: parsed.data.format,
-      filterJson: JSON.stringify(parsed.data.filter),
-      rowCount: rows.length,
+      filterJson: JSON.stringify(filter),
+      rowCount,
       downloadPath: `/v1/reports/exports/${id}`,
       actor: req.auth.sub,
       now,
@@ -710,7 +718,58 @@ reportsRouter.post('/exports', async (req, res) => {
     status: 'READY',
     createdAtEpochMillis: now,
     downloadPath: `/v1/reports/exports/${id}`,
-    rowCount: rows.length,
+    rowCount,
+  });
+});
+
+reportsRouter.get('/exports/:id', async (req, res) => {
+  const [jobRows] = await pool.execute(`SELECT * FROM report_export_jobs WHERE id = :id LIMIT 1`, {
+    id: req.params.id,
+  });
+  const job = jobRows[0];
+  if (!job) return notFound(res, 'Export job not found');
+  if (job.created_by_user_id && job.created_by_user_id !== req.auth.sub) {
+    return res.status(403).json({ error: 'FORBIDDEN', message: 'Not your export job' });
+  }
+  if (job.format !== 'PDF') {
+    return badRequest(res, 'Only PDF downloads are supported');
+  }
+
+  const filter = JSON.parse(job.filter_json || '{}');
+  const now = nowMs();
+
+  if (job.kind === 'KEY_OPERATIONS') {
+    const rows = await queryKeyCheckoutReportRows(pool, filter);
+    let siteName = null;
+    if (filter.siteId) {
+      const [siteRows] = await pool.execute(`SELECT name FROM sites WHERE id = :id LIMIT 1`, {
+        id: filter.siteId,
+      });
+      siteName = siteRows[0]?.name ?? null;
+    }
+    return streamKeyOperationsPdf(res, { rows, siteName, filter, generatedAtEpochMillis: now });
+  }
+
+  const fakeReq = { query: { ...filter } };
+  const eventMap = {
+    SYSTEM_OPERATION_LOGS: ['LOGIN_SUCCEEDED', 'LOGIN_DENIED', 'APPOINTMENT_REVIEWED'],
+    EQUIPMENT_OPERATION_LOGS: ['KEY_TAKEN', 'KEY_RETURNED', 'KEY_FOB_ENROLLED'],
+  };
+  const auditRows = await queryAudit(fakeReq, eventMap[job.kind] ?? ['KEY_TAKEN', 'KEY_RETURNED']);
+  return streamKeyOperationsPdf(res, {
+    rows: auditRows.map((row) => ({
+      userName: row.actorUserId,
+      keyName: row.entityId,
+      takenAtEpochMillis: row.occurredAtEpochMillis,
+      returnedAtEpochMillis: null,
+      terminalName: row.terminalId,
+      siteName: row.siteId,
+      isEmergency: false,
+      status: row.eventType,
+    })),
+    siteName: filter.siteId ?? null,
+    filter,
+    generatedAtEpochMillis: now,
   });
 });
 

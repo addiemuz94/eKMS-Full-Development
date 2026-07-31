@@ -30,6 +30,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       refreshToken: res.refreshToken,
       displayName: res.profile.displayName,
       email: res.profile.email,
+      role: res.profile.role || res.role || '',
     }
     setSession(next)
   }, [])

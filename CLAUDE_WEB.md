@@ -55,6 +55,19 @@ See `CLAUDE_TERMINAL.md`'s "Web Portal — Registration Workflow: terminalApp's 
   - **Known, explicitly out-of-scope gap**: `KeysPage.tsx`'s existing Edit action lets a Super Admin change an existing key's `siteId` (move it to a different unit) — this does **not** unlink/reassign its `KeySlot`, since only "add" and "delete" were in scope this pass. Editing a key's unit today leaves its old cabinet's node assignment pointing at a key that's nominally now at a different site — flagged, not fixed.
   - Verify: `npm run build` (tsc + vite) and `npm run lint` (oxlint) both pass clean — only pre-existing-pattern warnings (the same "missing `reload` dependency" `useEffect` warning already present on every other page in this app). **Not run against a dev server or the live API this pass** — no live click-through of the new auto-assign/capacity/multi-cabinet UI.
 
+- **Key/slot/grant binding gap — investigation (Jul 2026, Phase G, no fix).** Three independent bindings must line up for take. Portal “key exists” / “grant exists” do **not** imply takeability.
+
+  | Binding | Owner | Take needs it? |
+  |---|---|---|
+  | ManagedKey (logical) | Web → `managed_keys` | Yes (identity) |
+  | KeySlot (`managedKeyId`↔node) | Web auto-assign / terminal Key Attachment → `key_slots` | **Hard gate** |
+  | Fob UID / enrollment | Terminal `managedKeyFobStore` (+ optional opaque complete) | Not for unlock; yes for return/wrong-slot & portal “Enrolled” |
+  | AccessGrant / passkey `keyIds` | Web Permissions / mobile Only B | Authorization only |
+
+  **Web creates key then best-effort slot** (`web/src/api/keySlotAssignment.ts`); slot can be skipped (no terminal / full / API error) — key still saved. Grants (`accessGrants.js`) never check for a slot. Terminal Key Menu / passkey take drop or fail keys without a `KeySlot` (or local node fallback). Policy A is personnel biometrics only — unrelated to key fobs.
+
+  **Recommended fixes (not implemented):** warn/block Permissions & key-access when key has no slot; refuse createKey without successful slot assign; backend reject grant/request for unslotted keys; backfill tool; on key `siteId` edit, unlink old slot. Operator runbook: portal key → confirm cabinet node assigned → terminal Download → Key Attachment → then grant/take.
+
 ### Known issues / not yet resolved
 
 - **`web/` PATCH/update rollout is now built and redeployed, but still not click-verified live.** `npm run build` passes, the VPS now serves the rebuilt `web/dist`, and production remains `https://kms-cvt.com`. Remaining work is manual live verification of at least one edit path (for example Units edit + `409` conflict handling) against the live API.

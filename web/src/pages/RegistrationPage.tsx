@@ -5,10 +5,9 @@
  *   1. Register Unit
  *   2. Key Cabinet(s) for that unit (no pairing code yet)
  *   3. Cabinet Settings (timers / certification / video toggles)
- *   4. Personnel who will use the terminal
- *   5. Keys for that unit
- *   6. Permissions for that unit
- *   7. Generate pairing code(s) — last step, give to on-site technician
+ *   4. Keys for that unit
+ *   5. Permissions — grant existing personnel
+ *   6. Generate pairing code(s) — last step, give to on-site technician
  *
  * Dialogs never close on backdrop click; Cancel / Save only.
  */
@@ -32,7 +31,6 @@ const STEPS = [
   { label: 'Unit', title: 'Register Unit' },
   { label: 'Key Cabinet', title: 'Register Key Cabinet' },
   { label: 'Cabinet Settings', title: 'Cabinet Settings' },
-  { label: 'Personnel', title: 'Assign Personnel' },
   { label: 'Keys', title: 'Register Keys' },
   { label: 'Permissions', title: 'Set Permissions' },
   { label: 'Pairing Code', title: 'Generate Pairing Code' },
@@ -194,7 +192,7 @@ function StepUnit({
           <form className="dialog" onSubmit={onSave}>
             <h2>Register new unit</h2>
             <p className="dialog-copy">
-              This unit is carried into Key Cabinet, Personnel, Keys, Permissions, then Pairing Code.
+              This unit is carried into Key Cabinet, Keys, Permissions, then Pairing Code.
             </p>
             <div className="field">
               <label>Unit name</label>
@@ -554,312 +552,8 @@ function StepCabinetSettings({ unit }: { unit: SiteDto }) {
   )
 }
 
-// ─── Step 4: Personnel ───────────────────────────────────────────────────────
-// Lists EVERY active user from the database. Check who should use this unit,
-// then click "Save assignments". Create-new is still available.
 
-function StepPersonnel({ unit }: { unit: SiteDto }) {
-  const [allPeople, setAllPeople] = useState<UserDto[]>([])
-  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
-  const [error, setError] = useState<string | null>(null)
-  const [notice, setNotice] = useState<string | null>(null)
-  const [busy, setBusy] = useState(false)
-  const [saving, setSaving] = useState(false)
-  const [query, setQuery] = useState('')
-  const [open, setOpen] = useState(false)
-  const [displayName, setDisplayName] = useState('')
-  const [email, setEmail] = useState('')
-  const [staffId, setStaffId] = useState('')
-  const [role, setRole] = useState('TECHNICIAN')
-  const [password, setPassword] = useState('')
-
-  function isAssigned(p: UserDto) {
-    return (p.assignedSiteIds ?? []).includes(unit.id)
-  }
-
-  async function reload() {
-    setBusy(true)
-    setError(null)
-    try {
-      const people = await api.listUsers()
-      setAllPeople(people)
-      setSelectedIds(new Set(people.filter(isAssigned).map((p) => p.id)))
-    } catch (err) {
-      setError(err instanceof ApiError ? err.message : 'Failed to load personnel')
-    } finally {
-      setBusy(false)
-    }
-  }
-
-  useEffect(() => {
-    void reload()
-  }, [unit.id])
-
-  function toggle(id: string) {
-    setSelectedIds((prev) => {
-      const next = new Set(prev)
-      if (next.has(id)) next.delete(id)
-      else next.add(id)
-      return next
-    })
-  }
-
-  async function onSaveAssignments() {
-    setSaving(true)
-    setError(null)
-    setNotice(null)
-    try {
-      // Re-fetch so expectedRevision is fresh
-      const fresh = await api.listUsers()
-      const byId = new Map(fresh.map((u) => [u.id, u]))
-      let changed = 0
-
-      for (const p of fresh) {
-        const want = selectedIds.has(p.id)
-        const has = (p.assignedSiteIds ?? []).includes(unit.id)
-        if (want === has) continue
-
-        let newSites: string[]
-        if (want) {
-          newSites = [...new Set([...(p.assignedSiteIds ?? []), unit.id])]
-        } else {
-          newSites = (p.assignedSiteIds ?? []).filter((id) => id !== unit.id)
-          // TECHNICIAN / VENDOR must keep at least one site — block clearing the last one
-          if (p.role !== 'SUPER_ADMIN' && newSites.length === 0) {
-            throw new ApiError(
-              400,
-              `${p.displayName} (${p.role}) must stay assigned to at least one unit. Assign them to another unit first, or leave them checked here.`,
-            )
-          }
-        }
-
-        await api.updateUser(p.id, {
-          displayName: p.displayName,
-          email: p.email,
-          role: p.role,
-          staffId: p.staffId ?? null,
-          assignedSiteIds: newSites,
-          expectedRevision: p.revision,
-        })
-        changed += 1
-        // keep local map revision in sync if we touch the same user twice (we don't)
-        void byId
-      }
-
-      setNotice(
-        changed === 0
-          ? 'No changes — selection already matches this unit.'
-          : `Saved ${changed} assignment change${changed === 1 ? '' : 's'} for ${unit.name}.`,
-      )
-      await reload()
-    } catch (err) {
-      if (err instanceof ApiError && err.status === 409) {
-        setError('Someone else changed a user while you were editing. Reloaded — please try again.')
-        await reload()
-      } else {
-        setError(err instanceof ApiError ? err.message : 'Failed to save assignments')
-      }
-    } finally {
-      setSaving(false)
-    }
-  }
-
-  async function onCreateNew(e: FormEvent) {
-    e.preventDefault()
-    if (!email.trim() || !email.includes('@')) {
-      setError('Enter a valid account email.')
-      return
-    }
-    setBusy(true)
-    setError(null)
-    try {
-      await api.createUser({
-        displayName: displayName.trim(),
-        email: email.trim(),
-        role,
-        staffId: staffId.trim() || null,
-        assignedSiteIds: [unit.id],
-        password: password.length >= 8 ? password : undefined,
-      })
-      setOpen(false)
-      setDisplayName('')
-      setEmail('')
-      setStaffId('')
-      setPassword('')
-      setRole('TECHNICIAN')
-      setNotice('New user created and assigned.')
-      await reload()
-    } catch (err) {
-      setError(err instanceof ApiError ? err.message : 'Failed to create personnel')
-    } finally {
-      setBusy(false)
-    }
-  }
-
-  const filtered = allPeople.filter((p) => {
-    const q = query.trim().toLowerCase()
-    if (!q) return true
-    return (
-      p.displayName.toLowerCase().includes(q) ||
-      p.email.toLowerCase().includes(q) ||
-      (p.staffId ?? '').toLowerCase().includes(q) ||
-      p.role.toLowerCase().includes(q)
-    )
-  })
-
-  const selectedCount = selectedIds.size
-  const dirty = allPeople.some((p) => selectedIds.has(p.id) !== isAssigned(p))
-
-  return (
-    <div>
-      <SectionHeader
-        step={4}
-        title="Assign Personnel"
-        desc={`Choose who will use the terminal at "${unit.name}". Check users from the database list, then save. You can also create a new account.`}
-        unitName={unit.name}
-      />
-      {notice && <div className="notice">{notice}</div>}
-      {error && <div className="error-banner">{error}</div>}
-      {busy && <LinearProgress className="table-busy" label="Loading" />}
-
-      <div className="toolbar-row" style={{ marginBottom: 12 }}>
-        <input
-          type="search"
-          placeholder="Search name, email, staff ID…"
-          value={query}
-          onChange={(e) => setQuery(e.target.value)}
-          style={{ flex: 1 }}
-        />
-        <Button
-          variant="outlined"
-          icon={Plus}
-          onClick={() => {
-            setError(null)
-            setNotice(null)
-            setOpen(true)
-          }}
-        >
-          Create new user
-        </Button>
-        <Button icon={Check} loading={saving} disabled={!dirty || saving} onClick={() => void onSaveAssignments()}>
-          Save assignments ({selectedCount})
-        </Button>
-      </div>
-
-      {filtered.length ? (
-        <div className="data-panel">
-          <table className="data-table">
-            <thead>
-              <tr>
-                <th style={{ width: 44 }}>Use</th>
-                <th>Name</th>
-                <th>Staff ID</th>
-                <th>Email</th>
-                <th>Role</th>
-                <th>Currently on this unit</th>
-              </tr>
-            </thead>
-            <tbody>
-              {filtered.map((p) => {
-                const checked = selectedIds.has(p.id)
-                const onUnit = isAssigned(p)
-                return (
-                  <tr
-                    key={p.id}
-                    style={{ cursor: 'pointer', background: checked ? 'var(--md-sys-color-primary-container, #d3e4ff)' : undefined }}
-                    onClick={() => toggle(p.id)}
-                  >
-                    <td onClick={(e) => e.stopPropagation()}>
-                      <input
-                        type="checkbox"
-                        checked={checked}
-                        onChange={() => toggle(p.id)}
-                        aria-label={`Assign ${p.displayName}`}
-                      />
-                    </td>
-                    <td className="cell-title">{p.displayName}</td>
-                    <td className="mono">{p.staffId?.trim() || '—'}</td>
-                    <td>{p.email}</td>
-                    <td>
-                      <span className="badge">{p.role}</span>
-                    </td>
-                    <td>{onUnit ? 'Yes' : '—'}</td>
-                  </tr>
-                )
-              })}
-            </tbody>
-          </table>
-        </div>
-      ) : (
-        !busy && (
-          <div className="empty-state">
-            {allPeople.length === 0
-              ? 'No users in the database yet. Create one above.'
-              : 'No users match your search.'}
-          </div>
-        )
-      )}
-
-      {dirty && (
-        <p className="muted" style={{ marginTop: 12 }}>
-          You have unsaved checkbox changes. Click <strong>Save assignments</strong> to apply them to{' '}
-          {unit.name}.
-        </p>
-      )}
-
-      {open && (
-        <div className="dialog-backdrop">
-          <form className="dialog" onSubmit={onCreateNew}>
-            <h2>Create new user</h2>
-            <p className="dialog-copy">
-              Will be assigned to <strong>{unit.name}</strong> immediately.
-            </p>
-            <div className="field">
-              <label>Display name</label>
-              <input value={displayName} onChange={(e) => setDisplayName(e.target.value)} required />
-            </div>
-            <div className="field">
-              <label>Account email</label>
-              <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} required />
-            </div>
-            <div className="field">
-              <label>Staff ID (optional)</label>
-              <input value={staffId} onChange={(e) => setStaffId(e.target.value)} />
-            </div>
-            <div className="field">
-              <label>Role</label>
-              <select value={role} onChange={(e) => setRole(e.target.value)}>
-                <option value="TECHNICIAN">TECHNICIAN</option>
-                <option value="VENDOR">VENDOR</option>
-                <option value="REGIONAL_ADMIN">REGIONAL_ADMIN</option>
-                <option value="SUPER_ADMIN">SUPER_ADMIN</option>
-              </select>
-            </div>
-            <div className="field">
-              <label>Initial password (min 8, optional)</label>
-              <input
-                type="password"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                minLength={8}
-              />
-            </div>
-            <div className="dialog-actions">
-              <Button variant="outlined" icon={X} onClick={() => setOpen(false)}>
-                Cancel
-              </Button>
-              <Button type="submit" icon={Check} loading={busy}>
-                Create & assign
-              </Button>
-            </div>
-          </form>
-        </div>
-      )}
-    </div>
-  )
-}
-
-// ─── Step 5: Keys (unit locked) ──────────────────────────────────────────────
+// ─── Step 4: Keys (unit locked) ──────────────────────────────────────────────
 
 function StepKeys({ unit }: { unit: SiteDto }) {
   const [keys, setKeys] = useState<KeyDto[]>([])
@@ -949,7 +643,7 @@ function StepKeys({ unit }: { unit: SiteDto }) {
   return (
     <div>
       <SectionHeader
-        step={5}
+        step={4}
         title="Register Keys"
         desc={`Add managed keys for “${unit.name}”. Raw NFC UIDs never appear here.`}
         unitName={unit.name}
@@ -1086,12 +780,11 @@ function StepPermissions({ unit }: { unit: SiteDto }) {
         api.listUsers(),
         api.listKeys(),
       ])
-      const unitUsers = userRows.filter((u) => (u.assignedSiteIds ?? []).includes(unit.id))
       const unitKeys = keyRows.filter((k) => k.siteId === unit.id)
-      setUsers(unitUsers)
+      setUsers(userRows)
       setKeys(unitKeys)
       setGrants(grantRows.filter((g) => g.siteId === unit.id))
-      if (!userId && unitUsers[0]) setUserId(unitUsers[0].id)
+      if (!userId && userRows[0]) setUserId(userRows[0].id)
       if (!keyId && unitKeys[0]) setKeyId(unitKeys[0].id)
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'Failed to load permissions')
@@ -1126,9 +819,9 @@ function StepPermissions({ unit }: { unit: SiteDto }) {
   return (
     <div>
       <SectionHeader
-        step={6}
+        step={5}
         title="Set Permissions"
-        desc={`Grant exact keys to personnel under “${unit.name}”. Only people and keys for this unit are listed.`}
+        desc={`Grant keys to existing personnel for “${unit.name}”. Manage unit assignments on the Personnel page.`}
         unitName={unit.name}
       />
       {error && <div className="error-banner">{error}</div>}
@@ -1281,7 +974,7 @@ function StepPairing({ unit }: { unit: SiteDto }) {
   return (
     <div>
       <SectionHeader
-        step={7}
+        step={6}
         title="Generate Pairing Code"
         desc={`Last step. Issue the one-time 6-digit code for a cabinet under “${unit.name}”. The on-site technician enters it on the terminal; settings then download from the database.`}
         unitName={unit.name}
@@ -1374,9 +1067,9 @@ export function RegistrationPage() {
         <div>
           <h1>Registration</h1>
           <p className="muted">
-            Continuous new-unit onboarding: register the unit once, then add its cabinets, personnel,
-            keys and permissions without re-selecting the unit. The 6-digit pairing code is generated
-            only at the last step for the on-site technician.
+            Continuous new-unit onboarding: register the unit once, then add its cabinets, keys and
+            permissions without re-selecting the unit. The 6-digit pairing code is generated only at
+            the last step for the on-site technician.
           </p>
         </div>
       </div>
@@ -1404,10 +1097,9 @@ export function RegistrationPage() {
         {step === 0 && <StepUnit unit={unit} onUnitReady={onUnitReady} />}
         {step === 1 && unit && <StepCabinet unit={unit} />}
         {step === 2 && unit && <StepCabinetSettings unit={unit} />}
-        {step === 3 && unit && <StepPersonnel unit={unit} />}
-        {step === 4 && unit && <StepKeys unit={unit} />}
-        {step === 5 && unit && <StepPermissions unit={unit} />}
-        {step === 6 && unit && <StepPairing unit={unit} />}
+        {step === 3 && unit && <StepKeys unit={unit} />}
+        {step === 4 && unit && <StepPermissions unit={unit} />}
+        {step === 5 && unit && <StepPairing unit={unit} />}
         {step > 0 && !unit && (
           <div className="empty-state">Register a unit in step 1 to continue.</div>
         )}

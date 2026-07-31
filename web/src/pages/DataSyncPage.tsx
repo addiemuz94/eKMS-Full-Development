@@ -1,4 +1,5 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import { api, ApiError } from '../api/client'
 import type { TerminalDto } from '../api/types'
 import { Button, LinearProgress, SegmentedControl } from '../components/ui'
@@ -6,6 +7,9 @@ import { Button, LinearProgress, SegmentedControl } from '../components/ui'
 type SyncPanel = 'conflicts' | 'terminals'
 
 export function DataSyncPage() {
+  const [searchParams] = useSearchParams()
+  const terminalFilter = searchParams.get('terminalId')
+
   const [conflicts, setConflicts] = useState<Record<string, unknown>[]>([])
   const [terminals, setTerminals] = useState<TerminalDto[]>([])
   const [panel, setPanel] = useState<SyncPanel>('conflicts')
@@ -30,6 +34,20 @@ export function DataSyncPage() {
     void reload()
   }, [])
 
+  useEffect(() => {
+    if (terminalFilter) setPanel('conflicts')
+  }, [terminalFilter])
+
+  const visibleConflicts = useMemo(() => {
+    if (!terminalFilter) return conflicts
+    return conflicts.filter((c) => String(c.terminalId) === terminalFilter)
+  }, [conflicts, terminalFilter])
+
+  const filteredTerminal = useMemo(
+    () => (terminalFilter ? terminals.find((t) => t.id === terminalFilter) ?? null : null),
+    [terminals, terminalFilter],
+  )
+
   async function resolve(id: string, strategy: string) {
     setBusy(true)
     try {
@@ -50,6 +68,7 @@ export function DataSyncPage() {
           <p className="muted">
             Review offline Terminal conflicts. Never silently overwrite — choose Keep Server, Keep Terminal
             Change, or merge later.
+            {filteredTerminal ? ` Filtered to ${filteredTerminal.name}.` : ''}
           </p>
         </div>
         <Button variant="tonal" loading={busy} onClick={() => void reload()}>
@@ -74,19 +93,21 @@ export function DataSyncPage() {
         <div className="card">
           <h3>Registered terminals</h3>
           <div className="meta">
-            {terminals.map((terminal) => (
-              <div key={terminal.id}>
-                {terminal.name} · Key Cabinet ID:{' '}
-                <span className="mono">{terminal.id}</span>
-              </div>
-            ))}
+            {(terminalFilter ? terminals.filter((t) => t.id === terminalFilter) : terminals).map(
+              (terminal) => (
+                <div key={terminal.id}>
+                  {terminal.name} · Key Cabinet ID:{' '}
+                  <span className="mono">{terminal.id}</span>
+                </div>
+              ),
+            )}
             {!terminals.length && <div>No terminals registered yet.</div>}
           </div>
         </div>
       )}
 
       {panel === 'conflicts' &&
-        conflicts.map((conflict) => (
+        visibleConflicts.map((conflict) => (
           <article className="card" key={String(conflict.id)}>
             <h3>
               {String(conflict.entityType)} · <span className="mono">{String(conflict.entityId)}</span>
@@ -119,8 +140,10 @@ export function DataSyncPage() {
           </article>
         ))}
 
-      {panel === 'conflicts' && !conflicts.length && !busy && (
-        <div className="empty-state">No open sync conflicts.</div>
+      {panel === 'conflicts' && !visibleConflicts.length && !busy && (
+        <div className="empty-state">
+          {terminalFilter ? 'No open sync conflicts for this terminal.' : 'No open sync conflicts.'}
+        </div>
       )}
     </section>
   )

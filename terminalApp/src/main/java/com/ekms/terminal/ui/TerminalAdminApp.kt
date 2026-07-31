@@ -2192,15 +2192,27 @@ fun TerminalAdminApp() {
                     onSave = { siteId, request -> apiClient.updateOfficeHours(siteId, request) },
                 )
 
-                SuperAdminRoute.VENDOR_PASSKEY -> TerminalVendorPasskeyScreen(
-                    padding = padding,
-                    role = session?.role ?: TerminalUserRole.SUPER_ADMIN,
-                    siteId = retrievalTerminal.siteId,
-                    onBack = { route = SuperAdminRoute.DASHBOARD },
-                    onLoad = { siteId -> apiClient.listVendorPasskeyRequests(siteId = siteId) },
-                    onApprove = { id -> apiClient.approveVendorPasskeyRequest(id) },
-                    onReject = { id -> apiClient.rejectVendorPasskeyRequest(id) },
-                )
+                SuperAdminRoute.VENDOR_PASSKEY -> Column(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(padding)
+                        .padding(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
+                    BackButton(onBack = { route = SuperAdminRoute.DASHBOARD })
+                    Text("Vendor access", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+                    SoftCard(contentPadding = 16.dp) {
+                        Text(
+                            text = "Vendor passkey requests moved to the mobile app (PIC → Regional Admin → PIN).",
+                            style = MaterialTheme.typography.bodyMedium,
+                        )
+                        Text(
+                            text = "This terminal screen is retired. Use Key Access on mobile for new Vendor requests.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
 
                 SuperAdminRoute.KEY_RETRIEVAL -> {
                     val activeSession = session
@@ -2438,7 +2450,11 @@ private fun SuperAdminDashboardScreen(
             horizontalArrangement = Arrangement.spacedBy(10.dp),
         ) {
             SoftNavTile(label = "Office hours", onClick = onOpenOfficeHours, modifier = Modifier.weight(1f))
-            SoftNavTile(label = "Vendor passkey", onClick = onOpenVendorPasskey, modifier = Modifier.weight(1f))
+            SoftNavTile(
+                label = "Vendor access (mobile)",
+                onClick = onOpenVendorPasskey,
+                modifier = Modifier.weight(1f),
+            )
         }
 
         SoftCard(contentPadding = 14.dp) {

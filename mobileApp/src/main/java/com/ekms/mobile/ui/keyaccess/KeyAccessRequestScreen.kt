@@ -1,5 +1,8 @@
 package com.ekms.mobile.ui.keyaccess
 
+import android.util.Base64
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
@@ -20,6 +23,7 @@ import androidx.compose.material3.ExposedDropdownMenuDefaults
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -30,24 +34,27 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.ekms.mobile.data.MobileApiClient
 import com.ekms.mobile.ui.theme.readout
 import com.ekms.shared.api.AuthUserProfile
 import com.ekms.shared.api.CreateKeyAccessRequestRequest
+import com.ekms.shared.api.KeyAccessRequestDocumentUpload
 import com.ekms.shared.api.KeyAccessRequestDto
 import com.ekms.shared.api.KeyAccessRequestStatus
 import com.ekms.shared.api.KeyDto
 import com.ekms.shared.api.SiteDto
+import com.ekms.shared.api.SitePicCandidateDto
+import com.ekms.shared.domain.UserRole
 import kotlinx.coroutines.launch
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 
 /**
- * Only B — exception Key Access Apply. Technician/Vendor pick a site outside standing
- * assignments, key(s) at that site, calendar pickup/return, and a reason. PIN after RA approval
- * is shown only after selecting an approved request from the dropdown (with site + cabinet).
+ * Only B — exception Key Access Apply. Vendor adds PIC + documents (Stage 1 → RA).
+ * Expired requests require a new submit (no revive). Technicians also see PIC inbox here.
  */
 @OptIn(ExperimentalLayoutApi::class, ExperimentalMaterial3Api::class)
 @Composable
@@ -57,13 +64,20 @@ fun KeyAccessRequestScreen(
     onNotice: (String) -> Unit,
 ) {
     val scope = rememberCoroutineScope()
+    val context = LocalContext.current
+    val isVendor = profile.role == UserRole.VENDOR
     var loading by remember { mutableStateOf(true) }
     var loadError by remember { mutableStateOf<String?>(null) }
     var exceptionSites by remember { mutableStateOf<List<SiteDto>>(emptyList()) }
     var keysAtSite by remember { mutableStateOf<List<KeyDto>>(emptyList()) }
     var myRequests by remember { mutableStateOf<List<KeyAccessRequestDto>>(emptyList()) }
+    var picInbox by remember { mutableStateOf<List<KeyAccessRequestDto>>(emptyList()) }
+    var sitePics by remember { mutableStateOf<List<SitePicCandidateDto>>(emptyList()) }
     var selectedSiteId by remember { mutableStateOf<String?>(null) }
     var selectedKeyIds by remember { mutableStateOf<Set<String>>(emptySet()) }
+    var selectedPicId by remember { mutableStateOf<String?>(null) }
+    var documents by remember { mutableStateOf<List<KeyAccessRequestDocumentUpload>>(emptyList()) }
+    var pendingDocKind by remember { mutableStateOf("WORK_PERMIT") }
     var reason by remember { mutableStateOf("") }
     var pickupEpochMillis by remember { mutableStateOf(defaultPickupEpochMillis()) }
     var returnEpochMillis by remember { mutableStateOf(defaultReturnEpochMillis()) }
@@ -71,6 +85,30 @@ fun KeyAccessRequestScreen(
     var loadingKeys by remember { mutableStateOf(false) }
     var selectedApprovedId by remember { mutableStateOf<String?>(null) }
     var approvedMenuExpanded by remember { mutableStateOf(false) }
+    var busyPicId by remember { mutableStateOf<String?>(null) }
+
+    val docPicker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
+        if (uri == null) return@rememberLauncherForActivityResult
+        try {
+            val bytes = context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
+                ?: return@rememberLauncherForActivityResult
+            if (bytes.size > 5 * 1024 * 1024) {
+                onNotice("Document must be 5 MB or smaller.")
+                return@rememberLauncherForActivityResult
+            }
+            val name = uri.lastPathSegment ?: "document.bin"
+            val b64 = Base64.encodeToString(bytes, Base64.NO_WRAP)
+            documents = documents.filter { it.docKind != pendingDocKind } + KeyAccessRequestDocumentUpload(
+                docKind = pendingDocKind,
+                fileName = name,
+                contentType = context.contentResolver.getType(uri) ?: "application/octet-stream",
+                contentBase64 = b64,
+            )
+            onNotice("Attached $pendingDocKind ($name)")
+        } catch (e: Exception) {
+            onNotice(e.message ?: "Couldn't read document.")
+        }
+    }
 
     suspend fun reload() {
         loading = true
@@ -78,6 +116,9 @@ fun KeyAccessRequestScreen(
         try {
             exceptionSites = apiClient.listExceptionSites()
             myRequests = apiClient.listKeyAccessRequests(status = "ALL")
+            if (profile.role == UserRole.TECHNICIAN) {
+                picInbox = apiClient.listPicInbox()
+            }
             val approvedIds = myRequests
                 .filter { it.status == KeyAccessRequestStatus.APPROVED }
                 .map { it.id }
@@ -98,10 +139,15 @@ fun KeyAccessRequestScreen(
         val siteId = selectedSiteId
         selectedKeyIds = emptySet()
         keysAtSite = emptyList()
+        sitePics = emptyList()
+        selectedPicId = null
         if (siteId == null) return@LaunchedEffect
         loadingKeys = true
         try {
             keysAtSite = apiClient.listExceptionSiteKeys(siteId)
+            if (isVendor) {
+                sitePics = apiClient.listSitePics(siteId)
+            }
         } catch (e: Exception) {
             onNotice(e.message ?: "Couldn't load keys for that site.")
         } finally {
@@ -129,6 +175,16 @@ fun KeyAccessRequestScreen(
             onNotice("Select at least one key.")
             return
         }
+        if (isVendor) {
+            if (selectedPicId == null) {
+                onNotice("Select a Person In Charge (Technician at this site).")
+                return
+            }
+            if (documents.isEmpty()) {
+                onNotice("Attach at least one document (Work Permit, NIOSH, or IC).")
+                return
+            }
+        }
         submitting = true
         scope.launch {
             try {
@@ -139,11 +195,18 @@ fun KeyAccessRequestScreen(
                         reason = reason.trim(),
                         pickupAtEpochMillis = pickup,
                         returnAtEpochMillis = returnAt,
+                        picUserId = if (isVendor) selectedPicId else null,
+                        documents = if (isVendor) documents else emptyList(),
                     ),
                 )
                 selectedKeyIds = emptySet()
                 reason = ""
-                onNotice("Request submitted. A Regional Admin will review it.")
+                documents = emptyList()
+                selectedPicId = null
+                onNotice(
+                    if (isVendor) "Request submitted — waiting for PIC, then Regional Admin."
+                    else "Request submitted. A Regional Admin will review it.",
+                )
                 reload()
             } catch (e: Exception) {
                 onNotice(e.message ?: "Couldn't submit the request.")
@@ -174,6 +237,55 @@ fun KeyAccessRequestScreen(
             loading -> CircularProgressIndicator()
             loadError != null -> Text(loadError!!, color = MaterialTheme.colorScheme.error)
             else -> {
+                if (picInbox.isNotEmpty()) {
+                    Text("PIC inbox (Vendor Stage 1)", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                    picInbox.forEach { request ->
+                        Card(modifier = Modifier.fillMaxWidth()) {
+                            Column(Modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                Text(request.siteName ?: request.siteId, fontWeight = FontWeight.SemiBold)
+                                Text(request.requesterDisplayName ?: request.requesterUserId)
+                                Text(request.reason ?: "", style = MaterialTheme.typography.bodySmall)
+                                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    Button(
+                                        onClick = {
+                                            busyPicId = request.id
+                                            scope.launch {
+                                                try {
+                                                    apiClient.picApproveKeyAccessRequest(request.id)
+                                                    onNotice("PIC approved — sent to Regional Admin.")
+                                                    reload()
+                                                } catch (e: Exception) {
+                                                    onNotice(e.message ?: "PIC approve failed.")
+                                                } finally {
+                                                    busyPicId = null
+                                                }
+                                            }
+                                        },
+                                        enabled = busyPicId != request.id,
+                                    ) { Text("Approve as PIC") }
+                                    OutlinedButton(
+                                        onClick = {
+                                            busyPicId = request.id
+                                            scope.launch {
+                                                try {
+                                                    apiClient.rejectKeyAccessRequest(request.id)
+                                                    onNotice("Rejected at PIC stage.")
+                                                    reload()
+                                                } catch (e: Exception) {
+                                                    onNotice(e.message ?: "Reject failed.")
+                                                } finally {
+                                                    busyPicId = null
+                                                }
+                                            }
+                                        },
+                                        enabled = busyPicId != request.id,
+                                    ) { Text("Reject") }
+                                }
+                            }
+                        }
+                    }
+                }
+
                 val approved = myRequests.filter { it.status == KeyAccessRequestStatus.APPROVED }
                 if (approved.isNotEmpty()) {
                     ApprovedPasskeyPicker(
@@ -235,6 +347,46 @@ fun KeyAccessRequestScreen(
                                                 onClick = { toggleKey(key) },
                                                 label = { Text(key.displayName) },
                                             )
+                                        }
+                                    }
+                                }
+
+                                if (isVendor) {
+                                    HorizontalDivider()
+                                    Text("Person In Charge", style = MaterialTheme.typography.labelLarge)
+                                    if (sitePics.isEmpty()) {
+                                        Text(
+                                            "No Technicians assigned to this site yet.",
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.error,
+                                        )
+                                    } else {
+                                        FlowRow(
+                                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                            verticalArrangement = Arrangement.spacedBy(8.dp),
+                                        ) {
+                                            sitePics.forEach { pic ->
+                                                FilterChip(
+                                                    selected = pic.id == selectedPicId,
+                                                    onClick = { selectedPicId = pic.id },
+                                                    label = { Text(pic.displayName) },
+                                                )
+                                            }
+                                        }
+                                    }
+                                    Text("Documents (Work Permit / NIOSH / IC)", style = MaterialTheme.typography.labelLarge)
+                                    FlowRow(
+                                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                                    ) {
+                                        listOf("WORK_PERMIT", "NIOSH", "IC").forEach { kind ->
+                                            val attached = documents.any { it.docKind == kind }
+                                            OutlinedButton(onClick = {
+                                                pendingDocKind = kind
+                                                docPicker.launch("*/*")
+                                            }) {
+                                                Text(if (attached) "$kind ✓" else "Attach $kind")
+                                            }
                                         }
                                     }
                                 }
@@ -416,8 +568,12 @@ private fun KeyAccessRequestRow(request: KeyAccessRequestDto) {
                         KeyAccessRequestStatus.APPROVED -> MaterialTheme.colorScheme.tertiary
                         KeyAccessRequestStatus.REJECTED,
                         KeyAccessRequestStatus.REVOKED,
+                        KeyAccessRequestStatus.EXPIRED,
                         -> MaterialTheme.colorScheme.error
-                        KeyAccessRequestStatus.PENDING -> MaterialTheme.colorScheme.onSurfaceVariant
+                        KeyAccessRequestStatus.PENDING,
+                        KeyAccessRequestStatus.PENDING_PIC,
+                        KeyAccessRequestStatus.PENDING_RA,
+                        -> MaterialTheme.colorScheme.onSurfaceVariant
                     },
                 )
             }

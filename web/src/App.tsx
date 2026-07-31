@@ -4,6 +4,7 @@ import { useAuth } from './auth/AuthContext'
 import { ErrorBoundary } from './components/ErrorBoundary'
 import { AppShell } from './layout/AppShell'
 import { LoginPage } from './pages/LoginPage'
+import { BootstrapPage } from './pages/BootstrapPage'
 
 const DashboardPage = lazy(() =>
   import('./pages/DashboardPage').then((m) => ({ default: m.DashboardPage })),
@@ -62,6 +63,14 @@ const RecycleBinPage = lazy(() =>
 function RequireAuth({ children }: { children: React.ReactNode }) {
   const { session } = useAuth()
   if (!session) return <Navigate to="/login" replace />
+  if (session.role === 'GOD_ADMIN') return <Navigate to="/bootstrap" replace />
+  return children
+}
+
+function RequireGodAdmin({ children }: { children: React.ReactNode }) {
+  const { session } = useAuth()
+  if (!session) return <Navigate to="/login" replace />
+  if (session.role !== 'GOD_ADMIN') return <Navigate to="/" replace />
   return children
 }
 
@@ -73,6 +82,14 @@ export default function App() {
   return (
     <Routes>
       <Route path="/login" element={<LoginPage />} />
+      <Route
+        path="/bootstrap"
+        element={
+          <RequireGodAdmin>
+            <BootstrapPage />
+          </RequireGodAdmin>
+        }
+      />
       <Route
         path="/"
         element={

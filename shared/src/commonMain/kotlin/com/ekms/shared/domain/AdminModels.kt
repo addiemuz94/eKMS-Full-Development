@@ -5,6 +5,12 @@ import kotlinx.serialization.Serializable
 /** Roles are deliberately small at the start. Add roles only when their rules are defined. */
 @Serializable
 enum class UserRole {
+    /**
+     * One-time bootstrap / developer role for a single deployment. Hidden from all personnel
+     * lists and role pickers. Sole permitted action: register the first Super Admin. Not used
+     * day-to-day and not multi-tenant.
+     */
+    GOD_ADMIN,
     SUPER_ADMIN,
     /** Multi-site oversight role; uses the same many-to-many `user_site_assignments` model as Technician/Vendor. */
     REGIONAL_ADMIN,

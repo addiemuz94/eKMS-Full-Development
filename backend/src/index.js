@@ -14,9 +14,9 @@ import accessGrantsRouter from './routes/accessGrants.js';
 import recycleBinRouter from './routes/recycleBin.js';
 import credentialsRouter from './routes/credentials.js';
 import keyCheckoutsRouter from './routes/keyCheckouts.js';
-import vendorPasskeyRequestsRouter from './routes/vendorPasskeyRequests.js';
 import regionsRouter from './routes/regions.js';
 import keyAccessRequestsRouter, { passkeyLogin } from './routes/keyAccessRequests.js';
+import mobilePushTokensRouter from './routes/mobilePushTokens.js';
 import auditRouter from './routes/audit.js';
 import { terminalSyncRouter, syncConflictsRouter } from './routes/sync.js';
 import {
@@ -64,7 +64,7 @@ app.use(
     allowedHeaders: ['Content-Type', 'Authorization', 'Idempotency-Key'],
   }),
 );
-app.use(express.json({ limit: '1mb' }));
+app.use(express.json({ limit: '12mb' }));
 
 app.get('/health', (_req, res) => {
   res.json({ ok: true, service: 'ekms-backend' });
@@ -92,13 +92,11 @@ admin.use('/keys', keysRouter);
 admin.use('/key-slots', keySlotsRouter);
 admin.use('/access-grants', accessGrantsRouter);
 admin.use('/key-checkouts', keyCheckoutsRouter);
-// Kept mounted, unchanged — still the live route backing terminalApp's deployed Phase 7 Vendor
-// Passkey screen (TerminalVendorPasskeyScreen.kt). key-access-requests below is an ADDITIVE,
-// more general mechanism for mobileApp going forward, not a replacement for this one — see the
-// design-choice note at the top of 009_regions_and_key_access_requests.sql for why both coexist.
-admin.use('/vendor-passkey-requests', vendorPasskeyRequestsRouter);
+// vendor-passkey-requests unmounted — replaced by Vendor staged key-access-requests (PIC → RA).
+// Route file kept for historical rows / optional one-off migration; do not remount without product OK.
 admin.use('/regions', regionsRouter);
 admin.use('/key-access-requests', keyAccessRequestsRouter);
+admin.use('/mobile-push-tokens', mobilePushTokensRouter);
 admin.use('/recycle-bin', recycleBinRouter);
 admin.use('/sync-conflicts', syncConflictsRouter);
 admin.use('/event-definitions', eventDefinitionsRouter);

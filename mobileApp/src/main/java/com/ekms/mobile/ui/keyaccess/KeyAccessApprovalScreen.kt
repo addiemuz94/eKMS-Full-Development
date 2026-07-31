@@ -45,6 +45,7 @@ fun KeyAccessApprovalScreen(apiClient: MobileApiClient, onNotice: (String) -> Un
             requests = apiClient.listKeyAccessRequests(status = "ALL")
                 .filter {
                     it.status == KeyAccessRequestStatus.PENDING ||
+                        it.status == KeyAccessRequestStatus.PENDING_RA ||
                         it.status == KeyAccessRequestStatus.APPROVED
                 }
         } catch (e: Exception) {
@@ -101,7 +102,9 @@ fun KeyAccessApprovalScreen(apiClient: MobileApiClient, onNotice: (String) -> Un
         }
     }
 
-    val pending = requests.filter { it.status == KeyAccessRequestStatus.PENDING }
+    val pending = requests.filter {
+        it.status == KeyAccessRequestStatus.PENDING || it.status == KeyAccessRequestStatus.PENDING_RA
+    }
     val approved = requests.filter { it.status == KeyAccessRequestStatus.APPROVED }
 
     Column(modifier = Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(16.dp)) {

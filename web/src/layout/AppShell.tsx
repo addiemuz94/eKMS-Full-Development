@@ -18,11 +18,11 @@ const GROUPS: NavGroup[] = [
     ],
   },
   {
-    title: 'Registration / Basic Settings',
+    title: 'Cabinets & Settings',
     icon: 'groupSettings',
     items: [
+      { to: '/terminals', label: 'Terminals', icon: 'terminals' },
       { to: '/units', label: 'Unit Settings', icon: 'units' },
-      { to: '/terminals', label: 'Key Cabinet Registration', icon: 'terminals' },
       { to: '/personnel', label: 'Personnel Management', icon: 'personnel' },
       { to: '/keys', label: 'Key Settings', icon: 'keys' },
       { to: '/permissions', label: 'Permission Settings', icon: 'permissions' },
@@ -33,11 +33,6 @@ const GROUPS: NavGroup[] = [
       { to: '/user-groups', label: 'User Groups', icon: 'userGroups' },
       { to: '/key-groups', label: 'Key Groups', icon: 'keyGroups' },
     ],
-  },
-  {
-    title: 'Data Synchronization',
-    icon: 'groupSync',
-    items: [{ to: '/data-sync', label: 'Data Synchronization', icon: 'sync' }],
   },
   {
     title: 'Report Data',

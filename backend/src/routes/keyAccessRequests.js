@@ -2,6 +2,7 @@ import crypto from 'crypto';
 import { Router } from 'express';
 import { z } from 'zod';
 import pool from '../db.js';
+import { sendPushToUser } from '../fcm.js';
 import { signKeyAccessSessionToken } from '../middleware/auth.js';
 import {
   assignedRegionIdsForUser,
@@ -20,14 +21,43 @@ import {
 const router = Router();
 
 /**
- * An ADDITIVE, more general request mechanism alongside routes/vendorPasskeyRequests.js (Phase
- * 1) — NOT a replacement, see the corrected note at the top of
- * 009_regions_and_key_access_requests.sql. vendorPasskeyRequests.js stays exactly as-is, still
- * backing terminalApp's deployed Phase 7 Vendor Passkey screen. This file adds Technician
- * support (not just Vendor), multi-key requests, and Region-routed (not Site-routed) approval
- * for mobileApp's future request form — see the design-choice comments on that same migration
- * file for the full reasoning.
+ * Only-B key access requests for Technician + Vendor.
+ * Vendor uses staged PENDING_PIC → PENDING_RA → APPROVED (replaces vendor_passkey_requests).
+ * Technician uses PENDING → APPROVED (Regional Admin).
+ * Past return/passkey window → EXPIRED (must resubmit; no revive).
  */
+
+/** Lazy expire: APPROVED past return/passkey expiry, or PENDING* past return window. */
+async function expireOverdueRequests() {
+  const now = nowMs();
+  await pool.execute(
+    `UPDATE key_access_requests SET
+       status = 'EXPIRED',
+       generated_passkey = NULL
+     WHERE status IN ('APPROVED', 'PENDING', 'PENDING_PIC', 'PENDING_RA')
+       AND (
+         (return_at_epoch_ms IS NOT NULL AND return_at_epoch_ms < :now)
+         OR (passkey_expires_at_epoch_ms IS NOT NULL AND passkey_expires_at_epoch_ms < :now
+             AND status = 'APPROVED')
+       )`,
+    { now },
+  );
+}
+
+async function notifyRegionalAdminsForSite(siteId, title, body, data = {}) {
+  const regionId = await regionIdForSite(siteId);
+  if (!regionId) return;
+  const [rows] = await pool.execute(
+    `SELECT u.id FROM users u
+     INNER JOIN user_region_assignments ura ON ura.user_id = u.id
+     WHERE ura.region_id = :regionId AND u.role = 'REGIONAL_ADMIN'
+       AND u.lifecycle_state = 'ACTIVE'`,
+    { regionId },
+  );
+  for (const row of rows) {
+    await sendPushToUser(row.id, title, body, data);
+  }
+}
 
 // Same two-layer model as every other Regional-Admin-scoped route (sites.js/accessGrants.js/
 // vendorPasskeyRequests.js) — this is the row-level half; REGIONAL_ADMIN_ALLOWED_ROUTES in
@@ -48,6 +78,13 @@ async function assertMayAccessRequestSite(req, siteId) {
  * alone, since a requester approving their own request would defeat the whole point. */
 async function assertMayReadRequest(req, row) {
   if (row.requester_user_id === req.auth?.sub) return true;
+  if (
+    req.auth?.role === 'TECHNICIAN' &&
+    row.pic_user_id === req.auth.sub &&
+    (row.status === 'PENDING_PIC' || row.status === 'PENDING_RA' || row.status === 'APPROVED')
+  ) {
+    return true;
+  }
   return assertMayAccessRequestSite(req, row.site_id);
 }
 
@@ -199,6 +236,9 @@ function mapRequest(row, keyIds, viewerUserId, siteName = null, cabinetNames = [
     pickupAtEpochMillis: row.pickup_at_epoch_ms == null ? null : Number(row.pickup_at_epoch_ms),
     returnAtEpochMillis: row.return_at_epoch_ms == null ? null : Number(row.return_at_epoch_ms),
     status: row.status,
+    picUserId: row.pic_user_id ?? null,
+    picApprovedAtEpochMillis:
+      row.pic_approved_at_epoch_ms == null ? null : Number(row.pic_approved_at_epoch_ms),
     approvedByUserId: row.approved_by_user_id,
     approvedAtEpochMillis: row.approved_at_epoch_ms == null ? null : Number(row.approved_at_epoch_ms),
     generatedPasskey: viewerUserId != null && viewerUserId === row.requester_user_id
@@ -234,6 +274,7 @@ async function mapRequestEnriched(row, keyIds, viewerUserId) {
 }
 
 router.get('/', async (req, res) => {
+  await expireOverdueRequests();
   const { siteId } = req.query;
   const status = req.query.status || 'PENDING';
 
@@ -254,6 +295,9 @@ router.get('/', async (req, res) => {
     }
     return res.json({ items });
   }
+
+  // PIC queue: Technicians see PENDING_PIC assigned to them when status=PENDING_PIC and not self-list
+  // (self-list handled above). Regional/Super continue below.
 
   if (siteId && !(await assertMayAccessRequestSite(req, siteId))) {
     return res.status(403).json({ error: 'FORBIDDEN', message: 'Not permitted to view requests for this site' });
@@ -280,8 +324,16 @@ router.get('/', async (req, res) => {
     );
   }
   if (status !== 'ALL') {
-    conditions.push(`status = :status`);
-    params.status = status;
+    // SA/RA "PENDING" queue includes Vendor stage-2 PENDING_RA (and Technician PENDING).
+    if (
+      status === 'PENDING' &&
+      (req.auth?.role === 'SUPER_ADMIN' || req.auth?.role === 'REGIONAL_ADMIN')
+    ) {
+      conditions.push(`status IN ('PENDING', 'PENDING_RA')`);
+    } else {
+      conditions.push(`status = :status`);
+      params.status = status;
+    }
   }
   if (conditions.length > 0) sql += ` WHERE ${conditions.join(' AND ')}`;
   sql += ` ORDER BY requested_at_epoch_ms DESC`;
@@ -294,19 +346,70 @@ router.get('/', async (req, res) => {
   res.json({ items });
 });
 
+/**
+ * GET /pic-inbox — Vendor Stage-1 queue for the signed-in Technician (as PIC).
+ */
+router.get('/pic-inbox', async (req, res) => {
+  await expireOverdueRequests();
+  if (req.auth?.role !== 'TECHNICIAN') {
+    return res.status(403).json({ error: 'FORBIDDEN', message: 'PIC inbox is for Technicians' });
+  }
+  const [rows] = await pool.execute(
+    `SELECT * FROM key_access_requests
+     WHERE pic_user_id = :picUserId AND status = 'PENDING_PIC'
+     ORDER BY requested_at_epoch_ms DESC`,
+    { picUserId: req.auth.sub },
+  );
+  const items = [];
+  for (const row of rows) {
+    items.push(await mapRequestEnriched(row, await requestKeyIds(row.id), req.auth?.sub));
+  }
+  return res.json({ items });
+});
+
+/**
+ * GET /site-pics/:siteId — Technicians assigned to a site (Vendor PIC picker).
+ */
+router.get('/site-pics/:siteId', async (req, res) => {
+  if (req.auth?.role !== 'VENDOR' && req.auth?.role !== 'SUPER_ADMIN' && req.auth?.role !== 'REGIONAL_ADMIN') {
+    return res.status(403).json({ error: 'FORBIDDEN', message: 'PIC list is for Vendor self-service' });
+  }
+  if (req.auth?.role === 'VENDOR' && !(await assertMayCreateForSite(req, req.params.siteId))) {
+    return res.status(403).json({ error: 'FORBIDDEN', message: 'Not permitted for this site' });
+  }
+  if (
+    (req.auth?.role === 'SUPER_ADMIN' || req.auth?.role === 'REGIONAL_ADMIN') &&
+    !(await assertMayAccessRequestSite(req, req.params.siteId))
+  ) {
+    return res.status(403).json({ error: 'FORBIDDEN', message: 'Not permitted for this site' });
+  }
+  const [rows] = await pool.execute(
+    `SELECT u.id, u.display_name, u.email FROM users u
+     INNER JOIN user_site_assignments usa ON usa.user_id = u.id
+     WHERE usa.site_id = :siteId AND u.role = 'TECHNICIAN' AND u.lifecycle_state = 'ACTIVE'
+     ORDER BY u.display_name ASC`,
+    { siteId: req.params.siteId },
+  );
+  return res.json({
+    items: rows.map((r) => ({ id: r.id, displayName: r.display_name, email: r.email })),
+  });
+});
+
 router.get('/:id', async (req, res) => {
+  await expireOverdueRequests();
   const [rows] = await pool.execute(`SELECT * FROM key_access_requests WHERE id = :id LIMIT 1`, {
     id: req.params.id,
   });
   if (!rows[0]) return notFound(res, 'Key access request not found');
-  // Out-of-scope reads as "not found", not "forbidden" — avoids confirming a request's
-  // existence to a caller who isn't its requester and whose regions don't cover its site.
   if (!(await assertMayReadRequest(req, rows[0]))) {
     return notFound(res, 'Key access request not found');
   }
   return res.json(await mapRequestEnriched(rows[0], await requestKeyIds(rows[0].id), req.auth?.sub));
 });
 
+/**
+ * Create schema — Technician → PENDING; Vendor → PENDING_PIC (+ docs + picUserId).
+ */
 const createSchema = z.object({
   requesterUserId: z.string().uuid().optional(),
   requesterRole: z.enum(['TECHNICIAN', 'VENDOR']).optional(),
@@ -315,6 +418,19 @@ const createSchema = z.object({
   reason: z.string().trim().min(1).max(2000),
   pickupAtEpochMillis: z.number().int().positive(),
   returnAtEpochMillis: z.number().int().positive(),
+  /** Required when requester is VENDOR — Person In Charge (Technician at the site). */
+  picUserId: z.string().uuid().optional(),
+  /** Optional base64 document uploads at create time (Work Permit / NIOSH / IC). */
+  documents: z
+    .array(
+      z.object({
+        docKind: z.enum(['WORK_PERMIT', 'NIOSH', 'IC']),
+        fileName: z.string().trim().min(1).max(255),
+        contentType: z.string().trim().min(1).max(128).default('application/octet-stream'),
+        contentBase64: z.string().min(1),
+      }),
+    )
+    .optional(),
 });
 
 router.post('/', async (req, res) => {
@@ -372,6 +488,30 @@ router.post('/', async (req, res) => {
     return badRequest(res, 'One or more keyIds are not active keys at the given site');
   }
 
+  let picUserId = null;
+  let initialStatus = 'PENDING';
+  if (requesterRole === 'VENDOR') {
+    if (!parsed.data.picUserId) {
+      return badRequest(res, 'picUserId is required for Vendor requests');
+    }
+    const [pic] = await pool.execute(
+      `SELECT u.id FROM users u
+       INNER JOIN user_site_assignments usa ON usa.user_id = u.id
+       WHERE u.id = :id AND u.role = 'TECHNICIAN' AND u.lifecycle_state = 'ACTIVE'
+         AND usa.site_id = :siteId
+       LIMIT 1`,
+      { id: parsed.data.picUserId, siteId: parsed.data.siteId },
+    );
+    if (!pic[0]) {
+      return badRequest(res, 'picUserId must be an active Technician assigned to the requested site');
+    }
+    picUserId = parsed.data.picUserId;
+    initialStatus = 'PENDING_PIC';
+    if (!parsed.data.documents || parsed.data.documents.length < 1) {
+      return badRequest(res, 'Vendor requests require at least one document (Work Permit, NIOSH, or IC)');
+    }
+  }
+
   const derivedDurationMinutes = Math.max(
     1,
     Math.ceil((parsed.data.returnAtEpochMillis - parsed.data.pickupAtEpochMillis) / 60_000),
@@ -384,20 +524,22 @@ router.post('/', async (req, res) => {
     await conn.beginTransaction();
     await conn.execute(
       `INSERT INTO key_access_requests
-        (id, requester_user_id, requester_role, site_id, reason, requested_at_epoch_ms,
+        (id, requester_user_id, requester_role, pic_user_id, site_id, reason, requested_at_epoch_ms,
          requested_duration_minutes, pickup_at_epoch_ms, return_at_epoch_ms, status)
-       VALUES (:id, :requesterUserId, :requesterRole, :siteId, :reason, :now,
-         :requestedDurationMinutes, :pickupAt, :returnAt, 'PENDING')`,
+       VALUES (:id, :requesterUserId, :requesterRole, :picUserId, :siteId, :reason, :now,
+         :requestedDurationMinutes, :pickupAt, :returnAt, :status)`,
       {
         id,
         requesterUserId,
         requesterRole,
+        picUserId,
         siteId: parsed.data.siteId,
         reason: parsed.data.reason,
         now,
         requestedDurationMinutes: derivedDurationMinutes,
         pickupAt: parsed.data.pickupAtEpochMillis,
         returnAt: parsed.data.returnAtEpochMillis,
+        status: initialStatus,
       },
     );
     for (const keyId of parsed.data.keyIds) {
@@ -406,9 +548,39 @@ router.post('/', async (req, res) => {
         { id, keyId },
       );
     }
+    if (parsed.data.documents?.length) {
+      for (const doc of parsed.data.documents) {
+        let buf;
+        try {
+          buf = Buffer.from(doc.contentBase64, 'base64');
+        } catch {
+          throw new Error('INVALID_DOC');
+        }
+        if (buf.length === 0 || buf.length > 8 * 1024 * 1024) {
+          throw new Error('INVALID_DOC_SIZE');
+        }
+        await conn.execute(
+          `INSERT INTO key_access_request_documents
+            (id, request_id, doc_kind, file_name, content_type, content, created_at_epoch_ms)
+           VALUES (:id, :requestId, :docKind, :fileName, :contentType, :content, :now)`,
+          {
+            id: newId(),
+            requestId: id,
+            docKind: doc.docKind,
+            fileName: doc.fileName,
+            contentType: doc.contentType,
+            content: buf,
+            now,
+          },
+        );
+      }
+    }
     await conn.commit();
   } catch (err) {
     await conn.rollback();
+    if (err.message === 'INVALID_DOC' || err.message === 'INVALID_DOC_SIZE') {
+      return badRequest(res, 'Invalid document payload (base64, max 8MB each)');
+    }
     throw err;
   } finally {
     conn.release();
@@ -422,11 +594,24 @@ router.post('/', async (req, res) => {
     entityId: id,
   });
 
+  if (initialStatus === 'PENDING_PIC' && picUserId) {
+    await sendPushToUser(picUserId, 'Vendor access — PIC review', 'A vendor request needs your approval', {
+      requestId: id,
+      stage: 'PENDING_PIC',
+    });
+  } else if (initialStatus === 'PENDING') {
+    await notifyRegionalAdminsForSite(parsed.data.siteId, 'Key access request', 'A technician request awaits approval', {
+      requestId: id,
+      stage: 'PENDING',
+    });
+  }
+
   const [rows] = await pool.execute(`SELECT * FROM key_access_requests WHERE id = :id`, { id });
   return res.status(201).json(await mapRequestEnriched(rows[0], parsed.data.keyIds, req.auth?.sub));
 });
 
 router.post('/:id/approve', async (req, res) => {
+  await expireOverdueRequests();
   const [existing] = await pool.execute(`SELECT * FROM key_access_requests WHERE id = :id LIMIT 1`, {
     id: req.params.id,
   });
@@ -434,12 +619,13 @@ router.post('/:id/approve', async (req, res) => {
   if (!(await assertMayAccessRequestSite(req, existing[0].site_id))) {
     return notFound(res, 'Key access request not found');
   }
-  if (existing[0].status !== 'PENDING') {
-    return conflict(res, 'Request is no longer pending');
+
+  // Technician: PENDING. Vendor after PIC: PENDING_RA. Never approve PENDING_PIC from RA.
+  const expectedStatus = existing[0].requester_role === 'VENDOR' ? 'PENDING_RA' : 'PENDING';
+  if (existing[0].status !== expectedStatus) {
+    return conflict(res, `Request is not awaiting Regional Admin approval (status=${existing[0].status})`);
   }
 
-  // Only B: PIN valid until return datetime. No region duration clamp.
-  // Legacy rows without return_at fall back to requested_duration_minutes from now.
   const now = nowMs();
   let expiresAt;
   if (existing[0].return_at_epoch_ms != null) {
@@ -461,10 +647,10 @@ router.post('/:id/approve', async (req, res) => {
        approved_at_epoch_ms = :now,
        generated_passkey = :code,
        passkey_expires_at_epoch_ms = :expiresAt
-     WHERE id = :id AND status = 'PENDING'`,
-    { id: req.params.id, actorUserId, now, code, expiresAt },
+     WHERE id = :id AND status = :expectedStatus`,
+    { id: req.params.id, actorUserId, now, code, expiresAt, expectedStatus },
   );
-  if (result.affectedRows === 0) return conflict(res, 'Request is no longer pending');
+  if (result.affectedRows === 0) return conflict(res, 'Request is no longer pending Regional Admin approval');
 
   await writeAudit({
     eventType: 'KEY_ACCESS_REQUEST_APPROVED',
@@ -474,6 +660,13 @@ router.post('/:id/approve', async (req, res) => {
     entityId: req.params.id,
   });
 
+  await sendPushToUser(
+    existing[0].requester_user_id,
+    'Key access approved',
+    `Your PIN is ready (valid until return window).`,
+    { requestId: req.params.id, stage: 'APPROVED' },
+  );
+
   return res.json({
     id: req.params.id,
     status: 'APPROVED',
@@ -482,24 +675,95 @@ router.post('/:id/approve', async (req, res) => {
   });
 });
 
-router.post('/:id/reject', async (req, res) => {
+/** PIC Stage-1 approve — Technician assigned as pic_user_id only. */
+router.post('/:id/pic-approve', async (req, res) => {
+  await expireOverdueRequests();
   const [existing] = await pool.execute(`SELECT * FROM key_access_requests WHERE id = :id LIMIT 1`, {
     id: req.params.id,
   });
   if (!existing[0]) return notFound(res, 'Key access request not found');
-  if (!(await assertMayAccessRequestSite(req, existing[0].site_id))) {
+  if (req.auth?.role !== 'TECHNICIAN' || existing[0].pic_user_id !== req.auth.sub) {
+    return res.status(403).json({ error: 'FORBIDDEN', message: 'Only the assigned PIC may approve Stage 1' });
+  }
+  if (existing[0].status !== 'PENDING_PIC') {
+    return conflict(res, 'Request is not awaiting PIC approval');
+  }
+
+  const now = nowMs();
+  if (existing[0].return_at_epoch_ms != null && Number(existing[0].return_at_epoch_ms) <= now) {
+    return badRequest(res, 'Request return window has already ended — cannot approve');
+  }
+
+  const [result] = await pool.execute(
+    `UPDATE key_access_requests SET
+       status = 'PENDING_RA',
+       pic_approved_at_epoch_ms = :now
+     WHERE id = :id AND status = 'PENDING_PIC'`,
+    { id: req.params.id, now },
+  );
+  if (result.affectedRows === 0) return conflict(res, 'Request is no longer awaiting PIC approval');
+
+  await writeAudit({
+    eventType: 'KEY_ACCESS_REQUEST_PIC_APPROVED',
+    actorUserId: req.auth.sub,
+    siteId: existing[0].site_id,
+    entityType: 'KEY_ACCESS_REQUEST',
+    entityId: req.params.id,
+  });
+
+  await notifyRegionalAdminsForSite(
+    existing[0].site_id,
+    'Vendor access — RA review',
+    'A vendor request passed PIC and needs Regional Admin approval',
+    { requestId: req.params.id, stage: 'PENDING_RA' },
+  );
+
+  const [rows] = await pool.execute(`SELECT * FROM key_access_requests WHERE id = :id`, {
+    id: req.params.id,
+  });
+  return res.json(await mapRequestEnriched(rows[0], await requestKeyIds(req.params.id), req.auth?.sub));
+});
+
+router.post('/:id/reject', async (req, res) => {
+  await expireOverdueRequests();
+  const [existing] = await pool.execute(`SELECT * FROM key_access_requests WHERE id = :id LIMIT 1`, {
+    id: req.params.id,
+  });
+  if (!existing[0]) return notFound(res, 'Key access request not found');
+
+  const isPic =
+    req.auth?.role === 'TECHNICIAN' &&
+    existing[0].pic_user_id === req.auth.sub &&
+    existing[0].status === 'PENDING_PIC';
+  if (!isPic && !(await assertMayAccessRequestSite(req, existing[0].site_id))) {
     return notFound(res, 'Key access request not found');
   }
-  if (existing[0].status !== 'PENDING') {
-    return conflict(res, 'Request is no longer pending');
+
+  const rejectable = ['PENDING', 'PENDING_PIC', 'PENDING_RA'];
+  if (!rejectable.includes(existing[0].status)) {
+    return conflict(res, 'Request is no longer rejectable');
+  }
+  if (isPic && existing[0].status !== 'PENDING_PIC') {
+    return conflict(res, 'PIC may only reject at Stage 1');
+  }
+  if (!isPic && existing[0].status === 'PENDING_PIC' && req.auth?.role !== 'SUPER_ADMIN') {
+    return conflict(res, 'Regional Admin cannot reject until PIC has acted');
+  }
+  // Super Admin can reject PENDING_PIC; RA only PENDING / PENDING_RA
+  if (
+    !isPic &&
+    req.auth?.role === 'REGIONAL_ADMIN' &&
+    existing[0].status === 'PENDING_PIC'
+  ) {
+    return conflict(res, 'Awaiting PIC first');
   }
 
   const actorUserId = req.auth?.role === 'TERMINAL_DEVICE' ? null : req.auth.sub;
   const [result] = await pool.execute(
-    `UPDATE key_access_requests SET status = 'REJECTED' WHERE id = :id AND status = 'PENDING'`,
-    { id: req.params.id },
+    `UPDATE key_access_requests SET status = 'REJECTED' WHERE id = :id AND status = :status`,
+    { id: req.params.id, status: existing[0].status },
   );
-  if (result.affectedRows === 0) return conflict(res, 'Request is no longer pending');
+  if (result.affectedRows === 0) return conflict(res, 'Request is no longer rejectable');
 
   await writeAudit({
     eventType: 'KEY_ACCESS_REQUEST_REJECTED',
@@ -507,6 +771,11 @@ router.post('/:id/reject', async (req, res) => {
     siteId: existing[0].site_id,
     entityType: 'KEY_ACCESS_REQUEST',
     entityId: req.params.id,
+  });
+
+  await sendPushToUser(existing[0].requester_user_id, 'Key access rejected', 'Your request was rejected. Submit a new one if needed.', {
+    requestId: req.params.id,
+    stage: 'REJECTED',
   });
 
   const [rows] = await pool.execute(`SELECT * FROM key_access_requests WHERE id = :id`, {
@@ -550,6 +819,11 @@ router.post('/:id/revoke', async (req, res) => {
     entityId: req.params.id,
   });
 
+  await sendPushToUser(existing[0].requester_user_id, 'Key access revoked', 'Your passkey was revoked.', {
+    requestId: req.params.id,
+    stage: 'REVOKED',
+  });
+
   const [rows] = await pool.execute(`SELECT * FROM key_access_requests WHERE id = :id`, {
     id: req.params.id,
   });
@@ -586,22 +860,10 @@ const passkeyLoginSchema = z.object({
 });
 
 /**
- * POST /v1/terminal/passkey-login — unauthenticated by necessity, same reasoning as
- * pair-with-code: the whole point is to hand a terminal-side operator (who has no token yet at
- * the login screen) a session from just the 4-digit code. See TerminalPasskeyLoginRequest's doc
- * in ApiContracts.kt for the full contract.
- *
- * Backend route only, per this pass's explicit scope — terminalApp's `TerminalPasskeyLoginScreen`
- * is NOT wired to this endpoint yet (still the disabled UI shell it was in Phase 3); that wiring
- * is separate, deliberately deferred follow-up work, not part of this change.
- *
- * Beyond the request's own approved-and-unexpired check, this also confirms the submitted
- * `terminalId` belongs to the SAME site the request was approved for — not explicitly asked for
- * in the task, but without it a passkey approved for one cabinet's site could be replayed at any
- * other terminal in the system, which would defeat the whole point of scoping the session to a
- * specific site's keys. Flagged as a deliberate addition, not silently assumed.
+ * POST /v1/terminal/passkey-login — unauthenticated. Only APPROVED + within pickup/return window.
  */
 export async function passkeyLogin(req, res) {
+  await expireOverdueRequests();
   const ipAddress = req.ip || 'unknown';
 
   if (await isLoginRateLimited(ipAddress)) {
@@ -644,13 +906,18 @@ export async function passkeyLogin(req, res) {
       eventType: 'KEY_ACCESS_SESSION_LOGIN_FAILED',
       terminalId: terminal.id,
       siteId: terminal.site_id,
-      detail: 'Invalid, wrong-site, or non-approved passkey',
+      detail: 'Invalid, wrong-site, expired, or non-approved passkey',
     });
     return res.status(401).json({ error: 'UNAUTHORIZED', message: 'Invalid or expired passkey' });
   }
 
   const expiresAt = Number(request.passkey_expires_at_epoch_ms);
   if (!Number.isFinite(expiresAt) || expiresAt <= now) {
+    await pool.execute(
+      `UPDATE key_access_requests SET status = 'EXPIRED', generated_passkey = NULL
+       WHERE id = :id AND status = 'APPROVED'`,
+      { id: request.id },
+    );
     await recordLoginAttempt(ipAddress, false);
     await writeAudit({
       eventType: 'KEY_ACCESS_SESSION_LOGIN_FAILED',
@@ -660,10 +927,9 @@ export async function passkeyLogin(req, res) {
       entityId: request.id,
       detail: 'Expired passkey',
     });
-    return res.status(401).json({ error: 'UNAUTHORIZED', message: 'Passkey has expired' });
+    return res.status(401).json({ error: 'UNAUTHORIZED', message: 'Passkey has expired — submit a new request' });
   }
 
-  // Only B calendar window: PIN must not work before pickup.
   if (request.pickup_at_epoch_ms != null && Number(request.pickup_at_epoch_ms) > now) {
     await recordLoginAttempt(ipAddress, false);
     await writeAudit({
@@ -684,9 +950,6 @@ export async function passkeyLogin(req, res) {
   const keyIds = await requestKeyIds(request.id);
   const accessToken = signKeyAccessSessionToken(request, keyIds);
 
-  // Only B: requester is usually NOT in this terminal's bootstrap user list (exception site =
-  // outside standing assignments). Terminal builds the session from these fields instead of a
-  // local personnel lookup.
   const [requesterRows] = await pool.execute(
     `SELECT id, display_name, email, role FROM users
      WHERE id = :id AND lifecycle_state = 'ACTIVE' LIMIT 1`,

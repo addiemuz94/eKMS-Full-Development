@@ -63,6 +63,10 @@ object ApiPaths {
     const val ADMIN_KEY_ACCESS_REQUEST_APPROVE = "/v1/admin/key-access-requests/{id}/approve"
     const val ADMIN_KEY_ACCESS_REQUEST_REJECT = "/v1/admin/key-access-requests/{id}/reject"
     const val ADMIN_KEY_ACCESS_REQUEST_REVOKE = "/v1/admin/key-access-requests/{id}/revoke"
+    const val ADMIN_KEY_ACCESS_REQUEST_PIC_APPROVE = "/v1/admin/key-access-requests/{id}/pic-approve"
+    const val ADMIN_KEY_ACCESS_PIC_INBOX = "/v1/admin/key-access-requests/pic-inbox"
+    const val ADMIN_KEY_ACCESS_SITE_PICS = "/v1/admin/key-access-requests/site-pics/{siteId}"
+    const val ADMIN_MOBILE_PUSH_TOKENS = "/v1/admin/mobile-push-tokens"
     /** Resolves a single site's Region-derived [SiteKeyAccessPolicyDto.maxKeyAccessDurationMinutes]
      * ceiling — a narrow, purpose-built read so a requester's mobile form can bound its duration
      * picker without needing broader Region visibility (regions.js itself stays Super-Admin-only). */
@@ -1091,10 +1095,16 @@ data class RegionListResponse(val items: List<RegionDto> = emptyList())
 @Serializable
 enum class KeyAccessRequestStatus {
     PENDING,
+    /** Vendor Stage 1 — waiting for Person In Charge (Technician at site). */
+    PENDING_PIC,
+    /** Vendor Stage 2 — PIC approved; waiting for Regional Admin. */
+    PENDING_RA,
     APPROVED,
     REJECTED,
     /** Admin cancelled an approved PIN — passkey cleared; terminal passkey-login must fail. */
     REVOKED,
+    /** Pickup/return window ended without use (or past return) — must resubmit a new request. */
+    EXPIRED,
 }
 
 /** [passkeyExpiresAtEpochMillis] is present once approved; the plaintext code itself is never
@@ -1125,6 +1135,9 @@ data class KeyAccessRequestDto(
     val pickupAtEpochMillis: Long? = null,
     val returnAtEpochMillis: Long? = null,
     val status: KeyAccessRequestStatus,
+    /** Vendor Stage-1 PIC (Technician at site); null for Technician-only requests. */
+    val picUserId: String? = null,
+    val picApprovedAtEpochMillis: Long? = null,
     val approvedByUserId: String? = null,
     val approvedAtEpochMillis: Long? = null,
     /** Non-null only when the caller viewing this DTO IS the request's own [requesterUserId] —
@@ -1149,6 +1162,33 @@ data class CreateKeyAccessRequestRequest(
     val reason: String,
     val pickupAtEpochMillis: Long,
     val returnAtEpochMillis: Long,
+    /** Required for Vendor — Technician PIC at the exception site. */
+    val picUserId: String? = null,
+    val documents: List<KeyAccessRequestDocumentUpload> = emptyList(),
+)
+
+@Serializable
+data class KeyAccessRequestDocumentUpload(
+    val docKind: String,
+    val fileName: String,
+    val contentType: String = "application/octet-stream",
+    val contentBase64: String,
+)
+
+@Serializable
+data class SitePicCandidateDto(
+    val id: String,
+    val displayName: String,
+    val email: String = "",
+)
+
+@Serializable
+data class SitePicListResponse(val items: List<SitePicCandidateDto> = emptyList())
+
+@Serializable
+data class RegisterMobilePushTokenRequest(
+    val fcmToken: String,
+    val platform: String = "ANDROID",
 )
 
 @Serializable

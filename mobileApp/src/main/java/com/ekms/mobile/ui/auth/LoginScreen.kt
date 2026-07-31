@@ -26,8 +26,10 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.platform.LocalContext
 import com.ekms.mobile.data.MobileApiClient
 import com.ekms.mobile.data.MobileApiException
+import com.ekms.mobile.push.PushTokenSync
 import com.ekms.shared.api.AuthUserProfile
 import kotlinx.coroutines.launch
 
@@ -48,6 +50,7 @@ fun LoginScreen(
     var loading by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
     val scope = rememberCoroutineScope()
+    val context = LocalContext.current
 
     fun submit() {
         if (identifier.isBlank() || password.isBlank()) {
@@ -59,6 +62,7 @@ fun LoginScreen(
         scope.launch {
             try {
                 val response = apiClient.login(identifier, password)
+                PushTokenSync.syncAfterLogin(context.applicationContext, apiClient)
                 onLoginSuccess(response.profile)
             } catch (e: MobileApiException) {
                 error = e.message

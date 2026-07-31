@@ -119,6 +119,8 @@ const REGIONAL_ADMIN_ALLOWED_ROUTES = [
   { method: 'POST', pattern: /^\/key-access-requests\/[^/]+\/approve$/ },
   { method: 'POST', pattern: /^\/key-access-requests\/[^/]+\/reject$/ },
   { method: 'POST', pattern: /^\/key-access-requests\/[^/]+\/revoke$/ },
+  { method: 'GET', pattern: /^\/key-access-requests\/site-pics\/[^/]+$/ },
+  { method: 'POST', pattern: /^\/mobile-push-tokens$/ },
   // Sites: read-only (list/get), added for the terminal's item-14 site-name display — NOT
   // create/update/delete. sites.js's own handlers additionally scope both of these to the
   // Regional Admin's own assigned sites; this allowlist only controls reachability.
@@ -144,9 +146,14 @@ const TECHNICIAN_VENDOR_ALLOWED_ROUTES = [
   { method: 'GET', pattern: /^\/key-access-requests\/site-policy\/[^/]+$/ },
   { method: 'GET', pattern: /^\/key-access-requests\/exception-sites$/ },
   { method: 'GET', pattern: /^\/key-access-requests\/exception-sites\/[^/]+\/keys$/ },
+  { method: 'GET', pattern: /^\/key-access-requests\/pic-inbox$/ },
+  { method: 'GET', pattern: /^\/key-access-requests\/site-pics\/[^/]+$/ },
   { method: 'GET', pattern: /^\/key-access-requests$/ },
   { method: 'GET', pattern: /^\/key-access-requests\/[^/]+$/ },
   { method: 'POST', pattern: /^\/key-access-requests$/ },
+  { method: 'POST', pattern: /^\/key-access-requests\/[^/]+\/pic-approve$/ },
+  { method: 'POST', pattern: /^\/key-access-requests\/[^/]+\/reject$/ },
+  { method: 'POST', pattern: /^\/mobile-push-tokens$/ },
   { method: 'GET', pattern: /^\/keys$/ },
   { method: 'GET', pattern: /^\/access-grants$/ },
   // Sites + terminals read-only for mobile companion Overview/Terminals (scoped to standing
@@ -158,17 +165,39 @@ const TECHNICIAN_VENDOR_ALLOWED_ROUTES = [
 ];
 
 /**
+ * GOD_ADMIN — one-time bootstrap only. May check whether a Super Admin exists and create the
+ * first Super Admin. Never reaches day-to-day CRUD.
+ */
+const GOD_ADMIN_ALLOWED_ROUTES = [
+  { method: 'GET', pattern: /^\/bootstrap-status$/ },
+  { method: 'POST', pattern: /^\/users$/ },
+];
+
+/**
  * Replaces `requireSuperAdmin` ONLY at the `/v1/admin` router's mount point. Real Super
  * Admin users pass through exactly as before (unconditional, unchanged). A TERMINAL_DEVICE
  * token only passes for the exact routes in TERMINAL_DEVICE_ALLOWED_ROUTES; a REGIONAL_ADMIN
  * token only passes for the exact routes in REGIONAL_ADMIN_ALLOWED_ROUTES; a TECHNICIAN or
- * VENDOR token only passes for the exact routes in TECHNICIAN_VENDOR_ALLOWED_ROUTES. Everything
- * else under `/v1/admin` — and all of `/v1/audit` and `/v1/reports`, which still use the plain
- * `requireSuperAdmin` — remains 403, same least-privilege intent as today.
+ * VENDOR token only passes for the exact routes in TECHNICIAN_VENDOR_ALLOWED_ROUTES. A
+ * GOD_ADMIN token only passes for GOD_ADMIN_ALLOWED_ROUTES. Everything else under `/v1/admin`
+ * — and all of `/v1/audit` and `/v1/reports`, which still use the plain `requireSuperAdmin` —
+ * remains 403, same least-privilege intent as today.
  */
 export function requireSuperAdminOrAllowlistedRole(req, res, next) {
   if (req.auth?.role === 'SUPER_ADMIN') {
     return next();
+  }
+  if (req.auth?.role === 'GOD_ADMIN') {
+    const allowed = GOD_ADMIN_ALLOWED_ROUTES.some(
+      (route) => route.method === req.method && route.pattern.test(req.path),
+    );
+    if (allowed) {
+      return next();
+    }
+    return res.status(403).json({
+      error: 'FORBIDDEN',
+      message: 'God Admin may only register the first Super Admin',
+    });
   }
   if (req.auth?.role === 'TERMINAL_DEVICE') {
     const allowed = TERMINAL_DEVICE_ALLOWED_ROUTES.some(

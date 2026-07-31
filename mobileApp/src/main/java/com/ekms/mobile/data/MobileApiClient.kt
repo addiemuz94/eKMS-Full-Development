@@ -16,9 +16,12 @@ import com.ekms.shared.api.KeyListResponse
 import com.ekms.shared.api.LoginRequest
 import com.ekms.shared.api.LoginResponse
 import com.ekms.shared.api.RefreshTokenRequest
+import com.ekms.shared.api.RegisterMobilePushTokenRequest
 import com.ekms.shared.api.SiteDto
 import com.ekms.shared.api.SiteKeyAccessPolicyDto
 import com.ekms.shared.api.SiteListResponse
+import com.ekms.shared.api.SitePicCandidateDto
+import com.ekms.shared.api.SitePicListResponse
 import com.ekms.shared.api.TerminalDto
 import com.ekms.shared.api.TerminalListResponse
 import io.ktor.client.HttpClient
@@ -302,6 +305,47 @@ class MobileApiClient(context: Context) {
                 body = "{}",
                 authenticated = true,
             ),
+        )
+    }
+
+    suspend fun listPicInbox(): List<KeyAccessRequestDto> {
+        ensureBaseUrl()
+        return decode<KeyAccessRequestListResponse>(
+            send(method = HttpMethod.Get, path = ApiPaths.ADMIN_KEY_ACCESS_PIC_INBOX, body = null, authenticated = true),
+        ).items
+    }
+
+    suspend fun listSitePics(siteId: String): List<SitePicCandidateDto> {
+        ensureBaseUrl()
+        return decode<SitePicListResponse>(
+            send(
+                method = HttpMethod.Get,
+                path = ApiPaths.ADMIN_KEY_ACCESS_SITE_PICS.replace("{siteId}", siteId),
+                body = null,
+                authenticated = true,
+            ),
+        ).items
+    }
+
+    suspend fun picApproveKeyAccessRequest(id: String): KeyAccessRequestDto {
+        ensureBaseUrl()
+        return decode(
+            send(
+                method = HttpMethod.Post,
+                path = ApiPaths.ADMIN_KEY_ACCESS_REQUEST_PIC_APPROVE.replace("{id}", id),
+                body = "{}",
+                authenticated = true,
+            ),
+        )
+    }
+
+    suspend fun registerPushToken(fcmToken: String, platform: String = "ANDROID") {
+        ensureBaseUrl()
+        send(
+            method = HttpMethod.Post,
+            path = ApiPaths.ADMIN_MOBILE_PUSH_TOKENS,
+            body = json.encodeToString(RegisterMobilePushTokenRequest(fcmToken = fcmToken, platform = platform)),
+            authenticated = true,
         )
     }
 

@@ -104,9 +104,12 @@ private fun AlertCard(request: KeyAccessRequestDto, onOpenAccess: () -> Unit) {
             Text(
                 when (request.status) {
                     KeyAccessRequestStatus.PENDING -> "Pending approval"
+                    KeyAccessRequestStatus.PENDING_PIC -> "Awaiting PIC"
+                    KeyAccessRequestStatus.PENDING_RA -> "Awaiting Regional Admin"
                     KeyAccessRequestStatus.APPROVED -> "Approved"
                     KeyAccessRequestStatus.REJECTED -> "Rejected"
                     KeyAccessRequestStatus.REVOKED -> "Revoked"
+                    KeyAccessRequestStatus.EXPIRED -> "Expired — submit a new request"
                 },
                 style = MaterialTheme.typography.titleMedium,
                 fontWeight = FontWeight.SemiBold,

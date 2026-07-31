@@ -5,6 +5,15 @@ export type SiteDto = {
   city?: string | null
   parentSiteId?: string | null
   address?: string | null
+  regionId?: string | null
+  revision: number
+}
+
+export type RegionDto = {
+  id: string
+  name: string
+  displayOrder: number
+  maxKeyAccessDurationMinutes: number
   revision: number
 }
 

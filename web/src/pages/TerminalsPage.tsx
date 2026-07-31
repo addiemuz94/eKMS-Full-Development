@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState, type FormEvent } from 'react'
+import { Link } from 'react-router-dom'
 import { Check, Plus, X } from 'lucide-react'
 import { api, ApiError } from '../api/client'
 import type { SiteDto, TerminalDto } from '../api/types'
@@ -223,11 +224,10 @@ export function TerminalsPage() {
     <section>
       <div className="page-header">
         <div>
-          <h1>Key Cabinet Registration</h1>
+          <h1>Terminals</h1>
           <p className="muted">
-            Super Admin registers a cabinet for a unit (e.g. Johor). The system shows a one-time 6-digit
-            pairing code. The on-site technician enters that code on the terminal; settings then download
-            from the server. NFC / fingerprint / face stay on the terminal only.
+            Hub for key cabinet registration and management: edit cabinet details, behavioral settings,
+            pairing codes, and per-terminal data sync. Use Registration under Home for new-unit onboarding.
           </p>
         </div>
         <Button icon={Plus} onClick={openCreate} disabled={!sites.length}>
@@ -318,6 +318,9 @@ export function TerminalsPage() {
                       <Button variant="link" disabled={busy} onClick={() => void onRegenerate(terminal)}>
                         Pairing code
                       </Button>
+                      <Link className="btn linkish" to={`/data-sync?terminalId=${terminal.id}`}>
+                        Data sync
+                      </Link>
                       <Button variant="link" disabled={busy} onClick={() => void onArchive(terminal.id)}>
                         Recycle
                       </Button>
