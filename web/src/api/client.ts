@@ -93,12 +93,35 @@ async function request<T>(
     const msg =
       (json as { message?: string; error?: string } | null)?.message ||
       (json as { error?: string } | null)?.error ||
-      text ||
-      `HTTP ${res.status}`
+      friendlyHttpError(res.status, text, res.headers.get('content-type'))
     throw new ApiError(res.status, msg)
   }
 
   return (json ?? {}) as T
+}
+
+/** Avoid dumping Caddy/SPA HTML into the red error bar when an API route is missing. */
+function friendlyHttpError(
+  status: number,
+  body: string,
+  contentType: string | null,
+  fallback?: string,
+): string {
+  const looksHtml =
+    (contentType ?? '').includes('text/html') ||
+    /^\s*<(!DOCTYPE|html)\b/i.test(body)
+  if (looksHtml) {
+    if (status === 404) {
+      return 'Report download is not available on the server yet. Ask an admin to redeploy the API.'
+    }
+    if (status >= 500) {
+      return 'Server error while generating the PDF. Try again, or ask an admin to check the API logs.'
+    }
+    return fallback || `Request failed (HTTP ${status}). The server returned a web page instead of API data.`
+  }
+  const trimmed = body.trim()
+  if (trimmed.length > 280) return trimmed.slice(0, 280) + '…'
+  return trimmed || fallback || `HTTP ${status}`
 }
 
 function listPath(path: string) {
@@ -393,9 +416,22 @@ export const api = {
     const res = await fetch(downloadPath, {
       headers: { Authorization: `Bearer ${accessToken}` },
     })
+    const contentType = res.headers.get('content-type') || ''
     if (!res.ok) {
       const text = await res.text()
-      throw new ApiError(res.status, text || `HTTP ${res.status}`)
+      throw new ApiError(res.status, friendlyHttpError(res.status, text, contentType))
+    }
+    if (!contentType.includes('application/pdf') && !contentType.includes('octet-stream')) {
+      const text = await res.text()
+      throw new ApiError(
+        res.status,
+        friendlyHttpError(
+          res.status,
+          text,
+          contentType,
+          'PDF download failed — the server did not return a PDF file.',
+        ),
+      )
     }
     const blob = await res.blob()
     const url = URL.createObjectURL(blob)
