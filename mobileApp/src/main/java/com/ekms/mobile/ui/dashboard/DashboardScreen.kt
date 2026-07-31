@@ -3,7 +3,6 @@ package com.ekms.mobile.ui.dashboard
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.CircularProgressIndicator
@@ -26,11 +25,14 @@ import com.ekms.shared.domain.UserRole
 
 /**
  * Overview tab — live counts from the API, scoped by the signed-in role on the server.
+ * Re-fetches when [refreshEpoch] changes (resume + 30s poll from the shell).
  */
 @Composable
 fun DashboardScreen(
     apiClient: MobileApiClient,
     profile: AuthUserProfile?,
+    refreshEpoch: Int = 0,
+    onLiveStatus: (serverOk: Boolean, syncing: Boolean) -> Unit = { _, _ -> },
     onOpenTerminals: () -> Unit,
     onOpenAccess: () -> Unit,
     onOpenAlerts: () -> Unit,
@@ -41,21 +43,31 @@ fun DashboardScreen(
     var pendingCount by remember { mutableStateOf(0) }
     var myRequestCount by remember { mutableStateOf(0) }
     var loadError by remember { mutableStateOf<String?>(null) }
+    var hasData by remember { mutableStateOf(false) }
 
     val isApprover =
         profile?.role == UserRole.SUPER_ADMIN || profile?.role == UserRole.REGIONAL_ADMIN
 
-    LaunchedEffect(profile?.id) {
-        loading = true
+    LaunchedEffect(profile?.id, refreshEpoch) {
+        val showSpinner = !hasData
+        if (showSpinner) loading = true
+        onLiveStatus(true, true)
         loadError = null
         try {
             terminalCount = apiClient.listTerminals().size
             val requests = apiClient.listKeyAccessRequests(status = "ALL")
-            pendingCount = requests.count { it.status == KeyAccessRequestStatus.PENDING }
+            pendingCount = requests.count {
+                it.status == KeyAccessRequestStatus.PENDING ||
+                    it.status == KeyAccessRequestStatus.PENDING_RA ||
+                    it.status == KeyAccessRequestStatus.PENDING_PIC
+            }
             myRequestCount = requests.size
+            hasData = true
+            onLiveStatus(true, false)
         } catch (e: Exception) {
             loadError = e.message ?: "Couldn't load overview."
-            onNotice(loadError!!)
+            onLiveStatus(false, false)
+            if (!hasData) onNotice(loadError!!)
         } finally {
             loading = false
         }
@@ -69,14 +81,14 @@ fun DashboardScreen(
     ) {
         Text("Overview", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
         Text(
-            "Summary for your permitted locations.",
+            "Summary for your permitted locations. Updates automatically while Connected.",
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
 
         when {
             loading -> CircularProgressIndicator()
-            loadError != null -> Text(loadError!!, color = MaterialTheme.colorScheme.error)
+            loadError != null && !hasData -> Text(loadError!!, color = MaterialTheme.colorScheme.error)
             else -> {
                 if (isApprover) {
                     CompanionCard(

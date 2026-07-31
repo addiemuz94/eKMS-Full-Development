@@ -83,6 +83,21 @@ class TerminalApiClient(context: Context) {
         }
     }
 
+    init {
+        // Cabinets paired before pairing-token persistence: treat the current session as the
+        // device link so operator sign-out still leaves live sync credentials.
+        if (preferences.getString(KEY_PAIRING_ACCESS_TOKEN, null).isNullOrBlank()) {
+            val existingAccess = preferences.getString(KEY_ACCESS_TOKEN, null)
+            val existingRefresh = preferences.getString(KEY_REFRESH_TOKEN, null)
+            if (!existingAccess.isNullOrBlank()) {
+                preferences.edit()
+                    .putString(KEY_PAIRING_ACCESS_TOKEN, existingAccess)
+                    .putString(KEY_PAIRING_REFRESH_TOKEN, existingRefresh)
+                    .apply()
+            }
+        }
+    }
+
     /**
      * Defaults to the production VPS so a fresh terminal can reach
      * `/v1/terminal/pair-with-code` with no manual setup — Admin Menu's
@@ -113,17 +128,43 @@ class TerminalApiClient(context: Context) {
             preferences.edit().putString(KEY_REFRESH_TOKEN, value).apply()
         }
 
+    /**
+     * Device tokens from [pairWithCode]. Survive operator [clearSession] so idle login can keep
+     * downloading portal changes. Cleared only when pairing is reset (no device tokens left).
+     */
+    private var pairingAccessToken: String?
+        get() = preferences.getString(KEY_PAIRING_ACCESS_TOKEN, null)
+        set(value) {
+            preferences.edit().putString(KEY_PAIRING_ACCESS_TOKEN, value).apply()
+        }
+
+    private var pairingRefreshToken: String?
+        get() = preferences.getString(KEY_PAIRING_REFRESH_TOKEN, null)
+        set(value) {
+            preferences.edit().putString(KEY_PAIRING_REFRESH_TOKEN, value).apply()
+        }
+
     val isConfigured: Boolean
         get() = baseUrl.isNotBlank()
 
     val isAuthenticated: Boolean
         get() = !accessToken.isNullOrBlank()
 
+    /**
+     * Clears the active operator/user JWT. If this cabinet was paired, restores the
+     * TERMINAL_DEVICE tokens so live sync continues at the login screen.
+     */
     fun clearSession() {
+        val deviceAccess = pairingAccessToken
+        val deviceRefresh = pairingRefreshToken
         preferences.edit()
             .remove(KEY_ACCESS_TOKEN)
             .remove(KEY_REFRESH_TOKEN)
             .apply()
+        if (!deviceAccess.isNullOrBlank()) {
+            accessToken = deviceAccess
+            refreshToken = deviceRefresh
+        }
     }
 
     fun syncBaseUrlFromSettings(serverAddress: String) {
@@ -192,6 +233,8 @@ class TerminalApiClient(context: Context) {
         )
         accessToken = response.accessToken
         refreshToken = response.refreshToken
+        pairingAccessToken = response.accessToken
+        pairingRefreshToken = response.refreshToken
         return response
     }
 
@@ -625,7 +668,11 @@ class TerminalApiClient(context: Context) {
         private const val KEY_BASE_URL = "base_url"
         private const val KEY_ACCESS_TOKEN = "access_token"
         private const val KEY_REFRESH_TOKEN = "refresh_token"
+        private const val KEY_PAIRING_ACCESS_TOKEN = "pairing_access_token"
+        private const val KEY_PAIRING_REFRESH_TOKEN = "pairing_refresh_token"
         const val DEFAULT_BASE_URL = "https://kms-cvt.com"
+        /** How often the app pulls portal snapshot changes while online. */
+        const val LIVE_SYNC_INTERVAL_MILLIS = 30_000L
 
         /**
          * Blank or loopback URLs (localhost / 127.0.0.1 / emulator 10.0.2.2) are not valid

@@ -16,14 +16,27 @@ import com.ekms.shared.domain.UserRole
 fun AccessScreen(
     apiClient: MobileApiClient,
     profile: AuthUserProfile?,
+    refreshEpoch: Int = 0,
+    onLiveStatus: (serverOk: Boolean, syncing: Boolean) -> Unit = { _, _ -> },
     onNotice: (String) -> Unit,
 ) {
     when (profile?.role) {
         UserRole.TECHNICIAN, UserRole.VENDOR ->
-            KeyAccessRequestScreen(apiClient = apiClient, profile = profile, onNotice = onNotice)
+            KeyAccessRequestScreen(
+                apiClient = apiClient,
+                profile = profile,
+                refreshEpoch = refreshEpoch,
+                onLiveStatus = onLiveStatus,
+                onNotice = onNotice,
+            )
 
         UserRole.REGIONAL_ADMIN, UserRole.SUPER_ADMIN ->
-            KeyAccessApprovalScreen(apiClient = apiClient, onNotice = onNotice)
+            KeyAccessApprovalScreen(
+                apiClient = apiClient,
+                refreshEpoch = refreshEpoch,
+                onLiveStatus = onLiveStatus,
+                onNotice = onNotice,
+            )
 
         null -> Text(
             "Sign in to view key access.",

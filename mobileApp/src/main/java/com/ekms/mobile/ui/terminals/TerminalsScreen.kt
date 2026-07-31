@@ -44,6 +44,8 @@ import org.json.JSONObject
 @Composable
 fun TerminalsScreen(
     apiClient: MobileApiClient,
+    refreshEpoch: Int = 0,
+    onLiveStatus: (serverOk: Boolean, syncing: Boolean) -> Unit = { _, _ -> },
     onNotice: (String) -> Unit,
 ) {
     val context = LocalContext.current
@@ -51,17 +53,23 @@ fun TerminalsScreen(
     var loadError by remember { mutableStateOf<String?>(null) }
     var terminals by remember { mutableStateOf<List<TerminalDto>>(emptyList()) }
     var sitesById by remember { mutableStateOf<Map<String, SiteDto>>(emptyMap()) }
+    var hasData by remember { mutableStateOf(false) }
 
-    LaunchedEffect(Unit) {
-        loading = true
+    LaunchedEffect(refreshEpoch) {
+        val showSpinner = !hasData
+        if (showSpinner) loading = true
+        onLiveStatus(true, true)
         loadError = null
         try {
             val sites = apiClient.listSites()
             sitesById = sites.associateBy { it.id }
             terminals = apiClient.listTerminals()
+            hasData = true
+            onLiveStatus(true, false)
         } catch (e: Exception) {
             loadError = e.message ?: "Couldn't load terminals."
-            onNotice(loadError!!)
+            onLiveStatus(false, false)
+            if (!hasData) onNotice(loadError!!)
         } finally {
             loading = false
         }
@@ -95,7 +103,7 @@ fun TerminalsScreen(
 
         when {
             loading -> CircularProgressIndicator()
-            loadError != null -> Text(loadError!!, color = MaterialTheme.colorScheme.error)
+            loadError != null && !hasData -> Text(loadError!!, color = MaterialTheme.colorScheme.error)
             terminals.isEmpty() -> Text(
                 "No terminals found for your locations.",
                 style = MaterialTheme.typography.bodyMedium,

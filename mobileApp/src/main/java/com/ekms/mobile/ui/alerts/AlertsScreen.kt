@@ -35,29 +35,41 @@ import com.ekms.shared.domain.UserRole
 fun AlertsScreen(
     apiClient: MobileApiClient,
     profile: AuthUserProfile?,
+    refreshEpoch: Int = 0,
+    onLiveStatus: (serverOk: Boolean, syncing: Boolean) -> Unit = { _, _ -> },
     onOpenAccess: () -> Unit,
     onNotice: (String) -> Unit,
 ) {
     var loading by remember { mutableStateOf(true) }
     var loadError by remember { mutableStateOf<String?>(null) }
     var items by remember { mutableStateOf<List<KeyAccessRequestDto>>(emptyList()) }
+    var hasData by remember { mutableStateOf(false) }
 
     val isApprover =
         profile?.role == UserRole.SUPER_ADMIN || profile?.role == UserRole.REGIONAL_ADMIN
 
-    LaunchedEffect(profile?.id) {
-        loading = true
+    LaunchedEffect(profile?.id, refreshEpoch) {
+        val showSpinner = !hasData
+        if (showSpinner) loading = true
+        onLiveStatus(true, true)
         loadError = null
         try {
             val all = apiClient.listKeyAccessRequests(status = "ALL")
             items = if (isApprover) {
-                all.filter { it.status == KeyAccessRequestStatus.PENDING }
+                all.filter {
+                    it.status == KeyAccessRequestStatus.PENDING ||
+                        it.status == KeyAccessRequestStatus.PENDING_RA ||
+                        it.status == KeyAccessRequestStatus.PENDING_PIC
+                }
             } else {
                 all.sortedByDescending { it.requestedAtEpochMillis }
             }
+            hasData = true
+            onLiveStatus(true, false)
         } catch (e: Exception) {
             loadError = e.message ?: "Couldn't load alerts."
-            onNotice(loadError!!)
+            onLiveStatus(false, false)
+            if (!hasData) onNotice(loadError!!)
         } finally {
             loading = false
         }
@@ -72,9 +84,9 @@ fun AlertsScreen(
         Text("Alerts", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
         Text(
             if (isApprover) {
-                "Pending key access requests that need your decision."
+                "Pending key access requests that need your decision. Updates automatically while Connected."
             } else {
-                "Status of your key access requests. Push notifications come in a later update."
+                "Status of your key access requests. Updates automatically while Connected."
             },
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -82,7 +94,7 @@ fun AlertsScreen(
 
         when {
             loading -> CircularProgressIndicator()
-            loadError != null -> Text(loadError!!, color = MaterialTheme.colorScheme.error)
+            loadError != null && !hasData -> Text(loadError!!, color = MaterialTheme.colorScheme.error)
             items.isEmpty() -> Text(
                 "No alerts right now.",
                 style = MaterialTheme.typography.bodyMedium,
