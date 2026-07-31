@@ -424,7 +424,9 @@ private fun KeyAccessRequestRow(request: KeyAccessRequestDto) {
                     style = MaterialTheme.typography.labelMedium,
                     color = when (request.status) {
                         KeyAccessRequestStatus.APPROVED -> MaterialTheme.colorScheme.tertiary
-                        KeyAccessRequestStatus.REJECTED -> MaterialTheme.colorScheme.error
+                        KeyAccessRequestStatus.REJECTED,
+                        KeyAccessRequestStatus.REVOKED,
+                        -> MaterialTheme.colorScheme.error
                         KeyAccessRequestStatus.PENDING -> MaterialTheme.colorScheme.onSurfaceVariant
                     },
                 )

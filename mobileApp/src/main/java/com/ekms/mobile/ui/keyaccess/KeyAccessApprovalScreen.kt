@@ -18,27 +18,17 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
-import androidx.compose.ui.Modifier
+import androidx.compose.ui.Modifier.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.ekms.mobile.data.MobileApiClient
 import com.ekms.shared.api.KeyAccessRequestDto
+import com.ekms.shared.api.KeyAccessRequestStatus
 import kotlinx.coroutines.launch
 
 /**
- * Regional Admin / Super Admin's Key Access Request approval screen. Scoping is entirely
- * server-side (`GET /key-access-requests` region-scopes Regional Admin automatically via
- * `assignedRegionIdsForUser`/`isRegionAssignedToUser`, and leaves Super Admin unscoped) — this
- * screen never filters by role itself, it just displays whatever the backend already decided
- * this caller may see. Same "Super Admin keeps full parity everywhere" pattern as every other
- * Regional-Admin-scoped feature in this project (cabinet settings, office hours, access grants).
- *
- * Approve/Reject are given equal visual weight — same size, same row, differing only in
- * ACCEPT/CANCEL-style tone — mirroring terminalApp's Phase 9C fix to `TerminalVendorPasskeyScreen`
- * (that screen previously made Reject look like a lesser action purely from component choice,
- * despite both being equally final). The just-generated passkey is deliberately NOT shown here —
- * it was never meant for the approver, only the requester (see `KeyAccessRequestScreen`'s status
- * list, which is the one place that value is ever surfaced to anyone).
+ * Regional Admin / Super Admin key-access queue: approve/reject PENDING, revoke APPROVED
+ * (clears the PIN so terminal passkey-login fails). Scoping is server-side.
  */
 @Composable
 fun KeyAccessApprovalScreen(apiClient: MobileApiClient, onNotice: (String) -> Unit) {
@@ -52,9 +42,13 @@ fun KeyAccessApprovalScreen(apiClient: MobileApiClient, onNotice: (String) -> Un
         loading = true
         loadError = null
         try {
-            requests = apiClient.listKeyAccessRequests(status = "PENDING")
+            requests = apiClient.listKeyAccessRequests(status = "ALL")
+                .filter {
+                    it.status == KeyAccessRequestStatus.PENDING ||
+                        it.status == KeyAccessRequestStatus.APPROVED
+                }
         } catch (e: Exception) {
-            loadError = e.message ?: "Couldn't load pending requests."
+            loadError = e.message ?: "Couldn't load key access requests."
         } finally {
             loading = false
         }
@@ -67,7 +61,7 @@ fun KeyAccessApprovalScreen(apiClient: MobileApiClient, onNotice: (String) -> Un
         scope.launch {
             try {
                 apiClient.approveKeyAccessRequest(id)
-                onNotice("Request approved.")
+                onNotice("Request approved — PIN issued to the requester.")
                 reload()
             } catch (e: Exception) {
                 onNotice(e.message ?: "Couldn't approve the request.")
@@ -92,68 +86,145 @@ fun KeyAccessApprovalScreen(apiClient: MobileApiClient, onNotice: (String) -> Un
         }
     }
 
+    fun revoke(id: String) {
+        busyRequestId = id
+        scope.launch {
+            try {
+                apiClient.revokeKeyAccessRequest(id)
+                onNotice("Access revoked — PIN no longer works at the cabinet.")
+                reload()
+            } catch (e: Exception) {
+                onNotice(e.message ?: "Couldn't revoke the request.")
+            } finally {
+                busyRequestId = null
+            }
+        }
+    }
+
+    val pending = requests.filter { it.status == KeyAccessRequestStatus.PENDING }
+    val approved = requests.filter { it.status == KeyAccessRequestStatus.APPROVED }
+
     Column(modifier = Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(16.dp)) {
         Text("Key access requests", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
 
         when {
             loading -> CircularProgressIndicator()
             loadError != null -> Text(loadError!!, color = MaterialTheme.colorScheme.error)
-            requests.isEmpty() -> Text(
-                "No pending requests right now.",
+            else -> {
+                Text("Pending", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                if (pending.isEmpty()) {
+                    Text(
+                        "No pending requests right now.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                } else {
+                    pending.forEach { request ->
+                        KeyAccessAdminCard(
+                            request = request,
+                            busy = busyRequestId == request.id,
+                            onApprove = { approve(request.id) },
+                            onReject = { reject(request.id) },
+                            onRevoke = null,
+                        )
+                    }
+                }
+
+                Text("Active PINs", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                if (approved.isEmpty()) {
+                    Text(
+                        "No approved passkeys to revoke.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                } else {
+                    approved.forEach { request ->
+                        KeyAccessAdminCard(
+                            request = request,
+                            busy = busyRequestId == request.id,
+                            onApprove = null,
+                            onReject = null,
+                            onRevoke = { revoke(request.id) },
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun KeyAccessAdminCard(
+    request: KeyAccessRequestDto,
+    busy: Boolean,
+    onApprove: (() -> Unit)?,
+    onReject: (() -> Unit)?,
+    onRevoke: (() -> Unit)?,
+) {
+    Card(modifier = Modifier.fillMaxWidth()) {
+        Column(
+            modifier = Modifier.padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            Text(
+                request.requesterDisplayName?.takeIf { it.isNotBlank() }
+                    ?: request.siteName?.takeIf { it.isNotBlank() }
+                    ?: "${request.requesterRole.name} · ${request.keyIds.size} key(s)",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.SemiBold,
+            )
+            Text(
+                buildString {
+                    append(request.requesterRole.name)
+                    request.siteName?.takeIf { it.isNotBlank() }?.let { append(" · $it") }
+                    append(" · ${request.keyIds.size} key(s)")
+                },
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            if (request.cabinetNames.isNotEmpty()) {
+                Text(
+                    "Cabinet: ${request.cabinetNames.joinToString(", ")}",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            request.reason?.takeIf { it.isNotBlank() }?.let {
+                Text(it, style = MaterialTheme.typography.bodyMedium)
+            }
+            Text(
+                windowLabel(request)
+                    ?: "Requested return within ${formatDuration(request.requestedDurationMinutes)}",
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
-            else -> requests.forEach { request ->
-                val busy = busyRequestId == request.id
-                Card(modifier = Modifier.fillMaxWidth()) {
-                    Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                        Text(
-                            request.siteName?.takeIf { it.isNotBlank() }
-                                ?: "${request.requesterRole.name} · ${request.keyIds.size} key(s)",
-                            style = MaterialTheme.typography.titleMedium,
-                            fontWeight = FontWeight.SemiBold,
-                        )
-                        if (!request.siteName.isNullOrBlank()) {
-                            Text(
-                                "${request.requesterRole.name} · ${request.keyIds.size} key(s)",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                        }
-                        if (request.cabinetNames.isNotEmpty()) {
-                            Text(
-                                "Cabinet: ${request.cabinetNames.joinToString(", ")}",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                        }
-                        request.reason?.takeIf { it.isNotBlank() }?.let {
-                            Text(it, style = MaterialTheme.typography.bodyMedium)
-                        }
-                        Text(
-                            windowLabel(request) ?: "Requested return within ${formatDuration(request.requestedDurationMinutes)}",
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.spacedBy(10.dp),
-                        ) {
-                            Button(
-                                onClick = { approve(request.id) },
-                                modifier = Modifier.weight(1f),
-                                enabled = !busy,
-                            ) {
-                                Text("Approve")
-                            }
-                            OutlinedButton(
-                                onClick = { reject(request.id) },
-                                modifier = Modifier.weight(1f),
-                                enabled = !busy,
-                            ) {
-                                Text("Reject")
-                            }
-                        }
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                if (onApprove != null && onReject != null) {
+                    Button(
+                        onClick = onApprove,
+                        modifier = Modifier.weight(1f),
+                        enabled = !busy,
+                    ) {
+                        Text("Approve")
+                    }
+                    OutlinedButton(
+                        onClick = onReject,
+                        modifier = Modifier.weight(1f),
+                        enabled = !busy,
+                    ) {
+                        Text("Reject")
+                    }
+                }
+                if (onRevoke != null) {
+                    OutlinedButton(
+                        onClick = onRevoke,
+                        modifier = Modifier.fillMaxWidth(),
+                        enabled = !busy,
+                    ) {
+                        Text("Revoke PIN")
                     }
                 }
             }

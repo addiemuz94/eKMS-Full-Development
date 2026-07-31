@@ -849,10 +849,12 @@ fun TerminalAdminApp() {
                 when (val match = CardUidResolver.resolve(matchedUserId, matchedKeyId)) {
                     is CardUidMatch.User -> when (val result = store.authenticateByUserId(match.userId)) {
                         is StoreResult.Success -> {
-                            session = result.value
-                            notice = null
-                            loginMethod = null
-                            route = postLoginRoute(result.value)
+                            if (acceptStandingLogin(result.value)) {
+                                session = result.value
+                                notice = null
+                                loginMethod = null
+                                route = postLoginRoute(result.value)
+                            }
                         }
 
                         is StoreResult.Error -> notice = result.message
@@ -1079,6 +1081,7 @@ fun TerminalAdminApp() {
     fun applyAuthSession(outcome: AuthOutcome) {
         when (outcome) {
             is AuthOutcome.Server -> {
+                if (!acceptStandingLogin(outcome.session)) return
                 session = outcome.session
                 notice = "Signed in to ${apiClient.baseUrl}."
                 refreshServerPersonnel()
@@ -1086,6 +1089,7 @@ fun TerminalAdminApp() {
             }
 
             is AuthOutcome.Local -> {
+                if (!acceptStandingLogin(outcome.session)) return
                 session = outcome.session
                 notice = outcome.serverWarning
                 route = postLoginRoute(outcome.session)
@@ -1093,6 +1097,17 @@ fun TerminalAdminApp() {
 
             is AuthOutcome.Failed -> notice = outcome.message
         }
+    }
+
+    /**
+     * Blocks Technician/Vendor standing login at cabinets outside their unit assignments.
+     * Returns false when denied (sets [notice]); true when the session may proceed.
+     */
+    fun acceptStandingLogin(candidate: TerminalSession): Boolean {
+        val siteId = retrievalTerminal.siteId
+        if (candidate.mayLoginAtCabinet(siteId)) return true
+        notice = "You are not assigned to this key cabinet's unit. Sign in only at your assigned location, or use an approved passkey for exception access."
+        return false
     }
 
     fun runServerLogin(username: String, password: String) {
@@ -1367,10 +1382,12 @@ fun TerminalAdminApp() {
                             } else {
                                 when (val result = store.authenticateByUserId(userId)) {
                                     is StoreResult.Success -> {
-                                        session = result.value
-                                        notice = null
-                                        loginMethod = null
-                                        route = postLoginRoute(result.value)
+                                        if (acceptStandingLogin(result.value)) {
+                                            session = result.value
+                                            notice = null
+                                            loginMethod = null
+                                            route = postLoginRoute(result.value)
+                                        }
                                     }
 
                                     is StoreResult.Error -> notice = result.message
@@ -1386,10 +1403,12 @@ fun TerminalAdminApp() {
                         onMatched = { userId, _, _ ->
                             when (val result = store.authenticateByUserId(userId)) {
                                 is StoreResult.Success -> {
-                                    session = result.value
-                                    notice = null
-                                    loginMethod = null
-                                    route = postLoginRoute(result.value)
+                                    if (acceptStandingLogin(result.value)) {
+                                        session = result.value
+                                        notice = null
+                                        loginMethod = null
+                                        route = postLoginRoute(result.value)
+                                    }
                                 }
 
                                 is StoreResult.Error -> notice = result.message

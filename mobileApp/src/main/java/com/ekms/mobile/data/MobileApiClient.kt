@@ -292,6 +292,19 @@ class MobileApiClient(context: Context) {
         )
     }
 
+    /** Regional Admin/Super Admin — clears an approved passkey immediately. */
+    suspend fun revokeKeyAccessRequest(id: String): KeyAccessRequestDto {
+        ensureBaseUrl()
+        return decode(
+            send(
+                method = HttpMethod.Post,
+                path = ApiPaths.ADMIN_KEY_ACCESS_REQUEST_REVOKE.replace("{id}", id),
+                body = "{}",
+                authenticated = true,
+            ),
+        )
+    }
+
     private fun ensureBaseUrl() {
         if (!isConfigured) {
             throw MobileApiException(0, "No server address configured.")

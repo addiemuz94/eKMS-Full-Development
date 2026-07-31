@@ -104,3 +104,23 @@ export type LoginResponse = {
 }
 
 export type ListResponse<T> = { items: T[] }
+
+export type KeyAccessRequestDto = {
+  id: string
+  requesterUserId: string
+  requesterRole: string
+  requesterDisplayName?: string | null
+  siteId: string
+  siteName?: string | null
+  cabinetNames?: string[]
+  keyIds?: string[]
+  requestedAtEpochMillis: number
+  requestedDurationMinutes: number
+  reason?: string | null
+  pickupAtEpochMillis?: number | null
+  returnAtEpochMillis?: number | null
+  status: 'PENDING' | 'APPROVED' | 'REJECTED' | 'REVOKED'
+  approvedByUserId?: string | null
+  approvedAtEpochMillis?: number | null
+  passkeyExpiresAtEpochMillis?: number | null
+}

@@ -62,6 +62,7 @@ object ApiPaths {
     const val ADMIN_KEY_ACCESS_REQUESTS = "/v1/admin/key-access-requests"
     const val ADMIN_KEY_ACCESS_REQUEST_APPROVE = "/v1/admin/key-access-requests/{id}/approve"
     const val ADMIN_KEY_ACCESS_REQUEST_REJECT = "/v1/admin/key-access-requests/{id}/reject"
+    const val ADMIN_KEY_ACCESS_REQUEST_REVOKE = "/v1/admin/key-access-requests/{id}/revoke"
     /** Resolves a single site's Region-derived [SiteKeyAccessPolicyDto.maxKeyAccessDurationMinutes]
      * ceiling — a narrow, purpose-built read so a requester's mobile form can bound its duration
      * picker without needing broader Region visibility (regions.js itself stays Super-Admin-only). */
@@ -1092,6 +1093,8 @@ enum class KeyAccessRequestStatus {
     PENDING,
     APPROVED,
     REJECTED,
+    /** Admin cancelled an approved PIN — passkey cleared; terminal passkey-login must fail. */
+    REVOKED,
 }
 
 /** [passkeyExpiresAtEpochMillis] is present once approved; the plaintext code itself is never
@@ -1105,6 +1108,8 @@ data class KeyAccessRequestDto(
     val siteId: String,
     /** Display name of [siteId] — filled by list/get/create for mobile PIN/cabinet copy. */
     val siteName: String? = null,
+    /** Requester display name — for admin/web approval queues (not secrets). */
+    val requesterDisplayName: String? = null,
     /** Active key-cabinet names at [siteId] — which terminal(s) to use the passkey on. */
     val cabinetNames: List<String> = emptyList(),
     /** Multi-key support: mirrors [AccessGrantDto.keyIds] rather than a single key id — a

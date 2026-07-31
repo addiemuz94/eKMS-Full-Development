@@ -935,6 +935,19 @@ data class TerminalSession(
      */
     val isAdminTier: Boolean
         get() = role == TerminalUserRole.SUPER_ADMIN || role == TerminalUserRole.REGIONAL_ADMIN
+
+    /**
+     * Standing login (password / NFC / fingerprint / face) may only succeed at a cabinet whose
+     * site is in [assignedSiteIds]. Super Admin and Regional Admin stay unrestricted so they can
+     * administer any cabinet. Passkey / Only B exception login must **not** use this check —
+     * those visitors are deliberately outside standing assignments and are gated server-side by
+     * `POST /v1/terminal/passkey-login` instead.
+     */
+    fun mayLoginAtCabinet(terminalSiteId: String): Boolean {
+        if (isAdminTier) return true
+        if (terminalSiteId.isBlank()) return false
+        return terminalSiteId in assignedSiteIds
+    }
 }
 
 sealed class StoreResult<out T> {

@@ -217,6 +217,7 @@ export const NAV_ICONS = {
   personnel: IconUsers,
   keys: IconKey,
   permissions: IconShield,
+  keyAccess: IconKey,
   events: IconCalendar,
   schedules: IconClock,
   multiAuth: IconLock,

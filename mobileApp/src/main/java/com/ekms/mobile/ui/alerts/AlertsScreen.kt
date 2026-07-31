@@ -106,6 +106,7 @@ private fun AlertCard(request: KeyAccessRequestDto, onOpenAccess: () -> Unit) {
                     KeyAccessRequestStatus.PENDING -> "Pending approval"
                     KeyAccessRequestStatus.APPROVED -> "Approved"
                     KeyAccessRequestStatus.REJECTED -> "Rejected"
+                    KeyAccessRequestStatus.REVOKED -> "Revoked"
                 },
                 style = MaterialTheme.typography.titleMedium,
                 fontWeight = FontWeight.SemiBold,

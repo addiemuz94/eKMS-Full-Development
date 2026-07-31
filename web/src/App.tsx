@@ -22,6 +22,9 @@ const KeysPage = lazy(() => import('./pages/KeysPage').then((m) => ({ default: m
 const PermissionsPage = lazy(() =>
   import('./pages/PermissionsPage').then((m) => ({ default: m.PermissionsPage })),
 )
+const KeyAccessPage = lazy(() =>
+  import('./pages/KeyAccessPage').then((m) => ({ default: m.KeyAccessPage })),
+)
 const EventsPage = lazy(() =>
   import('./pages/SimpleResources').then((m) => ({ default: m.EventsPage })),
 )
@@ -133,6 +136,14 @@ export default function App() {
           element={
             <Suspense fallback={<PageFallback />}>
               <PermissionsPage />
+            </Suspense>
+          }
+        />
+        <Route
+          path="key-access"
+          element={
+            <Suspense fallback={<PageFallback />}>
+              <KeyAccessPage />
             </Suspense>
           }
         />

@@ -51,6 +51,8 @@ Treat the newest Completed entry below as current for any other mobileApp topic.
 
 - **Passkey login session from API profile (Haikal, Jul 2026).** Only B exception techs are not in a cabinet's bootstrap user list (sync only downloads SUPER_ADMIN + site-assigned users). Passkey login used to call `authenticateByUserId` and failed with "personnel record no longer exists" after a valid PIN. Terminal now builds `TerminalSession` from `TerminalPasskeyLoginResponse` profile fields; API returns `requesterDisplayName`/`requesterEmail`/`requesterRole`. Redeploy API + rebuild terminal APK.
 
+- **Cabinet login site scoping + Key Access revoke on web (Haikal, Jul 2026).** Technician/Vendor standing login (password/NFC/fingerprint/face) is blocked unless the cabinet's unit is in their `assignedSiteIds`; Super Admin / Regional Admin unchanged. Passkey/Only B still works via server-validated PIN. New `POST .../key-access-requests/:id/revoke` clears an approved PIN (`REVOKED`). Portal **Key Access** page (`/key-access`) lists requests with Approve / Reject / Revoke. Rebuild terminal + mobile APKs; API + `web/dist` redeployed.
+
 ### Known issues / not yet resolved
 
 - **Only B Apply → approve → PIN not yet smoke-tested end-to-end on phone** — portal Technician + exception site/Region; mobile Apply → RA approve → PIN; then **Adi** passkey→take on F7G18P.

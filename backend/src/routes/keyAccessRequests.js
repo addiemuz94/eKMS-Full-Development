@@ -183,13 +183,14 @@ async function requestKeyIds(requestId) {
  * (`ApproveKeyAccessRequestResponse`) is unrelated and still returns it directly to whoever
  * calls approve, unchanged.
  */
-function mapRequest(row, keyIds, viewerUserId, siteName = null, cabinetNames = []) {
+function mapRequest(row, keyIds, viewerUserId, siteName = null, cabinetNames = [], requesterDisplayName = null) {
   return {
     id: row.id,
     requesterUserId: row.requester_user_id,
     requesterRole: row.requester_role,
     siteId: row.site_id,
     siteName,
+    requesterDisplayName,
     cabinetNames,
     keyIds,
     requestedAtEpochMillis: Number(row.requested_at_epoch_ms),
@@ -218,12 +219,17 @@ async function mapRequestEnriched(row, keyIds, viewerUserId) {
     `SELECT name FROM terminals WHERE site_id = :siteId AND lifecycle_state = 'ACTIVE' ORDER BY name ASC`,
     { siteId: row.site_id },
   );
+  const [requesters] = await pool.execute(
+    `SELECT display_name FROM users WHERE id = :id LIMIT 1`,
+    { id: row.requester_user_id },
+  );
   return mapRequest(
     row,
     keyIds,
     viewerUserId,
     sites[0]?.name ?? null,
     terminals.map((t) => t.name),
+    requesters[0]?.display_name ?? null,
   );
 }
 
@@ -497,6 +503,47 @@ router.post('/:id/reject', async (req, res) => {
 
   await writeAudit({
     eventType: 'KEY_ACCESS_REQUEST_REJECTED',
+    actorUserId,
+    siteId: existing[0].site_id,
+    entityType: 'KEY_ACCESS_REQUEST',
+    entityId: req.params.id,
+  });
+
+  const [rows] = await pool.execute(`SELECT * FROM key_access_requests WHERE id = :id`, {
+    id: req.params.id,
+  });
+  return res.json(await mapRequestEnriched(rows[0], await requestKeyIds(req.params.id), req.auth?.sub));
+});
+
+/**
+ * POST /:id/revoke — Super Admin / Regional Admin only. Kills an APPROVED passkey so
+ * terminal passkey-login fails immediately. PENDING stays on reject; REJECTED/REVOKED are no-ops.
+ */
+router.post('/:id/revoke', async (req, res) => {
+  const [existing] = await pool.execute(`SELECT * FROM key_access_requests WHERE id = :id LIMIT 1`, {
+    id: req.params.id,
+  });
+  if (!existing[0]) return notFound(res, 'Key access request not found');
+  if (!(await assertMayAccessRequestSite(req, existing[0].site_id))) {
+    return notFound(res, 'Key access request not found');
+  }
+  if (existing[0].status !== 'APPROVED') {
+    return conflict(res, 'Only an approved request can be revoked');
+  }
+
+  const actorUserId = req.auth?.role === 'TERMINAL_DEVICE' ? null : req.auth.sub;
+  const [result] = await pool.execute(
+    `UPDATE key_access_requests SET
+       status = 'REVOKED',
+       generated_passkey = NULL,
+       passkey_expires_at_epoch_ms = NULL
+     WHERE id = :id AND status = 'APPROVED'`,
+    { id: req.params.id },
+  );
+  if (result.affectedRows === 0) return conflict(res, 'Only an approved request can be revoked');
+
+  await writeAudit({
+    eventType: 'KEY_ACCESS_REQUEST_REVOKED',
     actorUserId,
     siteId: existing[0].site_id,
     entityType: 'KEY_ACCESS_REQUEST',

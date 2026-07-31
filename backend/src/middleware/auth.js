@@ -118,6 +118,7 @@ const REGIONAL_ADMIN_ALLOWED_ROUTES = [
   { method: 'POST', pattern: /^\/key-access-requests$/ },
   { method: 'POST', pattern: /^\/key-access-requests\/[^/]+\/approve$/ },
   { method: 'POST', pattern: /^\/key-access-requests\/[^/]+\/reject$/ },
+  { method: 'POST', pattern: /^\/key-access-requests\/[^/]+\/revoke$/ },
   // Sites: read-only (list/get), added for the terminal's item-14 site-name display — NOT
   // create/update/delete. sites.js's own handlers additionally scope both of these to the
   // Regional Admin's own assigned sites; this allowlist only controls reachability.

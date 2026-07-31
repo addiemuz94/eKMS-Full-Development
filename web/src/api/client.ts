@@ -1,5 +1,6 @@
 import type {
   CredentialStatusDto,
+  KeyAccessRequestDto,
   KeyDto,
   KeySlotDto,
   ListResponse,
@@ -268,6 +269,24 @@ export const api = {
   createAccessGrant: createPath('/v1/admin/access-grants'),
   updateAccessGrant: updatePath('/v1/admin/access-grants'),
   deleteAccessGrant: deletePath('/v1/admin/access-grants'),
+
+  listKeyAccessRequests: (status = 'ALL') =>
+    request<ListResponse<KeyAccessRequestDto>>(
+      'GET',
+      `/v1/admin/key-access-requests?status=${encodeURIComponent(status)}`,
+    ).then((r) => r.items ?? []),
+  approveKeyAccessRequest: (id: string) =>
+    request<Record<string, unknown>>('POST', `/v1/admin/key-access-requests/${id}/approve`, {}, {
+      idempotent: true,
+    }),
+  rejectKeyAccessRequest: (id: string) =>
+    request<KeyAccessRequestDto>('POST', `/v1/admin/key-access-requests/${id}/reject`, {}, {
+      idempotent: true,
+    }),
+  revokeKeyAccessRequest: (id: string) =>
+    request<KeyAccessRequestDto>('POST', `/v1/admin/key-access-requests/${id}/revoke`, {}, {
+      idempotent: true,
+    }),
 
   listEvents: listPath('/v1/admin/event-definitions'),
   createEvent: createPath('/v1/admin/event-definitions'),
