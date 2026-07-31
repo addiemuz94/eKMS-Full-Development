@@ -1182,15 +1182,20 @@ data class TerminalPasskeyLoginRequest(
  * [accessToken] is a KEY_ACCESS_SESSION-scoped JWT (see `signKeyAccessSessionToken` in
  * backend/src/middleware/auth.js) carrying exactly [keyIds]/[siteId] as claims and expiring at
  * [expiresAtEpochMillis] — no refresh token exists for this session type, it is not meant to be
- * renewed. [requesterUserId] is carried as a plain field (not just inside the opaque JWT) so
- * terminalApp can resolve a normal `TerminalSession` via `TerminalAdminStore.authenticateByUserId`
- * without ever needing to decode a JWT client-side — nothing else in this codebase does that.
+ * renewed. [requesterUserId] plus [requesterDisplayName]/[requesterEmail]/[requesterRole] are
+ * plain fields (not only inside the opaque JWT) so terminalApp can build a normal
+ * `TerminalSession` without decoding a JWT and without requiring the requester to already be in
+ * this cabinet's local personnel snapshot — Only B exception techs are deliberately *not*
+ * site-assigned, so bootstrap never downloads them.
  */
 @Serializable
 data class TerminalPasskeyLoginResponse(
     val accessToken: String,
     val keyAccessRequestId: String,
     val requesterUserId: String,
+    val requesterDisplayName: String = "",
+    val requesterEmail: String = "",
+    val requesterRole: String = "TECHNICIAN",
     val siteId: String,
     val keyIds: Set<String> = emptySet(),
     val expiresAtEpochMillis: Long,

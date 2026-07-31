@@ -201,9 +201,10 @@ class TerminalApiClient(context: Context) {
      * this does NOT store the returned token in [accessToken]/[refreshToken] — a
      * KEY_ACCESS_SESSION-scoped token represents a specific requester admitted to specific keys
      * until a specific expiry, not this terminal's own device/operator session slots. The caller
-     * (`TerminalAdminApp`) resolves a normal [com.ekms.shared.domain.TerminalSession] separately
-     * via `TerminalAdminStore.authenticateByUserId` and only uses this response's
-     * `keyIds`/`siteId`/`expiresAtEpochMillis` to drive straight into the take flow.
+     * (`TerminalAdminApp`) builds a [com.ekms.terminal.data.TerminalSession] from the response's
+     * requester profile fields (display name / email / role) — Only B exception personnel are not
+     * in this cabinet's bootstrap user list, so a local `authenticateByUserId` lookup would fail.
+     * `keyIds`/`expiresAtEpochMillis` then drive straight into the take flow.
      */
     suspend fun passkeyLogin(passkey: String, terminalId: String): TerminalPasskeyLoginResponse {
         ensureBaseUrl()

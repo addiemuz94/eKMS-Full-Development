@@ -49,6 +49,8 @@ Treat the newest Completed entry below as current for any other mobileApp topic.
 - **Loopback server URL → production (Haikal, Jul 2026).** Blank prefs already defaulted to `https://kms-cvt.com`, but a previously saved `http://127.0.0.1` / `localhost` still won and broke emulator/device connects. `resolveProductionBaseUrl` now remaps blank + loopback hosts to production on terminal and mobile.
 - **Technician approved PIN picker (Haikal, Jul 2026).** Approved requests are a dropdown; PIN is hidden until selected. API adds `siteName` + `cabinetNames` so the PIN card shows location and which key cabinet to use. Redeploy API + rebuild mobile APK.
 
+- **Passkey login session from API profile (Haikal, Jul 2026).** Only B exception techs are not in a cabinet's bootstrap user list (sync only downloads SUPER_ADMIN + site-assigned users). Passkey login used to call `authenticateByUserId` and failed with "personnel record no longer exists" after a valid PIN. Terminal now builds `TerminalSession` from `TerminalPasskeyLoginResponse` profile fields; API returns `requesterDisplayName`/`requesterEmail`/`requesterRole`. Redeploy API + rebuild terminal APK.
+
 ### Known issues / not yet resolved
 
 - **Only B Apply → approve → PIN not yet smoke-tested end-to-end on phone** — portal Technician + exception site/Region; mobile Apply → RA approve → PIN; then **Adi** passkey→take on F7G18P.

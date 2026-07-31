@@ -612,6 +612,23 @@ export async function passkeyLogin(req, res) {
   const keyIds = await requestKeyIds(request.id);
   const accessToken = signKeyAccessSessionToken(request, keyIds);
 
+  // Only B: requester is usually NOT in this terminal's bootstrap user list (exception site =
+  // outside standing assignments). Terminal builds the session from these fields instead of a
+  // local personnel lookup.
+  const [requesterRows] = await pool.execute(
+    `SELECT id, display_name, email, role FROM users
+     WHERE id = :id AND lifecycle_state = 'ACTIVE' LIMIT 1`,
+    { id: request.requester_user_id },
+  );
+  const requester = requesterRows[0];
+  if (!requester) {
+    await recordLoginAttempt(ipAddress, false);
+    return res.status(401).json({
+      error: 'UNAUTHORIZED',
+      message: 'Passkey requester account is no longer available',
+    });
+  }
+
   await recordLoginAttempt(ipAddress, true);
   await writeAudit({
     eventType: 'KEY_ACCESS_SESSION_STARTED',
@@ -625,7 +642,10 @@ export async function passkeyLogin(req, res) {
   return res.json({
     accessToken,
     keyAccessRequestId: request.id,
-    requesterUserId: request.requester_user_id,
+    requesterUserId: requester.id,
+    requesterDisplayName: requester.display_name,
+    requesterEmail: requester.email,
+    requesterRole: requester.role,
     siteId: request.site_id,
     keyIds,
     expiresAtEpochMillis: Number(request.passkey_expires_at_epoch_ms),

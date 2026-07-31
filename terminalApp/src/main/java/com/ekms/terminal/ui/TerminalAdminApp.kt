@@ -500,31 +500,34 @@ fun TerminalAdminApp() {
     }
 
     /**
-     * Migration 009 follow-up: calls the real backend passkey-login route (previously this
-     * screen was a non-functional UI shell). On success, resolves a normal
-     * [com.ekms.shared.domain.TerminalSession] via `store.authenticateByUserId` — the same
-     * mechanism Fingerprint/Face login already use — so checkout attribution, sign-out, and
-     * every other session-dependent behavior work unchanged; it just then routes straight into
+     * Migration 009 follow-up: calls the real backend passkey-login route. On success, builds a
+     * [TerminalSession] from the response profile fields — **not** via
+     * `store.authenticateByUserId`. Only B exception techs are outside standing site assignments,
+     * so this cabinet's bootstrap snapshot never includes them; a local lookup would fail with
+     * "personnel record no longer exists" even though the PIN is valid. Checkout attribution and
+     * sign-out still use the same [TerminalSession] shape; we then route straight into
      * [beginPasskeyKeyTake] for the approved key(s) instead of [postLoginRoute]'s normal
-     * role-based landing screen, since a passkey session's whole purpose is taking specific
-     * pre-approved keys, never Key Menu's own selection UI.
+     * role-based landing screen.
      */
     fun runPasskeyLogin(code: String) {
         scope.launch {
             syncBusy = true
             try {
                 val response = apiClient.passkeyLogin(code, retrievalTerminal.id)
-                when (val result = store.authenticateByUserId(response.requesterUserId)) {
-                    is StoreResult.Success -> {
-                        session = result.value
-                        notice = null
-                        loginMethod = null
-                        route = SuperAdminRoute.KEY_MENU
-                        beginPasskeyKeyTake(response.keyIds, response.expiresAtEpochMillis)
-                    }
-
-                    is StoreResult.Error -> notice = result.message
-                }
+                val role = runCatching { TerminalUserRole.valueOf(response.requesterRole) }
+                    .getOrDefault(TerminalUserRole.TECHNICIAN)
+                session = TerminalSession(
+                    userId = response.requesterUserId,
+                    displayName = response.requesterDisplayName.ifBlank { "Passkey visitor" },
+                    username = response.requesterEmail.ifBlank { response.requesterUserId },
+                    role = role,
+                    requiresPasswordChange = false,
+                    assignedSiteIds = emptySet(),
+                )
+                notice = null
+                loginMethod = null
+                route = SuperAdminRoute.KEY_MENU
+                beginPasskeyKeyTake(response.keyIds, response.expiresAtEpochMillis)
             } catch (error: TerminalApiException) {
                 notice = error.message
             } catch (error: Exception) {
