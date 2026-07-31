@@ -27,12 +27,21 @@ function buildNodeAddresses(terminal: TerminalDto): number[] {
   return Array.from({ length: count }, (_, i) => i + 1)
 }
 
-function gridTemplateColumns(terminal: TerminalDto): string {
-  const perRow =
-    terminal.nodesPerRow != null && terminal.nodesPerRow > 0
-      ? terminal.nodesPerRow
-      : Math.min(8, Math.max(1, terminal.configuredSlotCount || 1))
-  return `repeat(${perRow}, minmax(88px, 1fr))`
+function nodesPerRowFor(terminal: TerminalDto): number {
+  if (terminal.nodesPerRow != null && terminal.nodesPerRow > 0) return terminal.nodesPerRow
+  const count = Math.max(1, terminal.configuredSlotCount || 1)
+  if (count <= 6) return count
+  if (count <= 12) return 6
+  if (count <= 24) return 8
+  return 10
+}
+
+function chunkIntoRows<T>(items: T[], perRow: number): T[][] {
+  const rows: T[][] = []
+  for (let i = 0; i < items.length; i += perRow) {
+    rows.push(items.slice(i, i + perRow))
+  }
+  return rows
 }
 
 export function KeysPage() {
@@ -169,6 +178,18 @@ export function KeysPage() {
       return { nodeAddress, key, enrolled, matchesFilter }
     })
   }, [layoutTerminal, keySlots, keys, query, enrollFilter])
+
+  const layoutRows = useMemo(() => {
+    if (!layoutTerminal) return []
+    return chunkIntoRows(layoutCells, nodesPerRowFor(layoutTerminal))
+  }, [layoutTerminal, layoutCells])
+
+  const layoutStats = useMemo(() => {
+    const assigned = layoutCells.filter((c) => c.key).length
+    const enrolled = layoutCells.filter((c) => c.enrolled).length
+    const free = layoutCells.length - assigned
+    return { assigned, enrolled, free, total: layoutCells.length }
+  }, [layoutCells])
 
   const selectedKey = useMemo(
     () => (selectedKeyId ? keys.find((k) => k.id === selectedKeyId) ?? null : null),
@@ -341,84 +362,136 @@ export function KeysPage() {
           )
         ) : (
           <div className="keys-layout-wrap">
-            <div className="keys-layout-main data-panel">
-              <div className="keys-layout-heading">
-                <strong>{layoutTerminal.name}</strong>
-                <span className="muted">
-                  {sites.find((s) => s.id === layoutTerminal.siteId)?.name ?? 'Unit'} ·{' '}
-                  {layoutTerminal.configuredSlotCount} nodes
-                  {layoutTerminal.nodeRows && layoutTerminal.nodesPerRow
-                    ? ` · ${layoutTerminal.nodeRows}×${layoutTerminal.nodesPerRow}`
-                    : ''}
+            <div className="keys-cabinet">
+              <header className="keys-cabinet-header">
+                <div>
+                  <p className="keys-cabinet-eyebrow">Key cabinet layout</p>
+                  <h2 className="keys-cabinet-title">{layoutTerminal.name}</h2>
+                  <p className="keys-cabinet-meta muted">
+                    {sites.find((s) => s.id === layoutTerminal.siteId)?.name ?? 'Unit'}
+                    {layoutTerminal.nodeRows && layoutTerminal.nodesPerRow
+                      ? ` · ${layoutTerminal.nodeRows} rows × ${layoutTerminal.nodesPerRow} nodes`
+                      : ` · ${layoutTerminal.configuredSlotCount} nodes`}
+                  </p>
+                </div>
+                <div className="keys-cabinet-stats" aria-label="Cabinet occupancy">
+                  <span className="keys-stat">
+                    <strong>{layoutStats.assigned}</strong> assigned
+                  </span>
+                  <span className="keys-stat keys-stat-free">
+                    <strong>{layoutStats.free}</strong> free
+                  </span>
+                  <span className="keys-stat keys-stat-enrolled">
+                    <strong>{layoutStats.enrolled}</strong> enrolled
+                  </span>
+                </div>
+              </header>
+
+              <div className="keys-cabinet-legend" aria-hidden="true">
+                <span>
+                  <i className="keys-legend-swatch free" /> Free
+                </span>
+                <span>
+                  <i className="keys-legend-swatch assigned" /> Assigned
+                </span>
+                <span>
+                  <i className="keys-legend-swatch enrolled" /> Fob enrolled
                 </span>
               </div>
-              <div
-                className="keys-layout-grid"
-                style={{ gridTemplateColumns: gridTemplateColumns(layoutTerminal) }}
-              >
-                {layoutCells.map((cell) => {
-                  const selected = cell.key != null && cell.key.id === selectedKeyId
-                  const occupied = cell.key != null
-                  return (
-                    <button
-                      key={cell.nodeAddress}
-                      type="button"
-                      className={[
-                        'keys-node-cell',
-                        occupied ? 'assigned' : 'free',
-                        cell.enrolled ? 'enrolled' : '',
-                        selected ? 'selected' : '',
-                        cell.matchesFilter ? '' : 'dimmed',
-                      ]
-                        .filter(Boolean)
-                        .join(' ')}
-                      disabled={!occupied}
-                      onClick={() => {
-                        if (cell.key) setSelectedKeyId(cell.key.id)
+
+              <div className="keys-cabinet-face">
+                {layoutRows.map((row, rowIndex) => (
+                  <div className="keys-cabinet-bay" key={`bay-${rowIndex}`}>
+                    <span className="keys-bay-label">Row {rowIndex + 1}</span>
+                    <div
+                      className="keys-bay-slots"
+                      style={{
+                        gridTemplateColumns: `repeat(${row.length}, minmax(72px, 1fr))`,
                       }}
                     >
-                      <span className="keys-node-addr">Node {cell.nodeAddress}</span>
-                      <span className="keys-node-name">
-                        {cell.key ? cell.key.displayName : 'Free'}
-                      </span>
-                      {cell.enrolled && <span className="badge badge-success">Enrolled</span>}
-                    </button>
-                  )
-                })}
+                      {row.map((cell) => {
+                        const selected = cell.key != null && cell.key.id === selectedKeyId
+                        const occupied = cell.key != null
+                        return (
+                          <button
+                            key={cell.nodeAddress}
+                            type="button"
+                            className={[
+                              'keys-slot',
+                              occupied ? 'assigned' : 'free',
+                              cell.enrolled ? 'enrolled' : '',
+                              selected ? 'selected' : '',
+                              cell.matchesFilter ? '' : 'dimmed',
+                            ]
+                              .filter(Boolean)
+                              .join(' ')}
+                            disabled={!occupied}
+                            title={
+                              occupied
+                                ? `${cell.key!.displayName} · Node ${cell.nodeAddress}`
+                                : `Free · Node ${cell.nodeAddress}`
+                            }
+                            onClick={() => {
+                              if (cell.key) setSelectedKeyId(cell.key.id)
+                            }}
+                          >
+                            <span className="keys-slot-ring" aria-hidden="true">
+                              {cell.nodeAddress}
+                            </span>
+                            <span className="keys-slot-label">
+                              {cell.key ? cell.key.displayName : 'Free'}
+                            </span>
+                            {cell.enrolled && <span className="keys-slot-dot" title="Enrolled" />}
+                          </button>
+                        )
+                      })}
+                    </div>
+                  </div>
+                ))}
               </div>
             </div>
 
-            <aside className="keys-layout-detail data-panel">
+            <aside className="keys-inspector">
               {selectedKey ? (
                 <>
-                  <h3 style={{ marginTop: 0 }}>{selectedKey.displayName}</h3>
-                  <div className="cell-stack">
-                    <span>
-                      Unit: {sites.find((s) => s.id === selectedKey.siteId)?.name ?? '—'}
-                    </span>
-                    <span>{nodeLabelFor(selectedKey)}</span>
-                    <span>
-                      {selectedKey.fobEnrollmentReference ? (
-                        <span className="badge badge-success">Enrolled</span>
-                      ) : (
-                        <span className="muted">Not enrolled (terminal-local)</span>
-                      )}
-                    </span>
-                  </div>
-                  <div className="row-actions" style={{ marginTop: 12 }}>
-                    <Button variant="outlined" onClick={() => openEdit(selectedKey)}>
-                      Edit
-                    </Button>
+                  <p className="keys-cabinet-eyebrow">Selected key</p>
+                  <h3 className="keys-inspector-title">{selectedKey.displayName}</h3>
+                  <dl className="keys-inspector-fields">
+                    <div>
+                      <dt>Unit</dt>
+                      <dd>{sites.find((s) => s.id === selectedKey.siteId)?.name ?? '—'}</dd>
+                    </div>
+                    <div>
+                      <dt>Cabinet node</dt>
+                      <dd>{nodeLabelFor(selectedKey)}</dd>
+                    </div>
+                    <div>
+                      <dt>Enrollment</dt>
+                      <dd>
+                        {selectedKey.fobEnrollmentReference ? (
+                          <span className="badge badge-success">Enrolled on terminal</span>
+                        ) : (
+                          <span className="muted">Not enrolled (terminal-local)</span>
+                        )}
+                      </dd>
+                    </div>
+                  </dl>
+                  <div className="keys-inspector-actions">
+                    <Button onClick={() => openEdit(selectedKey)}>Edit</Button>
                     <Button variant="outlined" onClick={() => void recycleKey(selectedKey)}>
                       Recycle
                     </Button>
                   </div>
                 </>
               ) : (
-                <p className="muted" style={{ margin: 0 }}>
-                  Select an assigned node to view or edit that key. Free nodes stay empty until you
-                  use Add key (auto-assigns the next free node).
-                </p>
+                <>
+                  <p className="keys-cabinet-eyebrow">Selected key</p>
+                  <h3 className="keys-inspector-title">None</h3>
+                  <p className="muted" style={{ margin: 0 }}>
+                    Tap an assigned slot on the cabinet face. Free slots fill when you use{' '}
+                    <strong>Add key</strong> (next free node is assigned automatically).
+                  </p>
+                </>
               )}
             </aside>
           </div>
