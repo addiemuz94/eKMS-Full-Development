@@ -22,7 +22,6 @@ const GROUPS: NavGroup[] = [
     icon: 'groupSettings',
     items: [
       { to: '/terminals', label: 'Terminals', icon: 'terminals' },
-      { to: '/units', label: 'Unit Settings', icon: 'units' },
       { to: '/personnel', label: 'Personnel Management', icon: 'personnel' },
       { to: '/keys', label: 'Key Settings', icon: 'keys' },
       { to: '/permissions', label: 'Permission Settings', icon: 'permissions' },

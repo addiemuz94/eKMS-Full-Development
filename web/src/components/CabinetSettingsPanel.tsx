@@ -1,7 +1,8 @@
-import { useState } from 'react'
-import type { TerminalDto } from '../api/types'
+import { useEffect, useState } from 'react'
+import type { SiteDto, TerminalDto } from '../api/types'
 import { SegmentedControl } from './ui'
 import { CabinetSettingsForm } from './CabinetSettingsForm'
+import { UnitSettingsForm } from './UnitSettingsForm'
 import {
   EventsPage,
   KeyGroupsPage,
@@ -11,6 +12,7 @@ import {
 import { MultiAuthPage } from '../pages/MultiAuthPage'
 
 type SettingsTab =
+  | 'unit'
   | 'behavior'
   | 'events'
   | 'schedules'
@@ -21,27 +23,33 @@ type SettingsTab =
 type Props = {
   terminal: TerminalDto
   unitName?: string
+  onUnitSaved?: (site: SiteDto) => void
 }
 
 /**
- * Per-cabinet settings hub: behavioral timers plus unit-scoped Event / Schedule /
- * Multi-auth / User Groups / Key Groups (formerly top-level nav pages).
+ * Per-cabinet settings hub: unit details, behavioral timers, plus unit-scoped
+ * Event / Schedule / Multi-auth / User Groups / Key Groups (formerly top-level nav).
  */
-export function CabinetSettingsPanel({ terminal, unitName }: Props) {
-  const [tab, setTab] = useState<SettingsTab>('behavior')
+export function CabinetSettingsPanel({ terminal, unitName, onUnitSaved }: Props) {
+  const [tab, setTab] = useState<SettingsTab>('unit')
+  const [liveUnitName, setLiveUnitName] = useState(unitName)
   const siteId = terminal.siteId
+
+  useEffect(() => {
+    setLiveUnitName(unitName)
+  }, [unitName, terminal.id])
 
   return (
     <div className="cabinet-settings-panel">
       <p className="muted" style={{ marginTop: 0 }}>
         Configure <strong>{terminal.name}</strong>
-        {unitName ? (
+        {liveUnitName ? (
           <>
             {' '}
-            for unit <strong>{unitName}</strong>
+            for unit <strong>{liveUnitName}</strong>
           </>
         ) : null}
-        . Timers sync to this cabinet; events, schedules, and groups apply to the unit.
+        . Unit details and events/schedules/groups apply to the unit; timers sync to this cabinet.
       </p>
 
       <div className="cabinet-settings-tabs">
@@ -50,6 +58,7 @@ export function CabinetSettingsPanel({ terminal, unitName }: Props) {
           value={tab}
           onChange={setTab}
           options={[
+            { value: 'unit', label: 'Unit' },
             { value: 'behavior', label: 'Timers & video' },
             { value: 'events', label: 'Events' },
             { value: 'schedules', label: 'Schedules' },
@@ -61,6 +70,16 @@ export function CabinetSettingsPanel({ terminal, unitName }: Props) {
       </div>
 
       <div className="cabinet-settings-body">
+        {tab === 'unit' && (
+          <UnitSettingsForm
+            siteId={siteId}
+            embedded
+            onSaved={(site) => {
+              setLiveUnitName(site.name)
+              onUnitSaved?.(site)
+            }}
+          />
+        )}
         {tab === 'behavior' && <CabinetSettingsForm terminal={terminal} />}
         {tab === 'events' && <EventsPage lockedSiteId={siteId} embedded />}
         {tab === 'schedules' && <SchedulesPage lockedSiteId={siteId} embedded />}

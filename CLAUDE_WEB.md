@@ -9,9 +9,11 @@ _Part of the split CLAUDE.md documentation set — `web/`-specific. See [CLAUDE.
 **Status (Jul 2026 rework): implemented in `web/`; pairing backend + portal must be redeployed together on the VPS (see `backend/DEPLOY.md`).**
 
 Portal paths:
-- `/registration` — **continuous unit-scoped wizard** (7 steps): Register Unit → Key Cabinet → **Cabinet Settings** → Personnel → Keys → Permissions → Generate Pairing Code. Unit chosen in step 1 is carried through all steps automatically; pairing code is always generated last.
-- `/terminals` — **Key Cabinet Registration** (full `TerminalUpsertRequest` fields, one-time pairing code banner, regenerate with revoke warning, `paired` badge, **Settings** action for behavioral timers/toggles)
+- `/registration` — **continuous unit-scoped wizard** (7 steps): Register Unit → Key Cabinet → **Cabinet Settings** → Personnel → Keys → Permissions → Generate Pairing Code. Unit chosen in step 1 is carried through all steps automatically; pairing code is always generated last. New units are created here (or via the wizard), not from a standalone Unit Settings nav item.
+- `/terminals` — **Key Cabinet Registration** (full `TerminalUpsertRequest` fields, one-time pairing code banner, regenerate with revoke warning, `paired` badge). **Settings** opens a per-cabinet hub (`CabinetSettingsPanel`) with tabs: **Unit** (edit this cabinet’s site), **Timers & video** (behavioral cabinet settings), **Events / Schedules / User groups / Key groups / Multi-auth** (unit-scoped; formerly top-level nav pages).
 - `/personnel` — includes optional `staffId`; credentials column states **terminal-local only**
+
+Standalone nav pages **removed** (redirect to `/terminals`): `/units`, `/events`, `/schedules`, `/multi-auth`, `/user-groups`, `/key-groups`. Reach them via Terminals → Settings on a cabinet.
 
 **Cabinet behavioral settings (portal + DB + sync):** Take Warning Time, Door-Close Warning Time, Key Return Certification, Return/Retrieval video toggles live in `terminal_cabinet_settings` (`GET`/`PATCH /v1/admin/terminals/:id/cabinet-settings`, `expectedRevision`-guarded). Defaults are created with each terminal. Bootstrap/download snapshot includes `cabinetSettings`; `TerminalAdminStore.applyServerSnapshot` merges them (server wins — see `CLAUDE_TERMINAL.md` for the terminal-side merge). NFC / fingerprint / face remain terminal-local (policy A — see `CLAUDE_BACKEND.md`).
 
@@ -55,6 +57,8 @@ See `CLAUDE_TERMINAL.md`'s "Web Portal — Registration Workflow: terminalApp's 
   - **Known, explicitly out-of-scope gap**: `KeysPage.tsx`'s existing Edit action lets a Super Admin change an existing key's `siteId` (move it to a different unit) — this does **not** unlink/reassign its `KeySlot`, since only "add" and "delete" were in scope this pass. Editing a key's unit today leaves its old cabinet's node assignment pointing at a key that's nominally now at a different site — flagged, not fixed.
   - Verify: `npm run build` (tsc + vite) and `npm run lint` (oxlint) both pass clean — only pre-existing-pattern warnings (the same "missing `reload` dependency" `useEffect` warning already present on every other page in this app). **Not run against a dev server or the live API this pass** — no live click-through of the new auto-assign/capacity/multi-cabinet UI.
 - **Key Access page grant/revoke live-verified (Haikal, Jul 2026).** Portal `/key-access` Approve / Reject / Revoke work against production. Only B mobile Apply → RA Approve path confirmed in the same session; terminal Key Attachment still open — see `CLAUDE_MOBILE.md` / `CLAUDE_TERMINAL.md`.
+
+- **Cabinet Settings hub absorbs former Basic Settings pages (Jul 2026).** Removed from sidebar nav: Unit Settings, Event Setup, Schedule Settings, Multi-authentication Rules, User Groups, Key Groups. Old routes redirect to `/terminals`. Terminals → **Settings** opens `CabinetSettingsPanel` with tabs for **Unit** (`UnitSettingsForm` for this cabinet’s site), Timers & video (`CabinetSettingsForm`), and unit-scoped Events/Schedules/User groups/Key groups/Multi-auth (`ResourcePage`/`MultiAuthPage` with `lockedSiteId` + `embedded`). New units still created via Registration wizard step 1. Verify: `npm run build`; deployed to `kms-cvt.com`.
 
 - **Key/slot/grant binding gap — investigation (Jul 2026, Phase G, no fix).** Three independent bindings must line up for take. Portal “key exists” / “grant exists” do **not** imply takeability.
 

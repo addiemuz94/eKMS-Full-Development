@@ -12,7 +12,6 @@ const DashboardPage = lazy(() =>
 const RegistrationPage = lazy(() =>
   import('./pages/RegistrationPage').then((m) => ({ default: m.RegistrationPage })),
 )
-const UnitsPage = lazy(() => import('./pages/UnitsPage').then((m) => ({ default: m.UnitsPage })))
 const TerminalsPage = lazy(() =>
   import('./pages/TerminalsPage').then((m) => ({ default: m.TerminalsPage })),
 )
@@ -101,14 +100,7 @@ export default function App() {
             </Suspense>
           }
         />
-        <Route
-          path="units"
-          element={
-            <Suspense fallback={<PageFallback />}>
-              <UnitsPage />
-            </Suspense>
-          }
-        />
+        <Route path="units" element={<Navigate to="/terminals" replace />} />
         <Route
           path="terminals"
           element={

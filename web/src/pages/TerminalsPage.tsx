@@ -417,6 +417,9 @@ export function TerminalsPage() {
             <CabinetSettingsPanel
               terminal={settingsTerminal}
               unitName={siteName(settingsTerminal.siteId)}
+              onUnitSaved={() => {
+                void reload()
+              }}
             />
             <div className="dialog-actions">
               <Button variant="outlined" icon={X} onClick={() => setSettingsTerminal(null)}>

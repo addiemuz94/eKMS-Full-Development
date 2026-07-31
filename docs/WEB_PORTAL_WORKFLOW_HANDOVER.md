@@ -30,15 +30,15 @@ The current Website source is an interactive **local workflow preview**. Its sam
 |---|---|---|
 | Login | Login | `POST /v1/auth/login`; resolve company/account/password server-side; return role, site scope, session and `mustChangePassword` where required. |
 | Home Page | Dashboard | Summary: available/taken keys, online terminal count, pending approvals, terminal sync/status. No direct hardware action. |
-| Unit Settings | Unit Settings | CRUD `/v1/admin/sites`; support name, province/state, city, superior unit, revision and lifecycle. |
-| Terminal Settings | Terminal Settings | CRUD `/v1/admin/terminals`; terminal name, site/unit, Android device UID, node layout A/B/C, node count, return-authentication flag, status/sync metadata. |
+| Unit Settings | Terminals → Settings → **Unit** tab (also Registration wizard step 1 for create) | CRUD `/v1/admin/sites`; support name, province/state, city, superior unit, revision and lifecycle. Standalone `/units` nav removed — edit the cabinet’s unit from Settings. |
+| Terminal Settings | Terminals | CRUD `/v1/admin/terminals`; terminal name, site/unit, Android device UID, node layout A/B/C, node count, return-authentication flag, status/sync metadata. **Settings** hub also holds unit + events/schedules/groups/multi-auth. |
 | Personnel Management | Personnel Management | CRUD `/v1/admin/users`; filter by unit/person; support employee ID, personnel group, schedule, credentials status and export. Password is write-only. |
 | Key Setting | Key Settings | CRUD `/v1/admin/keys`; unit, terminal, name, physical location/node, time limit and key group. Never return raw UID. |
 | Permission Settings | Permission Settings | CRUD `/v1/admin/access-grants`; bind exact key IDs to a user and validity window. Site-wide permission alone is invalid. |
-| Event Setup | Event Setup | CRUD `/v1/admin/event-definitions`; unit, name, code/number and type/requirement. |
-| Schedule Settings | Schedule Settings | CRUD `/v1/admin/schedules`; daily/weekly/monthly frequency and validated time window. |
-| Multi-authentication Rules | Multi-authentication Rules | CRUD `/v1/admin/multi-authentication-rules`; primary personnel group, assistant groups and key group. |
-| User Group / Key Group | User Groups / Key Groups | CRUD `/v1/admin/personnel-groups` and `/v1/admin/key-groups`; name, group number and unit. |
+| Event Setup | Terminals → Settings → **Events** | CRUD `/v1/admin/event-definitions`; unit, name, code/number and type/requirement. Scoped to the selected cabinet’s unit. |
+| Schedule Settings | Terminals → Settings → **Schedules** | CRUD `/v1/admin/schedules`; daily/weekly/monthly frequency and validated time window. |
+| Multi-authentication Rules | Terminals → Settings → **Multi-auth** | CRUD `/v1/admin/multi-authentication-rules`; primary personnel group, assistant groups and key group. |
+| User Group / Key Group | Terminals → Settings → **User groups** / **Key groups** | CRUD `/v1/admin/personnel-groups` and `/v1/admin/key-groups`; name, group number and unit. |
 | Data Synchronization | Data Synchronization | Select terminal and issue `READ_FROM_TERMINAL` or `DOWNLOAD_TO_TERMINAL` request. Backend coordinates terminal sync, revision validation, audit and conflict creation. |
 | Report Data: pickup/return | Pickup & Return Records | Query `/v1/reports/key-operations` by date, terminal, key and person. Mark take/return only after Terminal physical proof. |
 | Report Data: operation log | Operation Log | Query safe, append-only system and equipment logs. Export through authenticated backend-generated PDF/Excel jobs. |
