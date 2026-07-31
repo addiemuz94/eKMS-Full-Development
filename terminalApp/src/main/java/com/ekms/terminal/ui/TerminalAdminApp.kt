@@ -922,12 +922,24 @@ fun TerminalAdminApp() {
                     }
 
                     is CardUidMatch.Key -> {
-                        val terminalKey = snapshot.keys.firstOrNull { it.id == match.keyId }
-                        if (terminalKey != null) {
-                            val (matchedKey, matchedSlot) = managedKeyAndSlotFor(terminalKey)
-                            startKeyCardReturn(matchedKey, matchedSlot)
+                        // Key Attachment's auto-bind (see onSaveAttachment above) writes into
+                        // keyCardStore keyed by ManagedKey.id, the current schema — checked first.
+                        // Falls back to the legacy TerminalKey lookup for cards enrolled the old
+                        // way via CardEnrollmentScreen's manual "Enroll a key card" sub-entry,
+                        // whose ids are still TerminalKey.id. Same two-schema fallback shape
+                        // beginPasskeyKeyTake already uses for the same underlying gap.
+                        val managedKey = retrievalKeys.firstOrNull { it.id == match.keyId }
+                        val managedSlot = managedKey?.let { key -> retrievalSlots.firstOrNull { it.managedKeyId == key.id } }
+                        if (managedKey != null && managedSlot != null) {
+                            startKeyCardReturn(managedKey, managedSlot)
                         } else {
-                            notice = "This card's enrolled key no longer exists."
+                            val terminalKey = snapshot.keys.firstOrNull { it.id == match.keyId }
+                            if (terminalKey != null) {
+                                val (matchedKey, matchedSlot) = managedKeyAndSlotFor(terminalKey)
+                                startKeyCardReturn(matchedKey, matchedSlot)
+                            } else {
+                                notice = "This card's enrolled key no longer exists."
+                            }
                         }
                     }
 
@@ -1342,10 +1354,19 @@ fun TerminalAdminApp() {
                     key = activeReturnFlow.matchedKey,
                     slot = activeReturnFlow.matchedSlot,
                     abandonAtEpochMillis = activeReturnFlow.abandonAtEpochMillis,
-                    // Every other node this cabinet actually has a KeySlot for — the expected
-                    // node itself is excluded inside pollForKeyInsertion. Bounded to configured
-                    // slots, not the full 1..127 address space; see that method's doc.
-                    wrongSlotCandidateNodeAddresses = retrievalSlots.map { it.nodeAddress },
+                    // Every other node with a real ManagedKey bound to it — the expected node
+                    // itself is excluded inside pollForKeyInsertion. Bounded to assigned slots,
+                    // not the full 1..127 address space and NOT every KeySlot row: an ACTIVE
+                    // KeySlot with managedKeyId == null is a normal, persistent state (e.g. a
+                    // deleted key's node, left unlinked-not-deleted so it can be reused — see
+                    // web/src/api/keySlotAssignment.ts) and must never alarm on physical
+                    // presence, since it has no key to be "wrong" relative to. Bug found (Jul
+                    // 2026): this previously mapped every retrievalSlots row regardless of
+                    // managedKeyId, so an unassigned-but-ACTIVE slot's node was swept and
+                    // falsely flagged wrong-slot/unresolved-presence. See that method's doc.
+                    wrongSlotCandidateNodeAddresses = retrievalSlots.mapNotNull { slot ->
+                        slot.nodeAddress.takeIf { slot.managedKeyId != null }
+                    },
                     checkoutSummary = activeReturnFlow.checkoutSummary,
                     doorCloseWarningTimeSeconds = snapshot.cabinetSettings.doorCloseWarningTimeSeconds,
                     videoRecordingEnabled = snapshot.cabinetSettings.returnKeyVideoEnabled,
@@ -1676,6 +1697,27 @@ fun TerminalAdminApp() {
                     LaunchedEffect(serverLinked) {
                         if (serverLinked) refreshServerPersonnel()
                     }
+                    // Diagnostic only, not a backfill: keyCardStore was never populated from Key
+                    // Attachment before the auto-bind fix above, so every already-attached (red)
+                    // key predates it and is a backfill candidate. Whether/how to backfill is a
+                    // product decision, not made here — this just surfaces the real count/list on
+                    // a real device (SharedPreferences-backed stores have no data visible from
+                    // static analysis) so that decision can be made from real numbers.
+                    LaunchedEffect(retrievalKeys) {
+                        val backfillCandidates = retrievalKeys.filter { key ->
+                            physicalAttachmentTracker.isAttached(key.id) &&
+                                keyCardStore.enrollmentFor(key.id) == null
+                        }
+                        if (backfillCandidates.isNotEmpty()) {
+                            Log.i(
+                                LOG_TAG,
+                                "Key Attachment backfill candidates: ${backfillCandidates.size} " +
+                                    "already-attached key(s) predate the key-card auto-bind fix " +
+                                    "and are not yet mirrored into keyCardStore: " +
+                                    backfillCandidates.joinToString { "${it.displayName} (${it.id})" },
+                            )
+                        }
+                    }
                     KeyAttachmentScreen(
                         padding = padding,
                         configuredSlotCount = retrievalTerminal.configuredSlotCount,
@@ -1683,13 +1725,18 @@ fun TerminalAdminApp() {
                         initialSlots = retrievalSlots,
                         isUidKnown = { managedKeyId -> managedKeyFobStore.enrollmentFor(managedKeyId) != null },
                         isPhysicallyAttached = physicalAttachmentTracker::isAttached,
-                        // Real per-user token gate for new-key registration (Part 0.1 discovery):
-                        // TERMINAL_DEVICE pairing tokens and purely-local NFC/fingerprint/face
-                        // sessions never populate a real Super Admin/Regional Admin JWT — only a
-                        // successful password login against the real server does
-                        // (TerminalSyncCoordinator.authenticate's AuthOutcome.Server branch, which
-                        // is exactly what sets serverAuthenticated on the active session).
-                        serverLinked = serverLinked,
+                        // New-key registration's actual requirement, corrected (Jul 2026): the
+                        // Part 0.1-era assumption that this genuinely needed a real per-user
+                        // Super Admin/Regional Admin JWT is now only half true — it needs SOME
+                        // authenticated server connection, but `POST /keys`/`/key-slots` were
+                        // deliberately widened onto TERMINAL_DEVICE_ALLOWED_ROUTES (see
+                        // backend/src/middleware/auth.js's doc comment) so the existing device
+                        // pairing token now covers it too. Plain `apiClient.isAuthenticated`
+                        // (any token, device or personal) is therefore correct here — not the
+                        // stricter app-wide `serverLinked` (which still means "the currently
+                        // active session did a real password login" and is used elsewhere, e.g.
+                        // refreshServerPersonnel above, for calls that genuinely still need that).
+                        canRegisterNewKey = apiClient.isAuthenticated,
                         notice = notice,
                         onBack = {
                             hardwareController.stopMonitoring()
@@ -1742,7 +1789,28 @@ fun TerminalAdminApp() {
                             // This is the fact this pass adds: the operator has now completed this
                             // screen's own guided attach sequence for this key, distinct from (and
                             // gating) uidKnown above — see PhysicalAttachmentTracker's doc comment.
-                            if (uidSaved) physicalAttachmentTracker.markAttached(managedKeyId)
+                            if (uidSaved) {
+                                physicalAttachmentTracker.markAttached(managedKeyId)
+                                // Auto-bind: the exact fob UID just captured at the node also
+                                // becomes this key's entry in the key-card namespace, so
+                                // CardUidResolver-based Return Flow swipe-entry (public-reader
+                                // tap) and wrong-slot detection recognize it immediately —
+                                // previously this required a separate manual "Enroll a key
+                                // card" pass over the same physical fob (see CardEnrollmentScreen's
+                                // Key category / onEnrollKeyCard below). Best-effort and keyed by
+                                // managedKeyId, not TerminalKey.id like that manual path — see
+                                // onCardDetected's CardUidMatch.Key branch, which checks the
+                                // ManagedKey schema first before falling back to legacy TerminalKey
+                                // ids. A UID collision with an already-enrolled personnel card is a
+                                // data-integrity edge case the NFC UID Resolution Rule says must
+                                // never be silently resolved — skipped here rather than guessed;
+                                // it simply leaves this key un-key-card-enrolled, same as before
+                                // this fix, and does not fail the attach itself, which has already
+                                // physically completed.
+                                if (!personnelCardStore.isEnrolled(rawUidHex)) {
+                                    keyCardStore.enroll(managedKeyId, rawUidHex, System.currentTimeMillis())
+                                }
+                            }
                             uidSaved
                         },
                         onLightAttachedNode = { nodeAddress -> hardwareController.redLight(nodeAddress, true) },
@@ -1795,14 +1863,17 @@ fun TerminalAdminApp() {
                         },
                         // Registers a brand-new key entirely from the terminal (new capability).
                         // Reuses the existing POST /v1/admin/keys and POST /v1/admin/key-slots
-                        // routes exactly as web would call them — no new backend route/permission
-                        // — using whatever token apiClient currently holds. No offline queue: a
-                        // live failure is surfaced as-is for the operator to retry, never queued
-                        // like the offline-first hardware event outbox elsewhere in this app.
+                        // routes exactly as web would call them, using whatever token apiClient
+                        // currently holds — a TERMINAL_DEVICE pairing token now works here too
+                        // (Jul 2026 backend widening, see auth.js's allowlist doc comment), so
+                        // this no longer requires the stricter serverLinked (password-login) gate,
+                        // just apiClient.isAuthenticated. No offline queue: a live failure is
+                        // surfaced as-is for the operator to retry, never queued like the
+                        // offline-first hardware event outbox elsewhere in this app.
                         onRegisterNewKey = { nodeAddress, uidHex, displayName ->
-                            if (!serverLinked) {
+                            if (!apiClient.isAuthenticated) {
                                 RegisterNewKeyResult.Failed(
-                                    "Sign in with a server password to register a new key from this terminal.",
+                                    "Connect this terminal to the server (Admin Menu → server address, or re-pair) to register a new key from this terminal.",
                                 )
                             } else {
                                 try {
@@ -3433,6 +3504,8 @@ private fun activeReturnFlowAttemptId(flow: ReturnFlow?): Long? =
 
 /** Return Flow rework §3: how long a continuous return session waits for the next scan before ending on its own. */
 private const val SESSION_IDLE_TIMEOUT_MILLIS = 20_000L
+
+private const val LOG_TAG = "TerminalAdminApp"
 
 /** Key Take Flow (CLAUDE.md "Terminal App UX Baseline (Production)" §1) in-progress state; see `TerminalKeyTakeScreen`. */
 private data class TakeFlow(val key: ManagedKey, val slot: KeySlot, val checkoutDeadline: CheckoutDeadlineChoice)

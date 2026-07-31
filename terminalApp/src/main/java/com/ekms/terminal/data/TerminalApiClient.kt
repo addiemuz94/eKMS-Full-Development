@@ -520,9 +520,12 @@ class TerminalApiClient(context: Context) {
 
     /** Key Attachment's new-key-registration flow (terminal-side equivalent of web's Register
      * Keys step) — same route, same request shape as `web/src/api/client.ts`'s `createKey`.
-     * Requires a real per-user Super Admin/Regional Admin token (see boundary: TERMINAL_DEVICE
-     * tokens cannot reach this route at all) — the caller must confirm `serverAuthenticated`
-     * before attempting this, not assume `isAuthenticated` alone is sufficient. */
+     * Was per-user-JWT-only (TERMINAL_DEVICE tokens rejected); widened Jul 2026 (see
+     * backend/src/middleware/auth.js's `TERMINAL_DEVICE_ALLOWED_ROUTES` doc comment) so a plain
+     * TERMINAL_DEVICE pairing token now works too — `isAuthenticated` alone is sufficient, the
+     * caller no longer needs to additionally confirm `serverAuthenticated`. Known tradeoff: a
+     * TERMINAL_DEVICE-created key's `KEY_CREATED` audit event is attributed to no user
+     * (`actorUserId = null`), not whichever admin is locally logged in on the terminal. */
     suspend fun createKey(request: KeyUpsertRequest): KeyDto {
         ensureBaseUrl()
         return decode(
@@ -538,7 +541,8 @@ class TerminalApiClient(context: Context) {
 
     /** Pins the new key to the exact node its physical fob was already found at (not the
      * lowest-unused-node logic web's own registration flow uses) — same route/shape as
-     * `web/src/api/client.ts`'s `createKeySlot`. Same per-user-token requirement as [createKey]. */
+     * `web/src/api/client.ts`'s `createKeySlot`. Same token requirement as [createKey] — widened
+     * Jul 2026 to also accept a TERMINAL_DEVICE pairing token, same known attribution tradeoff. */
     suspend fun createKeySlot(request: KeySlotUpsertRequest): KeySlotDto {
         ensureBaseUrl()
         return decode(

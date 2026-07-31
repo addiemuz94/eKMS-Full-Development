@@ -31,7 +31,7 @@ export function requireSuperAdmin(req, res, next) {
  * This list is deliberately exhaustive and was derived by reading every call site in
  * terminalApp/src/main/java/com/ekms/terminal/data/TerminalApiClient.kt, not assumed.
  * Do not widen it (e.g. to a whole sub-router) without re-checking that file — a
- * TERMINAL_DEVICE token must never reach site/terminal/key CRUD, permissions, recycle
+ * TERMINAL_DEVICE token must never reach site/terminal CRUD, permissions, recycle
  * bin, sync-conflict resolution, or any other admin surface beyond exactly this set.
  *
  * Phase 5 addition: the original `key_checkouts` work (Phase 1) described this table as
@@ -40,6 +40,20 @@ export function requireSuperAdmin(req, res, next) {
  * Added exactly what Phase 5's terminal-side checkout sync calls (create on take, close-out on
  * return, office-hours read to compute the deadline) — no GET/list on key-checkouts, the
  * terminal never needs to list them, only create/close the ones it creates itself.
+ *
+ * Key Attachment new-key-registration widening (Jul 2026, explicit product decision — see
+ * CLAUDE_TERMINAL.md's Key Attachment section): `POST /keys` and `POST /key-slots` were
+ * previously excluded on purpose so that registering a brand-new key from the terminal required
+ * a real per-user Super Admin/Regional Admin JWT (password login only). Widened so any
+ * fingerprint/face/NFC/passkey-signed-in admin can also register a new key from an
+ * already-physically-present, previously-unregistered fob at a node — not just password logins.
+ * **Known, accepted tradeoff**: `keys.js`/`keySlots.js` now attribute a TERMINAL_DEVICE-created
+ * key/slot's `KEY_CREATED`/`KEY_SLOT_CREATED` audit event to `actorUserId = null` (see
+ * `actorUserIdFor` in both files), same as every other TERMINAL_DEVICE-reachable route in this
+ * codebase (`users.js`, `credentials.js`, `keyCheckouts.js`, `vendorPasskeyRequests.js`,
+ * `keyAccessRequests.js`) — a TERMINAL_DEVICE token has no real user behind it, so which specific
+ * locally-logged-in admin triggered the registration is not recorded server-side for this action,
+ * only that the device did. This is a deliberate widening of device-level trust, not a bug.
  */
 const TERMINAL_DEVICE_ALLOWED_ROUTES = [
   { method: 'GET', pattern: /^\/sites$/ },
@@ -57,6 +71,11 @@ const TERMINAL_DEVICE_ALLOWED_ROUTES = [
   // credentials-complete entry above; no GET/list on keys itself, the terminal only ever reports
   // completion for a key it already knows about from its own synced KeySlot snapshot.
   { method: 'POST', pattern: /^\/keys\/[^/]+\/fob-enrollment\/complete$/ },
+  // Key Attachment new-key-registration (see doc comment above): create the ManagedKey, then pin
+  // it to the exact physical node its fob was already found at. No GET/list/PATCH/DELETE on
+  // either resource — the terminal only ever creates, never edits or removes, a key/slot this way.
+  { method: 'POST', pattern: /^\/keys$/ },
+  { method: 'POST', pattern: /^\/key-slots$/ },
 ];
 
 /**

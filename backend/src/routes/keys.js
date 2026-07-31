@@ -14,6 +14,14 @@ import {
 
 const router = Router();
 
+/** TERMINAL_DEVICE-scoped tokens have no real user behind them — never attribute an audit
+ * record's actorUserId to a terminal's own id. Only matters for POST / (Key Attachment's
+ * new-key-registration widening, Jul 2026, see auth.js's allowlist doc comment) — every other
+ * route here stays SUPER_ADMIN/REGIONAL_ADMIN-only where req.auth.sub is always a real user. */
+function actorUserIdFor(req) {
+  return req.auth?.role === 'TERMINAL_DEVICE' ? null : req.auth.sub;
+}
+
 function mapKey(row) {
   return {
     id: row.id,
@@ -99,7 +107,7 @@ router.post('/', async (req, res) => {
   );
   await writeAudit({
     eventType: 'KEY_CREATED',
-    actorUserId: req.auth.sub,
+    actorUserId: actorUserIdFor(req),
     siteId: parsed.data.siteId,
     entityType: 'KEY',
     entityId: id,
