@@ -66,6 +66,11 @@ object ApiPaths {
      * ceiling — a narrow, purpose-built read so a requester's mobile form can bound its duration
      * picker without needing broader Region visibility (regions.js itself stays Super-Admin-only). */
     const val ADMIN_KEY_ACCESS_REQUEST_SITE_POLICY = "/v1/admin/key-access-requests/site-policy/{siteId}"
+    /** Sites the caller may request as exception access (ACTIVE sites not in their standing assignments). */
+    const val ADMIN_KEY_ACCESS_EXCEPTION_SITES = "/v1/admin/key-access-requests/exception-sites"
+    /** Keys at an exception-eligible site (Only B Apply key picker). */
+    const val ADMIN_KEY_ACCESS_EXCEPTION_SITE_KEYS =
+        "/v1/admin/key-access-requests/exception-sites/{siteId}/keys"
     /** Unauthenticated — a terminal-side operator entering a passkey has no token yet, same
      * reasoning as [TERMINAL_PAIR_WITH_CODE]. See [TerminalPasskeyLoginRequest]. Backend route
      * only as of migration 009 — terminalApp's UI is not wired to this endpoint yet. */
@@ -1103,9 +1108,13 @@ data class KeyAccessRequestDto(
      * the schema shape that's easiest to extend either way. */
     val keyIds: Set<String> = emptySet(),
     val requestedAtEpochMillis: Long,
-    /** The duration the requester picked in the mobile form, before any Region-ceiling clamp
-     * is applied at approval time. */
+    /** Derived as (return − pickup) in minutes for Only B calendar requests. Legacy rows may
+     * only have this field (pre-calendar). Region ceiling is NOT applied for Only B. */
     val requestedDurationMinutes: Int,
+    /** Free-text reason — required for new Only B creates; may be null on legacy rows. */
+    val reason: String? = null,
+    val pickupAtEpochMillis: Long? = null,
+    val returnAtEpochMillis: Long? = null,
     val status: KeyAccessRequestStatus,
     val approvedByUserId: String? = null,
     val approvedAtEpochMillis: Long? = null,
@@ -1127,7 +1136,10 @@ data class CreateKeyAccessRequestRequest(
     val requesterRole: UserRole? = null,
     val siteId: String,
     val keyIds: Set<String>,
-    val requestedDurationMinutes: Int,
+    /** Required for Only B. */
+    val reason: String,
+    val pickupAtEpochMillis: Long,
+    val returnAtEpochMillis: Long,
 )
 
 @Serializable

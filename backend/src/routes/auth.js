@@ -15,7 +15,9 @@ const loginSchema = z.object({
   identifier: z.string().min(1),
   password: z.string().min(1),
   clientType: z.enum(['WEB', 'MOBILE', 'TERMINAL']).default('WEB'),
-  deviceId: z.string().optional(),
+  // nullish: mobileApp's kotlinx.serialization encodeDefaults emits `"deviceId": null`
+  // when omitted; Zod `.optional()` only allows undefined, not null ("Expected string, received null").
+  deviceId: z.string().nullish(),
 });
 
 async function loadAssignedSiteIds(userId) {

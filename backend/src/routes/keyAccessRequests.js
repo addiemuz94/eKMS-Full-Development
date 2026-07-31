@@ -5,6 +5,7 @@ import pool from '../db.js';
 import { signKeyAccessSessionToken } from '../middleware/auth.js';
 import {
   assignedRegionIdsForUser,
+  assignedSiteIdsForUser,
   badRequest,
   conflict,
   isRegionAssignedToUser,
@@ -51,34 +52,88 @@ async function assertMayReadRequest(req, row) {
 }
 
 /**
- * Site-access check for CREATING a request — distinct from [assertMayAccessRequestSite] (which
- * only ever covers the approve/reject/admin-visibility path via Region assignment). A
- * self-service Technician/Vendor is scoped by their own `user_site_assignments` (the same
- * per-Site assignment the rest of their access already uses — access grants, etc), NOT by
- * Region, since Technicians/Vendors are never assigned to Regions at all (only Regional Admins
- * are, via user_region_assignments). Region only ever governs who may APPROVE a request, never
- * who may FILE one.
+ * Site-access check for CREATING a request — Only B (exception access): a self-service
+ * Technician/Vendor may ONLY target a site they are NOT already assigned to. Standing home
+ * sites stay on terminal Key Menu / access grants — this form is for exception locations.
+ * Super Admin / Regional Admin creating on someone's behalf still use Region/admin visibility.
  */
 async function assertMayCreateForSite(req, siteId) {
   if (req.auth?.role === 'TECHNICIAN' || req.auth?.role === 'VENDOR') {
-    return isSiteAssignedToUser(req.auth.sub, siteId);
+    const assigned = await isSiteAssignedToUser(req.auth.sub, siteId);
+    return !assigned;
   }
   return assertMayAccessRequestSite(req, siteId);
 }
 
+function mapSiteBrief(row) {
+  return {
+    id: row.id,
+    name: row.name,
+    province: row.province ?? null,
+    city: row.city ?? null,
+    parentSiteId: row.parent_site_id ?? null,
+    address: row.address,
+    regionId: row.region_id ?? null,
+    revision: Number(row.revision),
+  };
+}
+
+function mapKeyBrief(row) {
+  return {
+    id: row.id,
+    siteId: row.site_id,
+    displayName: row.display_name,
+    fobEnrollmentReference: row.fob_enrollment_reference,
+    revision: Number(row.revision),
+  };
+}
+
 /**
- * GET /key-access-requests/site-policy/:siteId — resolves the one number a requester's mobile
- * form actually needs before submitting: the site's Region's `max_key_access_duration_minutes`
- * ceiling, so the duration picker can bound itself client-side (the backend's own approve-time
- * clamp in POST .../:id/approve stays the real source of truth either way — this is purely for
- * UX, never trusted as the enforcement point).
- *
- * Deliberately a narrow, purpose-built read rather than exposing full Region visibility to
- * Technician/Vendor (regions.js stays Super-Admin-only, unchanged) — a requester never needs to
- * see a Region's name, id, or any other Region record, only this one derived value for their own
- * site. Reuses [assertMayCreateForSite] (same site-vs-region access rule as creating a request):
- * Technician/Vendor via their own site assignment, Super Admin/Regional Admin via the site's
- * region assignment.
+ * GET /key-access-requests/exception-sites — ACTIVE sites outside the caller's standing
+ * user_site_assignments (Only B picker). TECHNICIAN/VENDOR only for self-service.
+ */
+router.get('/exception-sites', async (req, res) => {
+  if (req.auth?.role !== 'TECHNICIAN' && req.auth?.role !== 'VENDOR') {
+    return res.status(403).json({ error: 'FORBIDDEN', message: 'Exception site list is for Technician/Vendor self-service' });
+  }
+  const assigned = await assignedSiteIdsForUser(req.auth.sub);
+  let sql = `SELECT * FROM sites WHERE lifecycle_state = 'ACTIVE'`;
+  const params = {};
+  if (assigned.length > 0) {
+    const placeholders = assigned.map((_, i) => `:site${i}`).join(', ');
+    assigned.forEach((id, i) => {
+      params[`site${i}`] = id;
+    });
+    sql += ` AND id NOT IN (${placeholders})`;
+  }
+  sql += ` ORDER BY name ASC`;
+  const [rows] = await pool.execute(sql, params);
+  return res.json({ items: rows.map(mapSiteBrief) });
+});
+
+/**
+ * GET /key-access-requests/exception-sites/:siteId/keys — keys at an exception-eligible site.
+ */
+router.get('/exception-sites/:siteId/keys', async (req, res) => {
+  const { siteId } = req.params;
+  if (!(await assertMayCreateForSite(req, siteId))) {
+    return res.status(403).json({ error: 'FORBIDDEN', message: 'Not an exception-eligible site for this caller' });
+  }
+  const [sites] = await pool.execute(
+    `SELECT id FROM sites WHERE id = :id AND lifecycle_state = 'ACTIVE' LIMIT 1`,
+    { id: siteId },
+  );
+  if (!sites[0]) return notFound(res, 'Site not found');
+  const [rows] = await pool.execute(
+    `SELECT * FROM managed_keys WHERE site_id = :siteId AND lifecycle_state = 'ACTIVE' ORDER BY display_name ASC`,
+    { siteId },
+  );
+  return res.json({ items: rows.map(mapKeyBrief) });
+});
+
+/**
+ * GET /key-access-requests/site-policy/:siteId — legacy duration ceiling read. Only B no longer
+ * clamps to this value; kept for older clients. Caller must still be allowed to create for the site.
  */
 router.get('/site-policy/:siteId', async (req, res) => {
   const { siteId } = req.params;
@@ -137,6 +192,9 @@ function mapRequest(row, keyIds, viewerUserId) {
     keyIds,
     requestedAtEpochMillis: Number(row.requested_at_epoch_ms),
     requestedDurationMinutes: Number(row.requested_duration_minutes),
+    reason: row.reason ?? null,
+    pickupAtEpochMillis: row.pickup_at_epoch_ms == null ? null : Number(row.pickup_at_epoch_ms),
+    returnAtEpochMillis: row.return_at_epoch_ms == null ? null : Number(row.return_at_epoch_ms),
     status: row.status,
     approvedByUserId: row.approved_by_user_id,
     approvedAtEpochMillis: row.approved_at_epoch_ms == null ? null : Number(row.approved_at_epoch_ms),
@@ -223,26 +281,26 @@ router.get('/:id', async (req, res) => {
 });
 
 const createSchema = z.object({
-  // Only honored for a SUPER_ADMIN/REGIONAL_ADMIN caller creating a request on someone else's
-  // behalf (mirrors the old vendorPasskeyRequests.js's admin-driven creation). A TECHNICIAN/
-  // VENDOR caller always requests for themselves — see the role branch below, which ignores
-  // these two fields entirely for that case rather than trusting a self-submitted value.
   requesterUserId: z.string().uuid().optional(),
   requesterRole: z.enum(['TECHNICIAN', 'VENDOR']).optional(),
   siteId: z.string().uuid(),
   keyIds: z.array(z.string().uuid()).min(1),
-  requestedDurationMinutes: z.number().int().positive(),
+  reason: z.string().trim().min(1).max(2000),
+  pickupAtEpochMillis: z.number().int().positive(),
+  returnAtEpochMillis: z.number().int().positive(),
 });
 
 router.post('/', async (req, res) => {
   const parsed = createSchema.safeParse(req.body);
   if (!parsed.success) return badRequest(res, 'Invalid key access request payload');
 
+  if (parsed.data.returnAtEpochMillis <= parsed.data.pickupAtEpochMillis) {
+    return badRequest(res, 'returnAtEpochMillis must be after pickupAtEpochMillis');
+  }
+
   let requesterUserId;
   let requesterRole;
   if (req.auth?.role === 'TECHNICIAN' || req.auth?.role === 'VENDOR') {
-    // Self-service request: the caller's own identity/role, never a client-submitted value —
-    // a Technician/Vendor cannot file a request pretending to be someone else.
     requesterUserId = req.auth.sub;
     requesterRole = req.auth.role;
   } else if (req.auth?.role === 'SUPER_ADMIN' || req.auth?.role === 'REGIONAL_ADMIN') {
@@ -256,7 +314,10 @@ router.post('/', async (req, res) => {
   }
 
   if (!(await assertMayCreateForSite(req, parsed.data.siteId))) {
-    return res.status(403).json({ error: 'FORBIDDEN', message: 'Not permitted to create a request for this site' });
+    return res.status(403).json({
+      error: 'FORBIDDEN',
+      message: 'Only B: request a site outside your standing assignments (or not permitted for this site)',
+    });
   }
 
   const [requester] = await pool.execute(
@@ -271,8 +332,6 @@ router.post('/', async (req, res) => {
   );
   if (!site[0]) return badRequest(res, 'siteId must reference an active site');
 
-  // Every requested key must belong to the request's own site — mirrors accessGrants.js's
-  // existing "every selected key must belong to the selected site" rule (KeySlotAccessPolicy).
   const placeholders = parsed.data.keyIds.map((_, i) => `:key${i}`).join(', ');
   const keyParams = {};
   parsed.data.keyIds.forEach((id, i) => {
@@ -286,6 +345,11 @@ router.post('/', async (req, res) => {
     return badRequest(res, 'One or more keyIds are not active keys at the given site');
   }
 
+  const derivedDurationMinutes = Math.max(
+    1,
+    Math.ceil((parsed.data.returnAtEpochMillis - parsed.data.pickupAtEpochMillis) / 60_000),
+  );
+
   const id = newId();
   const now = nowMs();
   const conn = await pool.getConnection();
@@ -293,16 +357,20 @@ router.post('/', async (req, res) => {
     await conn.beginTransaction();
     await conn.execute(
       `INSERT INTO key_access_requests
-        (id, requester_user_id, requester_role, site_id, requested_at_epoch_ms,
-         requested_duration_minutes, status)
-       VALUES (:id, :requesterUserId, :requesterRole, :siteId, :now, :requestedDurationMinutes, 'PENDING')`,
+        (id, requester_user_id, requester_role, site_id, reason, requested_at_epoch_ms,
+         requested_duration_minutes, pickup_at_epoch_ms, return_at_epoch_ms, status)
+       VALUES (:id, :requesterUserId, :requesterRole, :siteId, :reason, :now,
+         :requestedDurationMinutes, :pickupAt, :returnAt, 'PENDING')`,
       {
         id,
         requesterUserId,
         requesterRole,
         siteId: parsed.data.siteId,
+        reason: parsed.data.reason,
         now,
-        requestedDurationMinutes: parsed.data.requestedDurationMinutes,
+        requestedDurationMinutes: derivedDurationMinutes,
+        pickupAt: parsed.data.pickupAtEpochMillis,
+        returnAt: parsed.data.returnAtEpochMillis,
       },
     );
     for (const keyId of parsed.data.keyIds) {
@@ -343,35 +411,22 @@ router.post('/:id/approve', async (req, res) => {
     return conflict(res, 'Request is no longer pending');
   }
 
-  // Clamp (not reject) the requester's chosen duration to the site's Region's configured
-  // ceiling — see the design-choice note on regions.max_key_access_duration_minutes in
-  // 009_regions_and_key_access_requests.sql. A regionless site (region_id IS NULL) has no
-  // ceiling to clamp against; the requested duration is honored as-is in that case, same as
-  // the old vendor_passkey_requests' fixed 24h TTL had no per-site override at all.
-  const regionId = await regionIdForSite(existing[0].site_id);
-  let effectiveDurationMinutes = Number(existing[0].requested_duration_minutes);
-  if (regionId) {
-    const [[region]] = await pool.execute(
-      `SELECT max_key_access_duration_minutes FROM regions WHERE id = :id LIMIT 1`,
-      { id: regionId },
-    );
-    if (region) {
-      effectiveDurationMinutes = Math.min(
-        effectiveDurationMinutes,
-        Number(region.max_key_access_duration_minutes),
-      );
+  // Only B: PIN valid until return datetime. No region duration clamp.
+  // Legacy rows without return_at fall back to requested_duration_minutes from now.
+  const now = nowMs();
+  let expiresAt;
+  if (existing[0].return_at_epoch_ms != null) {
+    expiresAt = Number(existing[0].return_at_epoch_ms);
+    if (expiresAt <= now) {
+      return badRequest(res, 'Request return window has already ended — cannot approve');
     }
+  } else {
+    expiresAt = now + Number(existing[0].requested_duration_minutes) * 60_000;
   }
 
-  // crypto.randomInt is uniform over the range (no modulo bias), same approach as terminal
-  // pairing codes in pairing.js and the prior vendor_passkey_requests.passkey_code.
   const code = String(crypto.randomInt(0, 10_000)).padStart(4, '0');
-  const now = nowMs();
-  const expiresAt = now + effectiveDurationMinutes * 60_000;
   const actorUserId = req.auth?.role === 'TERMINAL_DEVICE' ? null : req.auth.sub;
 
-  // Double-checked guard against a concurrent approve/reject, same spirit as expectedRevision
-  // elsewhere: application-level check above AND status = 'PENDING' in the UPDATE itself.
   const [result] = await pool.execute(
     `UPDATE key_access_requests SET
        status = 'APPROVED',
@@ -392,8 +447,6 @@ router.post('/:id/approve', async (req, res) => {
     entityId: req.params.id,
   });
 
-  // The plaintext code is shown exactly once, in this response only — same "shown once"
-  // treatment as terminal pairing codes. Nothing else re-reads generated_passkey afterward.
   return res.json({
     id: req.params.id,
     status: 'APPROVED',

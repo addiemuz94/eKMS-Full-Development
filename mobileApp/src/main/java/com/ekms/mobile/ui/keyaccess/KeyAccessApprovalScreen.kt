@@ -112,8 +112,11 @@ fun KeyAccessApprovalScreen(apiClient: MobileApiClient, onNotice: (String) -> Un
                             style = MaterialTheme.typography.titleMedium,
                             fontWeight = FontWeight.SemiBold,
                         )
+                        request.reason?.takeIf { it.isNotBlank() }?.let {
+                            Text(it, style = MaterialTheme.typography.bodyMedium)
+                        }
                         Text(
-                            "Requested return within ${formatDuration(request.requestedDurationMinutes)}",
+                            windowLabel(request) ?: "Requested return within ${formatDuration(request.requestedDurationMinutes)}",
                             style = MaterialTheme.typography.bodyMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )

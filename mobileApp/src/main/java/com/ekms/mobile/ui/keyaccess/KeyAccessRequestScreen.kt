@@ -7,6 +7,8 @@ import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -14,7 +16,7 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Slider
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -33,25 +35,16 @@ import com.ekms.shared.api.CreateKeyAccessRequestRequest
 import com.ekms.shared.api.KeyAccessRequestDto
 import com.ekms.shared.api.KeyAccessRequestStatus
 import com.ekms.shared.api.KeyDto
+import com.ekms.shared.api.SiteDto
 import kotlinx.coroutines.launch
-import kotlin.math.roundToInt
-
-private const val DEFAULT_CEILING_MINUTES = 1440
-private const val MIN_DURATION_MINUTES = 15
-private const val DURATION_STEP_MINUTES = 15
+import java.time.LocalDateTime
+import java.time.ZoneId
+import java.time.format.DateTimeFormatter
+import java.time.format.DateTimeParseException
 
 /**
- * Technician/Vendor's Key Access Request screen — the mobile form promised since last session's
- * schema work. Two sections: submit a new request (key picker + duration, bounded by the site's
- * Region ceiling) and a status list of the requester's own past/pending requests, with an
- * APPROVED request's 4-digit passkey made the most visually prominent thing on the whole screen
- * per the task's own instruction — it's the one piece of information the requester came here for.
- *
- * Key scoping mirrors terminalApp's Key Menu exactly (`TerminalAdminApp.authorizedKeysForCurrentUser`):
- * access grants filtered to a currently-valid validFrom/validUntil window, flatMapped to key ids,
- * resolved against the full key list — not a new authorization model. The backend already
- * self-scopes both `GET /access-grants` and `GET /keys` to the caller's own grants/sites, so no
- * client-side userId/siteId filtering is needed beyond the validity-window check.
+ * Only B — exception Key Access Apply. Technician/Vendor pick a site outside standing
+ * assignments, key(s) at that site, calendar pickup/return, and a reason. PIN after RA approval.
  */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
@@ -63,35 +56,25 @@ fun KeyAccessRequestScreen(
     val scope = rememberCoroutineScope()
     var loading by remember { mutableStateOf(true) }
     var loadError by remember { mutableStateOf<String?>(null) }
-    var availableKeys by remember { mutableStateOf<List<KeyDto>>(emptyList()) }
+    var exceptionSites by remember { mutableStateOf<List<SiteDto>>(emptyList()) }
+    var keysAtSite by remember { mutableStateOf<List<KeyDto>>(emptyList()) }
     var myRequests by remember { mutableStateOf<List<KeyAccessRequestDto>>(emptyList()) }
+    var selectedSiteId by remember { mutableStateOf<String?>(null) }
     var selectedKeyIds by remember { mutableStateOf<Set<String>>(emptySet()) }
-    var durationMinutes by remember { mutableStateOf(DEFAULT_CEILING_MINUTES.toFloat()) }
-    var ceilingMinutes by remember { mutableStateOf<Int?>(null) }
+    var reason by remember { mutableStateOf("") }
+    var pickupText by remember { mutableStateOf(defaultPickupText()) }
+    var returnText by remember { mutableStateOf(defaultReturnText()) }
     var submitting by remember { mutableStateOf(false) }
-
-    val selectedSiteId = availableKeys.firstOrNull { it.id in selectedKeyIds }?.siteId
+    var loadingKeys by remember { mutableStateOf(false) }
 
     suspend fun reload() {
         loading = true
         loadError = null
         try {
-            val grants = apiClient.listMyAccessGrants()
-            val keys = apiClient.listKeys()
-            val nowMillis = System.currentTimeMillis()
-            val authorizedKeyIds = grants
-                .asSequence()
-                .filter { grant ->
-                    val validFrom = grant.validFromEpochMillis
-                    val validUntil = grant.validUntilEpochMillis
-                    (validFrom == null || nowMillis >= validFrom) && (validUntil == null || nowMillis <= validUntil)
-                }
-                .flatMap { grant -> grant.keyIds.asSequence() }
-                .toSet()
-            availableKeys = keys.filter { it.id in authorizedKeyIds }
+            exceptionSites = apiClient.listExceptionSites()
             myRequests = apiClient.listKeyAccessRequests(status = "ALL")
         } catch (e: Exception) {
-            loadError = e.message ?: "Couldn't load your keys and requests."
+            loadError = e.message ?: "Couldn't load exception sites and requests."
         } finally {
             loading = false
         }
@@ -101,33 +84,43 @@ fun KeyAccessRequestScreen(
 
     LaunchedEffect(selectedSiteId) {
         val siteId = selectedSiteId
-        if (siteId == null) {
-            ceilingMinutes = null
-            return@LaunchedEffect
+        selectedKeyIds = emptySet()
+        keysAtSite = emptyList()
+        if (siteId == null) return@LaunchedEffect
+        loadingKeys = true
+        try {
+            keysAtSite = apiClient.listExceptionSiteKeys(siteId)
+        } catch (e: Exception) {
+            onNotice(e.message ?: "Couldn't load keys for that site.")
+        } finally {
+            loadingKeys = false
         }
-        ceilingMinutes = try {
-            apiClient.getSiteKeyAccessPolicy(siteId).maxKeyAccessDurationMinutes
-        } catch (_: Exception) {
-            null
-        }
-        val effectiveCeiling = (ceilingMinutes ?: DEFAULT_CEILING_MINUTES).toFloat()
-        if (durationMinutes > effectiveCeiling) durationMinutes = effectiveCeiling
     }
 
     fun toggleKey(key: KeyDto) {
-        selectedKeyIds = if (key.id in selectedKeyIds) {
-            selectedKeyIds - key.id
-        } else if (selectedSiteId != null && key.siteId != selectedSiteId) {
-            // A request can only cover keys from one site (backend rule) — starting a selection
-            // at a different site clears the previous one rather than silently rejecting the tap.
-            setOf(key.id)
-        } else {
-            selectedKeyIds + key.id
-        }
+        selectedKeyIds = if (key.id in selectedKeyIds) selectedKeyIds - key.id else selectedKeyIds + key.id
     }
 
     fun submit() {
         val siteId = selectedSiteId ?: return
+        val pickup = parseLocalDateTimeToEpoch(pickupText)
+        val returnAt = parseLocalDateTimeToEpoch(returnText)
+        if (pickup == null || returnAt == null) {
+            onNotice("Use pickup/return as yyyy-MM-dd HH:mm")
+            return
+        }
+        if (returnAt <= pickup) {
+            onNotice("Return must be after pickup.")
+            return
+        }
+        if (reason.isBlank()) {
+            onNotice("Enter a reason.")
+            return
+        }
+        if (selectedKeyIds.isEmpty()) {
+            onNotice("Select at least one key.")
+            return
+        }
         submitting = true
         scope.launch {
             try {
@@ -135,10 +128,13 @@ fun KeyAccessRequestScreen(
                     CreateKeyAccessRequestRequest(
                         siteId = siteId,
                         keyIds = selectedKeyIds,
-                        requestedDurationMinutes = durationMinutes.roundToInt(),
+                        reason = reason.trim(),
+                        pickupAtEpochMillis = pickup,
+                        returnAtEpochMillis = returnAt,
                     ),
                 )
                 selectedKeyIds = emptySet()
+                reason = ""
                 onNotice("Request submitted. A Regional Admin will review it.")
                 reload()
             } catch (e: Exception) {
@@ -149,8 +145,22 @@ fun KeyAccessRequestScreen(
         }
     }
 
-    Column(modifier = Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(16.dp)) {
-        Text("Key access requests", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .verticalScroll(rememberScrollState()),
+        verticalArrangement = Arrangement.spacedBy(16.dp),
+    ) {
+        Text("Apply key access", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+        Text(
+            "Exception access — request a location outside your standing assignments.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Text(
+            "${profile.displayName} · ${profile.email}",
+            style = MaterialTheme.typography.bodyMedium,
+        )
 
         when {
             loading -> CircularProgressIndicator()
@@ -162,51 +172,78 @@ fun KeyAccessRequestScreen(
                 Card(modifier = Modifier.fillMaxWidth()) {
                     Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                         Text("New request", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
-                        if (availableKeys.isEmpty()) {
+                        if (exceptionSites.isEmpty()) {
                             Text(
-                                "You have no keys assigned yet — ask your Regional Admin for an access grant first.",
+                                "No exception locations available (every active site is already in your standing assignments).",
                                 style = MaterialTheme.typography.bodyMedium,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
                         } else {
-                            Text(
-                                "Select the key(s) you need. All selected keys must be at the same site.",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
+                            Text("Location (outside your assignments)", style = MaterialTheme.typography.labelLarge)
                             FlowRow(
                                 horizontalArrangement = Arrangement.spacedBy(8.dp),
                                 verticalArrangement = Arrangement.spacedBy(8.dp),
                             ) {
-                                availableKeys.forEach { key ->
+                                exceptionSites.forEach { site ->
                                     FilterChip(
-                                        selected = key.id in selectedKeyIds,
-                                        onClick = { toggleKey(key) },
-                                        label = { Text(key.displayName) },
+                                        selected = site.id == selectedSiteId,
+                                        onClick = { selectedSiteId = site.id },
+                                        label = { Text(site.name) },
                                     )
                                 }
                             }
 
-                            HorizontalDivider()
+                            if (selectedSiteId != null) {
+                                HorizontalDivider()
+                                Text("Key(s) at this location", style = MaterialTheme.typography.labelLarge)
+                                when {
+                                    loadingKeys -> CircularProgressIndicator()
+                                    keysAtSite.isEmpty() -> Text(
+                                        "No active keys at this site yet.",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
+                                    else -> FlowRow(
+                                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                                    ) {
+                                        keysAtSite.forEach { key ->
+                                            FilterChip(
+                                                selected = key.id in selectedKeyIds,
+                                                onClick = { toggleKey(key) },
+                                                label = { Text(key.displayName) },
+                                            )
+                                        }
+                                    }
+                                }
+                            }
 
-                            val effectiveCeiling = ceilingMinutes ?: DEFAULT_CEILING_MINUTES
-                            Text(
-                                "Return within: ${formatDuration(durationMinutes.roundToInt())} (up to ${formatDuration(effectiveCeiling)})",
-                                style = MaterialTheme.typography.bodyMedium,
+                            OutlinedTextField(
+                                value = pickupText,
+                                onValueChange = { pickupText = it },
+                                modifier = Modifier.fillMaxWidth(),
+                                label = { Text("Pickup (yyyy-MM-dd HH:mm)") },
+                                singleLine = true,
                             )
-                            Slider(
-                                value = durationMinutes,
-                                onValueChange = { durationMinutes = it },
-                                valueRange = MIN_DURATION_MINUTES.toFloat()..effectiveCeiling.toFloat(),
-                                steps = ((effectiveCeiling - MIN_DURATION_MINUTES) / DURATION_STEP_MINUTES - 1)
-                                    .coerceAtLeast(0),
-                                enabled = selectedKeyIds.isNotEmpty(),
+                            OutlinedTextField(
+                                value = returnText,
+                                onValueChange = { returnText = it },
+                                modifier = Modifier.fillMaxWidth(),
+                                label = { Text("Return (yyyy-MM-dd HH:mm)") },
+                                singleLine = true,
+                            )
+                            OutlinedTextField(
+                                value = reason,
+                                onValueChange = { reason = it },
+                                modifier = Modifier.fillMaxWidth(),
+                                label = { Text("Reason") },
+                                minLines = 2,
                             )
 
                             Button(
                                 onClick = ::submit,
                                 modifier = Modifier.fillMaxWidth(),
-                                enabled = selectedKeyIds.isNotEmpty() && !submitting,
+                                enabled = selectedSiteId != null && selectedKeyIds.isNotEmpty() && !submitting,
                             ) {
                                 Text(if (submitting) "Submitting…" else "Submit request")
                             }
@@ -231,8 +268,6 @@ fun KeyAccessRequestScreen(
 
 @Composable
 private fun ApprovedPasskeyCard(request: KeyAccessRequestDto) {
-    // This is the one thing a requester actually came to this screen for — made deliberately the
-    // most visually prominent element (largest text, primary-tinted container, first on screen).
     Card(
         modifier = Modifier.fillMaxWidth(),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer),
@@ -254,7 +289,7 @@ private fun ApprovedPasskeyCard(request: KeyAccessRequestDto) {
             )
             request.passkeyExpiresAtEpochMillis?.let { expiresAt ->
                 Text(
-                    "Enter this at the terminal's Passkey login. Valid until ${formatEpochMillis(expiresAt)}.",
+                    "Enter at the terminal Passkey login. Valid until ${formatEpochMillis(expiresAt)}.",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onPrimaryContainer,
                 )
@@ -279,12 +314,24 @@ private fun KeyAccessRequestRow(request: KeyAccessRequestDto) {
                     },
                 )
             }
-            Text(
-                "Requested return within ${formatDuration(request.requestedDurationMinutes)}",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
+            request.reason?.takeIf { it.isNotBlank() }?.let {
+                Text(it, style = MaterialTheme.typography.bodySmall)
+            }
+            val window = windowLabel(request)
+            if (window != null) {
+                Text(window, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
         }
+    }
+}
+
+internal fun windowLabel(request: KeyAccessRequestDto): String? {
+    val pickup = request.pickupAtEpochMillis
+    val ret = request.returnAtEpochMillis
+    return if (pickup != null && ret != null) {
+        "Pickup ${formatEpochMillis(pickup)} → return ${formatEpochMillis(ret)}"
+    } else {
+        "Return within ${formatDuration(request.requestedDurationMinutes)}"
     }
 }
 
@@ -298,8 +345,26 @@ internal fun formatDuration(minutes: Int): String {
     }
 }
 
-private fun formatEpochMillis(epochMillis: Long): String {
+internal fun formatEpochMillis(epochMillis: Long): String {
     val instant = java.time.Instant.ofEpochMilli(epochMillis)
-    val zoned = instant.atZone(java.time.ZoneId.systemDefault())
-    return java.time.format.DateTimeFormatter.ofPattern("MMM d, HH:mm").format(zoned)
+    val zoned = instant.atZone(ZoneId.systemDefault())
+    return DateTimeFormatter.ofPattern("MMM d, HH:mm").format(zoned)
 }
+
+private val localDateTimeFmt: DateTimeFormatter = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm")
+
+private fun defaultPickupText(): String =
+    LocalDateTime.now().plusHours(1).withMinute(0).withSecond(0).withNano(0).format(localDateTimeFmt)
+
+private fun defaultReturnText(): String =
+    LocalDateTime.now().plusHours(5).withMinute(0).withSecond(0).withNano(0).format(localDateTimeFmt)
+
+private fun parseLocalDateTimeToEpoch(text: String): Long? =
+    try {
+        LocalDateTime.parse(text.trim(), localDateTimeFmt)
+            .atZone(ZoneId.systemDefault())
+            .toInstant()
+            .toEpochMilli()
+    } catch (_: DateTimeParseException) {
+        null
+    }

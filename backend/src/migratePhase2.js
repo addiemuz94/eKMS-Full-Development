@@ -16,19 +16,25 @@ const IGNORE_ERRNOS = new Set([
   1826, // ER_FK_DUP_NAME
 ]);
 
+/** Strip `--` comments before splitting on `;` so prose in comments cannot create fake statements. */
+function stripSqlComments(sql) {
+  return sql
+    .split('\n')
+    .map((line) => {
+      const trimmed = line.trimStart();
+      if (trimmed.startsWith('--')) return '';
+      const idx = line.indexOf('--');
+      return idx >= 0 ? line.slice(0, idx) : line;
+    })
+    .join('\n');
+}
+
 async function applySqlFile(fileName, { ignoreDuplicates = false } = {}) {
   const sqlPath = path.join(__dirname, '..', 'sql', fileName);
   const sql = fs.readFileSync(sqlPath, 'utf8');
-  const statements = sql
+  const statements = stripSqlComments(sql)
     .split(';')
-    .map((chunk) =>
-      chunk
-        .split('\n')
-        .map((line) => line.trim())
-        .filter((line) => line.length > 0 && !line.startsWith('--'))
-        .join('\n')
-        .trim(),
-    )
+    .map((chunk) => chunk.trim())
     .filter((statement) => statement.length > 0);
 
   for (const statement of statements) {
@@ -54,6 +60,7 @@ async function migrate() {
   await applySqlFile('007_terminal_cabinet_settings.sql', { ignoreDuplicates: true });
   await applySqlFile('008_regional_admin_checkouts_office_hours_vendor_passkey.sql', { ignoreDuplicates: true });
   await applySqlFile('009_regions_and_key_access_requests.sql', { ignoreDuplicates: true });
+  await applySqlFile('010_key_access_exception_calendar.sql', { ignoreDuplicates: true });
   process.exit(0);
 }
 

@@ -16,7 +16,9 @@ import com.ekms.shared.api.KeyListResponse
 import com.ekms.shared.api.LoginRequest
 import com.ekms.shared.api.LoginResponse
 import com.ekms.shared.api.RefreshTokenRequest
+import com.ekms.shared.api.SiteDto
 import com.ekms.shared.api.SiteKeyAccessPolicyDto
+import com.ekms.shared.api.SiteListResponse
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.okhttp.OkHttp
 import io.ktor.client.plugins.contentnegotiation.ContentNegotiation
@@ -56,6 +58,8 @@ class MobileApiClient(context: Context) {
     private val json = Json {
         ignoreUnknownKeys = true
         encodeDefaults = true
+        // Do not emit `"field": null` — backend Zod `.optional()` rejects null (login deviceId).
+        explicitNulls = false
     }
 
     private val http = HttpClient(OkHttp) {
@@ -121,7 +125,8 @@ class MobileApiClient(context: Context) {
                         identifier = identifier.trim(),
                         password = password,
                         clientType = AuthClientType.MOBILE,
-                        deviceId = deviceId,
+                        // Always send a string — matches web's `web-react` / terminal's device id.
+                        deviceId = deviceId?.takeIf { it.isNotBlank() } ?: DEFAULT_DEVICE_ID,
                     ),
                 ),
                 authenticated = false,
@@ -152,10 +157,8 @@ class MobileApiClient(context: Context) {
 
     /**
      * For TECHNICIAN/VENDOR this is always self-scoped server-side to the caller's own grants
-     * (see `accessGrants.js`'s TECHNICIAN/VENDOR branch) — used to build the Key Access Request
-     * form's key picker, mirroring the exact filter terminalApp's Key Menu already applies
-     * (grant.userId == self, validFrom/validUntil window covers now, flatMap keyIds) rather than
-     * a new authorization model.
+     * (see `accessGrants.js`'s TECHNICIAN/VENDOR branch). Kept for other screens; Only B Apply
+     * uses [listExceptionSites] / [listExceptionSiteKeys] instead.
      */
     suspend fun listMyAccessGrants(): List<AccessGrantDto> {
         ensureBaseUrl()
@@ -164,9 +167,7 @@ class MobileApiClient(context: Context) {
         ).items
     }
 
-    /** Self-scoped server-side to the caller's own assigned sites for TECHNICIAN/VENDOR (see
-     * `keys.js`'s TECHNICIAN/VENDOR branch) — resolves the key ids from [listMyAccessGrants]
-     * into display names. */
+    /** Self-scoped standing-site keys — not used by Only B Apply (exception keys endpoint). */
     suspend fun listKeys(): List<KeyDto> {
         ensureBaseUrl()
         return decode<KeyListResponse>(
@@ -174,9 +175,33 @@ class MobileApiClient(context: Context) {
         ).items
     }
 
-    /** The one number the request form needs before submitting: the site's Region-derived
-     * duration ceiling, for client-side UX bounding only (the backend re-clamps at approve
-     * time regardless — see [SiteKeyAccessPolicyDto]'s own doc). */
+    /** Only B: ACTIVE sites outside the caller's standing assignments. */
+    suspend fun listExceptionSites(): List<SiteDto> {
+        ensureBaseUrl()
+        return decode<SiteListResponse>(
+            send(
+                method = HttpMethod.Get,
+                path = ApiPaths.ADMIN_KEY_ACCESS_EXCEPTION_SITES,
+                body = null,
+                authenticated = true,
+            ),
+        ).items
+    }
+
+    /** Only B: keys at an exception-eligible site. */
+    suspend fun listExceptionSiteKeys(siteId: String): List<KeyDto> {
+        ensureBaseUrl()
+        return decode<KeyListResponse>(
+            send(
+                method = HttpMethod.Get,
+                path = ApiPaths.ADMIN_KEY_ACCESS_EXCEPTION_SITE_KEYS.replace("{siteId}", siteId),
+                body = null,
+                authenticated = true,
+            ),
+        ).items
+    }
+
+    /** Legacy Region duration ceiling — unused by Only B calendar Apply (no clamp). */
     suspend fun getSiteKeyAccessPolicy(siteId: String): SiteKeyAccessPolicyDto {
         ensureBaseUrl()
         return decode(
@@ -289,6 +314,7 @@ class MobileApiClient(context: Context) {
         private const val KEY_REFRESH_TOKEN = "refresh_token"
         private const val KEY_PROFILE = "profile"
         const val DEFAULT_BASE_URL = "https://kms-cvt.com"
+        private const val DEFAULT_DEVICE_ID = "mobile-android"
     }
 }
 

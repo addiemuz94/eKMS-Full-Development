@@ -136,17 +136,12 @@ const REGIONAL_ADMIN_ALLOWED_ROUTES = [
  * keyAccessRequests.js itself, not here — same two-layer split as every other role.
  */
 const TECHNICIAN_VENDOR_ALLOWED_ROUTES = [
-  // NOTE: /key-access-requests/site-policy/:siteId is a two-segment path and must stay listed
-  // BEFORE the single-segment /key-access-requests/:id pattern would otherwise seem to apply —
-  // in practice Express/path-to-regexp never confuses the two (segment counts differ), but list
-  // order here follows registration order in keyAccessRequests.js for readability.
   { method: 'GET', pattern: /^\/key-access-requests\/site-policy\/[^/]+$/ },
+  { method: 'GET', pattern: /^\/key-access-requests\/exception-sites$/ },
+  { method: 'GET', pattern: /^\/key-access-requests\/exception-sites\/[^/]+\/keys$/ },
   { method: 'GET', pattern: /^\/key-access-requests$/ },
   { method: 'GET', pattern: /^\/key-access-requests\/[^/]+$/ },
   { method: 'POST', pattern: /^\/key-access-requests$/ },
-  // Added so the mobile Key Access Request form can build its key picker — both self-scoped
-  // server-side to the caller's own site/grant assignments, never a way to browse system-wide
-  // (see the TECHNICIAN/VENDOR branches added to keys.js's and accessGrants.js's GET '/' handlers).
   { method: 'GET', pattern: /^\/keys$/ },
   { method: 'GET', pattern: /^\/access-grants$/ },
 ];

@@ -44,7 +44,7 @@ ALTER TABLE sites
 -- assigned to one or more Regions independently of their per-Site assignments. Deliberately no
 -- consistency rule enforced between the two (e.g. a Regional Admin assigned to a Region need NOT
 -- also be individually assigned to every Site inside it) — flagged simplification, not built as a
--- check here; revisit if drift between the two assignment sets turns out to cause real confusion.
+-- check here — revisit if drift between the two assignment sets turns out to cause real confusion.
 CREATE TABLE IF NOT EXISTS user_region_assignments (
   user_id CHAR(36) NOT NULL,
   region_id CHAR(36) NOT NULL,
@@ -62,7 +62,7 @@ CREATE TABLE IF NOT EXISTS user_region_assignments (
 -- its route file (routes/vendorPasskeyRequests.js), and its `/v1/admin/vendor-passkey-requests`
 -- mount are all left completely untouched. key_access_requests is a new, separate table for
 -- mobileApp's (not-yet-built) request form going forward — Region-routed, multi-key,
--- Technician+Vendor — not a superset that migrates old data; no data migration copies
+-- Technician+Vendor — not a superset that migrates old data — no data migration copies
 -- vendor_passkey_requests rows into it, since the two tables serve two different, coexisting
 -- client paths (terminalApp's existing Vendor Passkey screen vs. mobileApp's future one).
 --
