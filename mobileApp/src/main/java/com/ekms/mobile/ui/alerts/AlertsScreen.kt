@@ -97,7 +97,10 @@ fun AlertsScreen(
 @Composable
 private fun AlertCard(request: KeyAccessRequestDto, onOpenAccess: () -> Unit) {
     Card(modifier = Modifier.fillMaxWidth()) {
-        Column(modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Column(
+            modifier = Modifier.padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
             Text(
                 when (request.status) {
                     KeyAccessRequestStatus.PENDING -> "Pending approval"

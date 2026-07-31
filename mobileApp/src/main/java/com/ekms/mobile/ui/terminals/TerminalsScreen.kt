@@ -86,7 +86,10 @@ fun TerminalsScreen(
 @Composable
 private fun MobileTerminalCard(terminal: TerminalDto, siteName: String) {
     Card(modifier = Modifier.fillMaxWidth()) {
-        Column(modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        Column(
+            modifier = Modifier.padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
             Text(terminal.name, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
             Text(siteName, style = MaterialTheme.typography.bodyMedium)
             Text("Status: ${terminal.connectionState.mobileLabel}", style = MaterialTheme.typography.bodyMedium)
