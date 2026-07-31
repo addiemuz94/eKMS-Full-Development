@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { z } from 'zod';
 import pool from '../db.js';
 import {
+  assignedSiteIdsForUser,
   badRequest,
   conflict,
   isSiteAssignedToUser,
@@ -95,10 +96,27 @@ router.get('/', async (req, res) => {
   const siteId = req.query.siteId;
   let sql = `SELECT * FROM terminals WHERE lifecycle_state = :state`;
   const params = { state };
-  if (siteId) {
+
+  // Mobile companion + Regional Admin: only terminals at standing assigned sites.
+  const scopedRole =
+    req.auth?.role === 'REGIONAL_ADMIN' ||
+    req.auth?.role === 'TECHNICIAN' ||
+    req.auth?.role === 'VENDOR';
+  if (scopedRole) {
+    const assignedSiteIds = await assignedSiteIdsForUser(req.auth.sub);
+    if (assignedSiteIds.length === 0) return res.json({ items: [] });
+    if (siteId && !assignedSiteIds.includes(siteId)) return res.json({ items: [] });
+    const scopeIds = siteId ? [siteId] : assignedSiteIds;
+    const placeholders = scopeIds.map((_, i) => `:site${i}`).join(', ');
+    sql += ` AND site_id IN (${placeholders})`;
+    scopeIds.forEach((id, i) => {
+      params[`site${i}`] = id;
+    });
+  } else if (siteId) {
     sql += ` AND site_id = :siteId`;
     params.siteId = siteId;
   }
+
   sql += ` ORDER BY name ASC`;
   const [rows] = await pool.execute(sql, params);
   res.json({ items: rows.map(mapTerminal) });
@@ -109,6 +127,13 @@ router.get('/:id', async (req, res) => {
     id: req.params.id,
   });
   if (!rows[0]) return notFound(res, 'Terminal not found');
+  const scopedRole =
+    req.auth?.role === 'REGIONAL_ADMIN' ||
+    req.auth?.role === 'TECHNICIAN' ||
+    req.auth?.role === 'VENDOR';
+  if (scopedRole && !(await isSiteAssignedToUser(req.auth.sub, rows[0].site_id))) {
+    return notFound(res, 'Terminal not found');
+  }
   return res.json(mapTerminal(rows[0]));
 });
 

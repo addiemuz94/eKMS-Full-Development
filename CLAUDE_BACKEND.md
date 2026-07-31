@@ -94,6 +94,7 @@ Full admin/report path catalog (portal-only and unused by terminal yet) is still
   - **New `AuditEventType.KEY_FOB_ENROLLMENT_SYNC_FAILED`** — terminal-local-only event, same non-blocking-sync shape as `KEY_CHECKOUT_SYNC_FAILED`: the background auto-scan's local capture succeeds and is never undone even if this completion POST fails.
   - Verify: `node --check` syntax-clean on `keys.js`/`util.js`/`auth.js`; **not booted locally against a real MySQL instance this pass** (no local DB in this dev environment) and **not deployed** — see Known issues.
 - **mobileApp login null `deviceId` (Haikal, Jul 2026).** `POST /v1/auth/login` Zod used `deviceId: z.string().optional()`, which rejects JSON `null`. mobileApp's kotlinx client sent `"deviceId": null` → `Expected string, received null`. Fixed to `z.string().nullish()`; mobile also sends `mobile-android` / `explicitNulls = false` (see `CLAUDE_MOBILE.md`).
+- **mobile companion Terminals allowlist (Haikal, Jul 2026).** `GET /terminals` + `GET /terminals/:id` added to `REGIONAL_ADMIN` and `TECHNICIAN`/`VENDOR` allowlists; list/get scoped to `user_site_assignments`. Same site scoping extended to Technician/Vendor on `GET /sites`.
 
 ### Known issues / not yet resolved
 

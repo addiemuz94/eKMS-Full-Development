@@ -86,7 +86,7 @@ Same general shape as Technician, with additional requirements:
 | 1 | Haikal | Technician Only-B Apply (backend + mobile); Adi verifies PIN→terminal take later |
 | 2 | Haikal | Vendor docs + PIC + two-stage approval |
 | 3 | Haikal | FCM push + Alerts list |
-| 4 | Haikal | Dashboard map + directions + live terminals |
+| 4 | Haikal | Dashboard map + directions. (Terminals list + Overview counts already live.) |
 | 5 | **Adi** | Office F7G18P checklist (pairing, Key Attachment, passkey→take, Return Flow, etc.) |
 
 ---

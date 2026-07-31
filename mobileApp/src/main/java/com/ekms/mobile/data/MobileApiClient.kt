@@ -19,6 +19,8 @@ import com.ekms.shared.api.RefreshTokenRequest
 import com.ekms.shared.api.SiteDto
 import com.ekms.shared.api.SiteKeyAccessPolicyDto
 import com.ekms.shared.api.SiteListResponse
+import com.ekms.shared.api.TerminalDto
+import com.ekms.shared.api.TerminalListResponse
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.okhttp.OkHttp
 import io.ktor.client.plugins.contentnegotiation.ContentNegotiation
@@ -48,7 +50,7 @@ import kotlinx.serialization.json.Json
  * Auth (login/refresh/session-storage) was this class's whole job in the foundation pass; this
  * pass adds exactly the Key Access Request feature's data needs on top — access grants, keys,
  * a site's Region-derived duration ceiling, and key-access-request list/create/approve/reject.
- * Still no methods for dashboard/alerts/terminal-status data — those remain a later pass's job.
+ * Still no methods for dashboard map or FCM push — those remain later phases.
  */
 class MobileApiClient(context: Context) {
 
@@ -172,6 +174,22 @@ class MobileApiClient(context: Context) {
         ensureBaseUrl()
         return decode<KeyListResponse>(
             send(method = HttpMethod.Get, path = ApiPaths.ADMIN_KEYS, body = null, authenticated = true),
+        ).items
+    }
+
+    /** Sites visible to the caller (server-scoped by role). */
+    suspend fun listSites(): List<SiteDto> {
+        ensureBaseUrl()
+        return decode<SiteListResponse>(
+            send(method = HttpMethod.Get, path = ApiPaths.ADMIN_SITES, body = null, authenticated = true),
+        ).items
+    }
+
+    /** Terminals / key cabinets visible to the caller (server-scoped by role). */
+    suspend fun listTerminals(): List<TerminalDto> {
+        ensureBaseUrl()
+        return decode<TerminalListResponse>(
+            send(method = HttpMethod.Get, path = ApiPaths.ADMIN_TERMINALS, body = null, authenticated = true),
         ).items
     }
 

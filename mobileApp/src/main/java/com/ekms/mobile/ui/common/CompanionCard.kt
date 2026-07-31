@@ -13,14 +13,19 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 
-/** Shared read-only summary card reused across the Overview and Access screens. */
+/** Shared summary card for Overview and similar lists. */
 @Composable
-fun CompanionCard(title: String, description: String, onOpen: () -> Unit) {
+fun CompanionCard(
+    title: String,
+    description: String,
+    actionLabel: String = "View",
+    onOpen: () -> Unit,
+) {
     Card(modifier = Modifier.fillMaxWidth()) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Text(title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
             Text(description, style = MaterialTheme.typography.bodyMedium)
-            OutlinedButton(onClick = onOpen) { Text("Open") }
+            OutlinedButton(onClick = onOpen) { Text(actionLabel) }
         }
     }
 }

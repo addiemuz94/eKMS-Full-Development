@@ -82,7 +82,7 @@ fun LoginScreen(
                     fontWeight = FontWeight.Bold,
                 )
                 Text(
-                    "Super Admin Companion",
+                    "Sign in with your eKMS account",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )

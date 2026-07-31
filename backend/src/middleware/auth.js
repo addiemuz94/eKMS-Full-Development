@@ -123,6 +123,10 @@ const REGIONAL_ADMIN_ALLOWED_ROUTES = [
   // Regional Admin's own assigned sites; this allowlist only controls reachability.
   { method: 'GET', pattern: /^\/sites$/ },
   { method: 'GET', pattern: /^\/sites\/[^/]+$/ },
+  // Terminals: read-only list/get for mobile companion Terminals tab. terminals.js scopes
+  // list rows to the Regional Admin's assigned sites.
+  { method: 'GET', pattern: /^\/terminals$/ },
+  { method: 'GET', pattern: /^\/terminals\/[^/]+$/ },
 ];
 
 /**
@@ -144,6 +148,12 @@ const TECHNICIAN_VENDOR_ALLOWED_ROUTES = [
   { method: 'POST', pattern: /^\/key-access-requests$/ },
   { method: 'GET', pattern: /^\/keys$/ },
   { method: 'GET', pattern: /^\/access-grants$/ },
+  // Sites + terminals read-only for mobile companion Overview/Terminals (scoped to standing
+  // user_site_assignments in sites.js / terminals.js).
+  { method: 'GET', pattern: /^\/sites$/ },
+  { method: 'GET', pattern: /^\/sites\/[^/]+$/ },
+  { method: 'GET', pattern: /^\/terminals$/ },
+  { method: 'GET', pattern: /^\/terminals\/[^/]+$/ },
 ];
 
 /**

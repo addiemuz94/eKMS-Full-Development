@@ -26,11 +26,10 @@ Flexible — either may cover the other when timing requires; prefer the tagged 
 | Topic | Older / conflicting claim | Current truth |
 |---|---|---|
 | **Key Access / passkey Apply model** | Completed "Passkey feature" shipped grant-scoped key picker + duration slider bounded by Region ceiling. | **Superseded by product decision Only B (Jul 2026).** Apply must become **exception access**: location outside standing site assignments, calendar pickup/return, reason, RA approve → 4-digit PIN until return. Do **not** extend the grant-scoped duration UI as the long-term product. Spec: `eKMS_MobileRequirement.md`. Region `max_key_access_duration_minutes` is **not** enforced for this flow for now (any calendar range allowed). |
-| **`mobileApp` network** | Known issues still said "100% local demo data, zero network — hold". | **Partial:** login + Access (passkey request/approval) talk to the live API. Dashboard/Alerts/Terminals still placeholder or demo. |
+| **`mobileApp` network** | Known issues still said "100% local demo data, zero network — hold". | **Partial:** login + Access (Only B request/approval) + Terminals list + Overview counts + Alerts (request status) talk to the live API. Dashboard **map** and FCM push still later phases. |
+| **Bottom nav Overview** | — | Fixed Jul 2026: do not nest `NavHost` in a scrollable parent. |
 
 Treat the newest Completed entry below as current for any other mobileApp topic.
-
-### Completed
 
 ### Completed
 
@@ -42,21 +41,23 @@ Treat the newest Completed entry below as current for any other mobileApp topic.
 - **Only B decisions locked + docs Phase 0 (Haikal, Jul 2026).** Product confirmations recorded in `eKMS_MobileRequirement.md` and this file: access model = exception-only (Only B); push = new FCM work; Vendor docs max 5 MB stored in MySQL `MEDIUMBLOB`; PIC reject still forwards to Regional Admin with note; calendar pickup/return with **any range allowed for now** (explicitly **not** the 24h / region ceiling). Ownership tags: **Haikal** = remote build/deploy/phone; **Adi** = office F7G18P hardware checklist. No feature code in this Phase 0 pass.
 - **Only B Phase 1 Technician Apply (Haikal, Jul 2026).** Migration `010_key_access_exception_calendar.sql` (`reason`, `pickup_at_epoch_ms`, `return_at_epoch_ms`). Create rule inverted for TECHNICIAN/VENDOR: only sites **outside** standing `user_site_assignments`. New `GET .../exception-sites` and `.../exception-sites/:siteId/keys`. Approve sets PIN expiry to **return** datetime (no region duration clamp). Mobile `KeyAccessRequestScreen` rewritten (site → keys → calendar text fields → reason); approval shows reason + window. PIN still shown to requester after approve.
 - **mobileApp login “Expected string, received null” (Haikal, Jul 2026).** Login **was already wired** to `POST /v1/auth/login` with `clientType: MOBILE`. Failure was Zod rejecting `"deviceId": null` (kotlinx `encodeDefaults` + nullable field; Zod `.optional()` ≠ null). Fixed: backend `deviceId` is `z.string().nullish()`; mobile sends `mobile-android` and sets `explicitNulls = false`. Redeploy API before relying on old APKs that still send null.
+- **mobileApp nav + tab wire-up (Haikal, Jul 2026).** Bottom-nav could not return to Overview because `NavHost` lived inside a parent `verticalScroll`. Fixed: `NavHost` fills the scaffold body; each tab scrolls itself; Overview deep-links use the same `goToTab` as the bottom bar. Terminals + Overview counts call live `GET /sites` + `GET /terminals` (RA/Technician/Vendor allowlisted + site-scoped). Alerts lists key-access request status from the API (interim until FCM Phase 3). Access was already API-backed; profile is kept in shell state so the tab always receives it. UI copy standardized (short sentences, role subtitle, View/Open labels).
 
 ### Known issues / not yet resolved
 
-- **Only B Phase 1 not yet live-verified** — needs portal test accounts (Technician with some sites assigned, other sites with keys + Region for RA), phone/emulator Apply + RA approve, then **Adi** passkey→take on F7G18P. Rebuild/reinstall mobileApp after the login null-deviceId fix.
+- **Only B Phase 1 not yet live-verified end-to-end** — create portal test accounts, reinstall APK with nav/wire-up fix, Technician Apply → RA approve → PIN, then **Adi** passkey→take on F7G18P.
+- **Alerts are request-status only** — no FCM push yet (Phase 3). Door-left-open / abandoned-return standing alerts not built.
+- **Dashboard map + directions** not built — Phase 4. Overview is counts/cards only.
 - **Vendor docs / PIC / two-stage approval** not built — Phase 2 (Haikal).
-- **Dashboard/Alerts/Terminals** still placeholder or demo — Phases 3–4 (Haikal). Push notifications not built (Phase 3, new FCM work).
 - **Digital Key** — infeasible on current reader hardware for production; "Coming Soon" in app. Do not reopen without hardware change — see `CLAUDE_SHARED.md` Hardware Feature Findings.
-- **mobileApp's clean-start foundation** — limited device run history; Prefer phone/emulator for Haikal smoke; full cabinet e2e is Adi's part.
-- **Passkey → real F7G18P take with due time** — never hardware-verified end-to-end. After Phase 1 ships, **Adi's part** on office cabinet (PIN entry → take → return datetime). Broader terminal Known issues (Key Attachment, Return Flow, beep, boot): see `CLAUDE_TERMINAL.md` — primarily **Adi's part**.
+- **Passkey → real F7G18P take with due time** — never hardware-verified end-to-end. After Phase 1 ships, **Adi's part** on office cabinet. Broader terminal Known issues: see `CLAUDE_TERMINAL.md`.
 
 ### Next steps (in order)
 
-1. **[Haikal] Portal prep + phone smoke** — reinstall APK with login fix; create live RA / Technician accounts + Region on exception sites + keys; Technician exception Apply → RA approve → PIN visible. (API + migrate `010` + auth nullish `deviceId` on `kms-cvt.com`.)
-2. **[Haikal] Ship mobile APK** — assembleDebug / install for device smoke.
-3. **[Adi] Office hardware** — pairing e2e, Key Attachment; after Phase 1: passkey→take with return due time; Return Flow / beep / boot as time allows.
-4. **[Haikal] Phase 2** — Vendor docs (5 MB DB BLOB) + PIC + two-stage approval (PIC reject → still RA).
-5. **[Haikal] Phase 3** — FCM push + Alerts list.
-6. **[Haikal] Phase 4** — scoped dashboard + map directions + live terminals.
+1. **[Haikal] Redeploy API** (terminals/sites allowlist + scoping) + reinstall mobile APK; smoke Overview ↔ other tabs, Terminals, Access, Alerts.
+2. **[Haikal] Portal prep + Only B phone smoke** — RA / Technician accounts + Region on exception sites; Apply → approve → PIN.
+3. **[Adi] Office hardware** — pairing, Key Attachment, passkey→take with return due time.
+4. **[Haikal] Phase 2** — Vendor docs (5 MB DB BLOB) + PIC + two-stage approval.
+5. **[Haikal] Phase 3** — FCM push + richer Alerts list.
+6. **[Haikal] Phase 4** — scoped dashboard map + directions + live terminal detail.
+

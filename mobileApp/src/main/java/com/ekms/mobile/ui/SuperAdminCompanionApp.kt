@@ -8,8 +8,6 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.widthIn
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Dns
 import androidx.compose.material.icons.filled.Home
@@ -51,21 +49,13 @@ import com.ekms.mobile.ui.digitalkey.DigitalKeyComingSoonDialog
 import com.ekms.mobile.ui.nav.MobileDestination
 import com.ekms.mobile.ui.terminals.TerminalsScreen
 import com.ekms.mobile.ui.theme.EkmsMobileTheme
+import com.ekms.shared.domain.UserRole
 
 /**
- * Super Admin Mobile is deliberately a companion: it exposes personal Digital Key status,
- * approvals, alerts and terminal monitoring, but no full CRUD.
+ * Mobile companion shell: login gate, bottom navigation, and tab screens.
  *
- * Navigation-Compose replaces the previous single tab-enum/when-block: each bottom-bar
- * destination is its own screen composable under `ui/<area>/`, wired through one `NavHost`.
- * Digital Key is intentionally NOT one of those destinations — it never navigates, it only
- * opens `DigitalKeyComingSoonDialog` (see that file for why: phone-as-card is not currently
- * buildable against this hardware, tracked in CLAUDE.md's Hardware Feature Findings section).
- *
- * Gated on [MobileApiClient.isAuthenticated] — `LoginScreen` for a fresh/signed-out session, the
- * existing bottom-nav Scaffold once signed in. The Access tab now shows the real Key Access
- * Request feature (role-dispatched — see `AccessScreen`); Dashboard/Terminals/Alerts still show
- * local demo data, wiring them to real backend data remains separate, deferred follow-up work.
+ * NavHost must NOT sit inside a verticalScroll parent — that broke returning to Overview.
+ * Each tab scrolls its own content. Digital Key opens a dialog and does not navigate.
  */
 @Composable
 fun SuperAdminCompanionApp() {
@@ -73,9 +63,16 @@ fun SuperAdminCompanionApp() {
         val applicationContext = LocalContext.current.applicationContext
         val apiClient = remember(applicationContext) { MobileApiClient(applicationContext) }
         var authenticated by remember { mutableStateOf(apiClient.isAuthenticated) }
+        var profile by remember { mutableStateOf(apiClient.profile) }
 
         if (!authenticated) {
-            LoginScreen(apiClient = apiClient, onLoginSuccess = { authenticated = true })
+            LoginScreen(
+                apiClient = apiClient,
+                onLoginSuccess = { signedIn ->
+                    profile = signedIn
+                    authenticated = true
+                },
+            )
             return@EkmsMobileTheme
         }
 
@@ -86,6 +83,16 @@ fun SuperAdminCompanionApp() {
         val backStackEntry by navController.currentBackStackEntryAsState()
         val currentRoute = backStackEntry?.destination?.route
 
+        fun goToTab(route: String) {
+            navController.navigate(route) {
+                popUpTo(navController.graph.findStartDestination().id) {
+                    saveState = true
+                }
+                launchSingleTop = true
+                restoreState = true
+            }
+        }
+
         Scaffold(
             topBar = {
                 Surface(tonalElevation = 2.dp) {
@@ -95,11 +102,19 @@ fun SuperAdminCompanionApp() {
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
                         Column {
-                            Text("eKMS Digital Key", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
-                            Text("Super Admin Companion", style = MaterialTheme.typography.bodyMedium)
+                            Text(
+                                "eKMS Digital Key",
+                                style = MaterialTheme.typography.titleLarge,
+                                fontWeight = FontWeight.Bold,
+                            )
+                            Text(
+                                companionSubtitle(profile?.role, profile?.displayName),
+                                style = MaterialTheme.typography.bodyMedium,
+                            )
                         }
                         TextButton(onClick = {
                             apiClient.clearSession()
+                            profile = null
                             authenticated = false
                         }) {
                             Text("Sign out")
@@ -112,13 +127,7 @@ fun SuperAdminCompanionApp() {
                     MobileDestination.entries.forEach { destination ->
                         NavigationBarItem(
                             selected = currentRoute == destination.route,
-                            onClick = {
-                                navController.navigate(destination.route) {
-                                    popUpTo(navController.graph.findStartDestination().id) { saveState = true }
-                                    launchSingleTop = true
-                                    restoreState = true
-                                }
-                            },
+                            onClick = { goToTab(destination.route) },
                             icon = { Icon(destination.icon, contentDescription = destination.label) },
                             label = { Text(destination.label) },
                         )
@@ -140,37 +149,54 @@ fun SuperAdminCompanionApp() {
                 val horizontalPadding = if (maxWidth < 520.dp) 16.dp else 24.dp
                 Column(
                     modifier = Modifier
-                        .fillMaxWidth()
+                        .fillMaxSize()
                         .widthIn(max = 720.dp)
                         .align(Alignment.TopCenter)
-                        .verticalScroll(rememberScrollState())
-                        .padding(horizontal = horizontalPadding, vertical = 18.dp),
+                        .padding(horizontal = horizontalPadding),
                 ) {
                     notice?.let { message ->
                         Card(
-                            modifier = Modifier.fillMaxWidth().padding(bottom = 12.dp),
+                            modifier = Modifier.fillMaxWidth().padding(top = 12.dp, bottom = 4.dp),
                             colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.tertiaryContainer),
                         ) {
                             Text(message, modifier = Modifier.padding(14.dp))
                         }
                     }
 
-                    NavHost(navController = navController, startDestination = MobileDestination.DASHBOARD.route) {
+                    NavHost(
+                        navController = navController,
+                        startDestination = MobileDestination.DASHBOARD.route,
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .padding(vertical = 12.dp),
+                    ) {
                         composable(MobileDestination.DASHBOARD.route) {
                             DashboardScreen(
-                                onOpenTerminals = { navController.navigate(MobileDestination.TERMINALS.route) },
-                                onOpenAccess = { navController.navigate(MobileDestination.ACCESS.route) },
+                                apiClient = apiClient,
+                                profile = profile,
+                                onOpenTerminals = { goToTab(MobileDestination.TERMINALS.route) },
+                                onOpenAccess = { goToTab(MobileDestination.ACCESS.route) },
+                                onOpenAlerts = { goToTab(MobileDestination.ALERTS.route) },
                                 onNotice = { notice = it },
                             )
                         }
                         composable(MobileDestination.TERMINALS.route) {
-                            TerminalsScreen()
+                            TerminalsScreen(apiClient = apiClient, onNotice = { notice = it })
                         }
                         composable(MobileDestination.ACCESS.route) {
-                            AccessScreen(apiClient = apiClient, profile = apiClient.profile, onNotice = { notice = it })
+                            AccessScreen(
+                                apiClient = apiClient,
+                                profile = profile ?: apiClient.profile,
+                                onNotice = { notice = it },
+                            )
                         }
                         composable(MobileDestination.ALERTS.route) {
-                            AlertsScreen(onNotice = { notice = it })
+                            AlertsScreen(
+                                apiClient = apiClient,
+                                profile = profile ?: apiClient.profile,
+                                onOpenAccess = { goToTab(MobileDestination.ACCESS.route) },
+                                onNotice = { notice = it },
+                            )
                         }
                     }
                 }
@@ -181,6 +207,17 @@ fun SuperAdminCompanionApp() {
             DigitalKeyComingSoonDialog(onDismiss = { showDigitalKeyDialog = false })
         }
     }
+}
+
+private fun companionSubtitle(role: UserRole?, displayName: String?): String {
+    val roleLabel = when (role) {
+        UserRole.SUPER_ADMIN -> "Super Admin"
+        UserRole.REGIONAL_ADMIN -> "Regional Admin"
+        UserRole.TECHNICIAN -> "Technician"
+        UserRole.VENDOR -> "Vendor"
+        null -> "Companion"
+    }
+    return if (displayName.isNullOrBlank()) roleLabel else "$roleLabel · $displayName"
 }
 
 private val MobileDestination.icon: ImageVector

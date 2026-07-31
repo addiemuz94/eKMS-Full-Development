@@ -73,10 +73,13 @@ const upsertSchema = z.object({
 router.get('/', async (req, res) => {
   const state = req.query.state || 'ACTIVE';
 
-  // Regional Admin: read-only, and scoped to their own assigned sites — added alongside the
-  // Phase 7 follow-up that needed real site names for the terminal's site-assignment display.
-  // Super Admin (and any other future caller of this route) is unrestricted, as before.
-  if (req.auth?.role === 'REGIONAL_ADMIN') {
+  // Regional Admin / Technician / Vendor: read-only, scoped to standing assigned sites.
+  // Super Admin is unrestricted.
+  const scopedRole =
+    req.auth?.role === 'REGIONAL_ADMIN' ||
+    req.auth?.role === 'TECHNICIAN' ||
+    req.auth?.role === 'VENDOR';
+  if (scopedRole) {
     const assignedSiteIds = await assignedSiteIdsForUser(req.auth.sub);
     if (assignedSiteIds.length === 0) return res.json({ items: [] });
     const placeholders = assignedSiteIds.map((_, i) => `:site${i}`).join(', ');
@@ -104,9 +107,12 @@ router.get('/:id', async (req, res) => {
   });
   if (!rows[0]) return notFound(res, 'Site not found');
   // Out-of-scope reads as "not found", not "forbidden" — same reasoning as every other
-  // Regional-Admin-scoped GET added in the earlier follow-up (avoids confirming a site's
-  // existence to a Regional Admin who isn't assigned to it).
-  if (req.auth?.role === 'REGIONAL_ADMIN' && !(await isSiteAssignedToUser(req.auth.sub, req.params.id))) {
+  // role-scoped GET (avoids confirming a site's existence to a caller who isn't assigned).
+  const scopedRole =
+    req.auth?.role === 'REGIONAL_ADMIN' ||
+    req.auth?.role === 'TECHNICIAN' ||
+    req.auth?.role === 'VENDOR';
+  if (scopedRole && !(await isSiteAssignedToUser(req.auth.sub, req.params.id))) {
     return notFound(res, 'Site not found');
   }
   return res.json(mapSite(rows[0]));
