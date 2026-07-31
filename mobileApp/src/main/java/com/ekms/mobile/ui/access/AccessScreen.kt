@@ -25,7 +25,9 @@ fun AccessScreen(
         UserRole.REGIONAL_ADMIN, UserRole.SUPER_ADMIN ->
             KeyAccessApprovalScreen(apiClient = apiClient, onNotice = onNotice)
 
-        null -> Text(
+        // One-time web-portal bootstrap credential (see UserRole.GOD_ADMIN's doc) — never
+        // actually logs into mobileApp; branch exists only for exhaustiveness.
+        UserRole.GOD_ADMIN, null -> Text(
             "Sign in to view key access.",
             style = MaterialTheme.typography.bodyMedium,
         )

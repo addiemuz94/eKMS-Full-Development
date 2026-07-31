@@ -1091,7 +1091,7 @@ fun TerminalAdminApp() {
                     assignedUnitId
                 }
                 val users = apiClient.listUsers(siteId)
-                val mapped = users.map { it.toTerminalUser() }
+                val mapped = users.filterNot { it.role == UserRole.GOD_ADMIN }.map { it.toTerminalUser() }
                 store.replaceCachedPersonnel(mapped)
                 serverPersonnel = mapped
             } catch (error: Throwable) {
@@ -2671,6 +2671,11 @@ private fun UserDto.toTerminalUser(): TerminalUser {
         UserRole.TECHNICIAN -> TerminalUserRole.TECHNICIAN
         UserRole.VENDOR -> TerminalUserRole.VENDOR
         UserRole.REGIONAL_ADMIN -> TerminalUserRole.REGIONAL_ADMIN
+        // Unreachable in practice — backend's GET /users excludes GOD_ADMIN entirely
+        // (users.js: "never appear in personnel lists"), so this UserDto is never actually
+        // GOD_ADMIN; required only for exhaustiveness. Filtered defensively at both call
+        // sites below too, same as TerminalAdminStore.applyServerSnapshot's user sync.
+        UserRole.GOD_ADMIN -> TerminalUserRole.SUPER_ADMIN
     }
     return TerminalUser(
         id = id,

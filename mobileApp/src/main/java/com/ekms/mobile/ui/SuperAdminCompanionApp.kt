@@ -215,6 +215,9 @@ private fun companionSubtitle(role: UserRole?, displayName: String?): String {
         UserRole.REGIONAL_ADMIN -> "Regional Admin"
         UserRole.TECHNICIAN -> "Technician"
         UserRole.VENDOR -> "Vendor"
+        // One-time web-portal bootstrap credential (see UserRole.GOD_ADMIN's doc) — never
+        // actually logs into mobileApp; branch exists only for exhaustiveness.
+        UserRole.GOD_ADMIN -> "Companion"
         null -> "Companion"
     }
     return if (displayName.isNullOrBlank()) roleLabel else "$roleLabel · $displayName"

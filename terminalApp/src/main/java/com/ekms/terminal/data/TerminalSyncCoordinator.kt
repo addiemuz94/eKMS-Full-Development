@@ -157,6 +157,16 @@ class TerminalSyncCoordinator(
             UserRole.TECHNICIAN -> TerminalUserRole.TECHNICIAN
             UserRole.VENDOR -> TerminalUserRole.VENDOR
             UserRole.REGIONAL_ADMIN -> TerminalUserRole.REGIONAL_ADMIN
+            // GOD_ADMIN is a one-time web-portal bootstrap credential ("sole permitted action:
+            // register the first Super Admin" — see UserRole.GOD_ADMIN's doc); it must never
+            // grant a physical cabinet session. Thrown here (not silently mapped to a
+            // TerminalUserRole) so this surfaces as a login failure — caught by authenticate()'s
+            // callers same as any other server-login error, falling back to local bootstrap
+            // (which won't match this account either) rather than local-bootstrap check.
+            UserRole.GOD_ADMIN -> throw TerminalApiException(
+                403,
+                "This account cannot sign in to a terminal.",
+            )
         }
         return TerminalSession(
             userId = profile.id,

@@ -544,7 +544,13 @@ class TerminalAdminStore(context: Context) {
 
         saveUsers(
             snapshot.users
-                .filter { it.role != com.ekms.shared.domain.UserRole.SUPER_ADMIN }
+                // GOD_ADMIN never actually appears here — backend's GET /users excludes it
+                // (users.js), same as every other personnel list — but filtered defensively
+                // too, matching the pre-existing SUPER_ADMIN exclusion right above.
+                .filter {
+                    it.role != com.ekms.shared.domain.UserRole.SUPER_ADMIN &&
+                        it.role != com.ekms.shared.domain.UserRole.GOD_ADMIN
+                }
                 .map { user ->
                     TerminalUser(
                         id = user.id,
@@ -555,6 +561,9 @@ class TerminalAdminStore(context: Context) {
                             com.ekms.shared.domain.UserRole.VENDOR -> TerminalUserRole.VENDOR
                             com.ekms.shared.domain.UserRole.SUPER_ADMIN -> TerminalUserRole.SUPER_ADMIN
                             com.ekms.shared.domain.UserRole.REGIONAL_ADMIN -> TerminalUserRole.REGIONAL_ADMIN
+                            // Unreachable given the filter above — required only for
+                            // exhaustiveness, same reasoning as SUPER_ADMIN's branch here.
+                            com.ekms.shared.domain.UserRole.GOD_ADMIN -> TerminalUserRole.SUPER_ADMIN
                         },
                         isPreset = false,
                         createdAtEpochMillis = user.lifecycle.createdAtEpochMillis,

@@ -175,6 +175,11 @@ object SuperAdminDemoData {
     )
 
     fun credentialsFor(user: AdminUser): List<UserCredentialStatus> = when (user.role) {
+        // One-time bootstrap/developer role (see UserRole.GOD_ADMIN's doc) — hidden from every
+        // personnel/credential list on web and backend (users.js excludes it from GET /users
+        // entirely), and never represented by a demo AdminUser above. No credential-status
+        // entries make sense for a role that never reaches any real enrollment screen.
+        UserRole.GOD_ADMIN -> emptyList()
         UserRole.SUPER_ADMIN -> listOf(
             UserCredentialStatus(user.id, CredentialKind.NFC_CARD, CredentialEnrollmentStatus.ACTIVE, "Card assigned"),
             UserCredentialStatus(user.id, CredentialKind.FINGERPRINT, CredentialEnrollmentStatus.PENDING_TERMINAL_ENROLLMENT, "Enroll on Terminal"),

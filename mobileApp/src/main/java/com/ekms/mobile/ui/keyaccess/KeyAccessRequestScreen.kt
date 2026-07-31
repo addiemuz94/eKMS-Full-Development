@@ -241,7 +241,7 @@ fun KeyAccessRequestScreen(
                     Text("PIC inbox (Vendor Stage 1)", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
                     picInbox.forEach { request ->
                         Card(modifier = Modifier.fillMaxWidth()) {
-                            Column(Modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                                 Text(request.siteName ?: request.siteId, fontWeight = FontWeight.SemiBold)
                                 Text(request.requesterDisplayName ?: request.requesterUserId)
                                 Text(request.reason ?: "", style = MaterialTheme.typography.bodySmall)
