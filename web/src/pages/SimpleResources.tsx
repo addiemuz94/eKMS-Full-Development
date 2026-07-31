@@ -2,12 +2,23 @@ import { api } from '../api/client'
 import { ResourcePage, siteName } from '../components/ResourcePage'
 import type { SiteDto } from '../api/types'
 
-export function EventsPage() {
+type EmbedProps = {
+  lockedSiteId?: string
+  embedded?: boolean
+}
+
+export function EventsPage({ lockedSiteId, embedded }: EmbedProps = {}) {
   return (
     <ResourcePage
       title="Event Setup"
-      description="Define operational event types used in schedules and reports."
+      description={
+        embedded
+          ? 'Event types for this cabinet’s unit — used in schedules and reports.'
+          : 'Define operational event types used in schedules and reports.'
+      }
       addLabel="Add event"
+      lockedSiteId={lockedSiteId}
+      embedded={embedded}
       fields={[
         { name: 'siteId', label: 'Unit', type: 'site', required: true },
         { name: 'name', label: 'Event name', type: 'text', required: true },
@@ -20,7 +31,7 @@ export function EventsPage() {
       remove={api.deleteEvent}
       titleOf={(item) => String(item.name)}
       renderLines={(item, sites) => [
-        `Unit: ${siteName(sites, item.siteId)}`,
+        ...(lockedSiteId ? [] : [`Unit: ${siteName(sites, item.siteId)}`]),
         `Code: ${item.eventNumber}`,
         `Requirement: ${item.requirement || '—'}`,
       ]}
@@ -28,12 +39,18 @@ export function EventsPage() {
   )
 }
 
-export function SchedulesPage() {
+export function SchedulesPage({ lockedSiteId, embedded }: EmbedProps = {}) {
   return (
     <ResourcePage
       title="Schedule Settings"
-      description="Daily, weekly and monthly access windows."
+      description={
+        embedded
+          ? 'Access windows for this cabinet’s unit.'
+          : 'Daily, weekly and monthly access windows.'
+      }
       addLabel="Add schedule"
+      lockedSiteId={lockedSiteId}
+      embedded={embedded}
       fields={[
         { name: 'siteId', label: 'Unit', type: 'site', required: true },
         { name: 'name', label: 'Schedule name', type: 'text', required: true },
@@ -56,7 +73,7 @@ export function SchedulesPage() {
       remove={api.deleteSchedule}
       titleOf={(item) => String(item.name)}
       renderLines={(item, sites) => [
-        `Unit: ${siteName(sites, item.siteId)}`,
+        ...(lockedSiteId ? [] : [`Unit: ${siteName(sites, item.siteId)}`]),
         `Frequency: ${item.frequency}`,
         `Window: ${item.timeWindowLabel}`,
       ]}
@@ -64,12 +81,18 @@ export function SchedulesPage() {
   )
 }
 
-export function UserGroupsPage() {
+export function UserGroupsPage({ lockedSiteId, embedded }: EmbedProps = {}) {
   return (
     <ResourcePage
       title="User Groups"
-      description="Personnel groups used for multi-authentication and bulk assignment."
+      description={
+        embedded
+          ? 'Personnel groups for this unit (multi-authentication and bulk assignment).'
+          : 'Personnel groups used for multi-authentication and bulk assignment.'
+      }
       addLabel="Add user group"
+      lockedSiteId={lockedSiteId}
+      embedded={embedded}
       fields={[
         { name: 'siteId', label: 'Unit', type: 'site', required: true },
         { name: 'name', label: 'Group name', type: 'text', required: true },
@@ -80,17 +103,26 @@ export function UserGroupsPage() {
       update={api.updatePersonnelGroup}
       remove={api.deletePersonnelGroup}
       titleOf={(item) => String(item.name)}
-      renderLines={(item, sites) => [`Unit: ${siteName(sites, item.siteId)}`, `Code: ${item.code}`]}
+      renderLines={(item, sites) => [
+        ...(lockedSiteId ? [] : [`Unit: ${siteName(sites, item.siteId)}`]),
+        `Code: ${item.code}`,
+      ]}
     />
   )
 }
 
-export function KeyGroupsPage() {
+export function KeyGroupsPage({ lockedSiteId, embedded }: EmbedProps = {}) {
   return (
     <ResourcePage
       title="Key Groups"
-      description="Named sets of keys for multi-authentication rules."
+      description={
+        embedded
+          ? 'Named key sets for this unit’s multi-authentication rules.'
+          : 'Named sets of keys for multi-authentication rules.'
+      }
       addLabel="Add key group"
+      lockedSiteId={lockedSiteId}
+      embedded={embedded}
       fields={[
         { name: 'siteId', label: 'Unit', type: 'site', required: true },
         { name: 'name', label: 'Group name', type: 'text', required: true },
@@ -101,7 +133,10 @@ export function KeyGroupsPage() {
       update={api.updateKeyGroup}
       remove={api.deleteKeyGroup}
       titleOf={(item) => String(item.name)}
-      renderLines={(item, sites: SiteDto[]) => [`Unit: ${siteName(sites, item.siteId)}`, `Code: ${item.code}`]}
+      renderLines={(item, sites: SiteDto[]) => [
+        ...(lockedSiteId ? [] : [`Unit: ${siteName(sites, item.siteId)}`]),
+        `Code: ${item.code}`,
+      ]}
     />
   )
 }

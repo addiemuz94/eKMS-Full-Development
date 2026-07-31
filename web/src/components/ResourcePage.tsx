@@ -22,6 +22,10 @@ type Props = {
   titleOf: (item: Record<string, unknown>) => string
   extraActions?: (item: Record<string, unknown>, reload: () => Promise<void>) => ReactNode
   buildPayload?: (values: Record<string, string>, sites: SiteDto[]) => Record<string, unknown>
+  /** When set, only show/create records for this unit and hide the unit picker. */
+  lockedSiteId?: string
+  /** Compact chrome for embedding inside cabinet settings. */
+  embedded?: boolean
 }
 
 export function ResourcePage({
@@ -37,12 +41,14 @@ export function ResourcePage({
   titleOf,
   extraActions,
   buildPayload,
+  lockedSiteId,
+  embedded = false,
 }: Props) {
   const { confirmAction, dialog: confirmDialog } = useConfirm()
   const [items, setItems] = useState<Record<string, unknown>[]>([])
   const [sites, setSites] = useState<SiteDto[]>([])
   const [query, setQuery] = useState('')
-  const [siteFilter, setSiteFilter] = useState('all')
+  const [siteFilter, setSiteFilter] = useState(lockedSiteId ?? 'all')
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('asc')
   const [error, setError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
@@ -50,6 +56,11 @@ export function ResourcePage({
   const [open, setOpen] = useState(false)
   const [editingId, setEditingId] = useState<string | null>(null)
   const [values, setValues] = useState<Record<string, string>>({})
+
+  const visibleFields = useMemo(
+    () => (lockedSiteId ? fields.filter((field) => field.type !== 'site') : fields),
+    [fields, lockedSiteId],
+  )
 
   async function reload() {
     setBusy(true)
@@ -69,12 +80,17 @@ export function ResourcePage({
     void reload()
   }, [])
 
+  useEffect(() => {
+    if (lockedSiteId) setSiteFilter(lockedSiteId)
+  }, [lockedSiteId])
+
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase()
+    const effectiveSite = lockedSiteId ?? siteFilter
     return items
       .filter((item) => {
         const matchQ = !q || JSON.stringify(item).toLowerCase().includes(q)
-        const matchSite = siteFilter === 'all' || item.siteId === siteFilter
+        const matchSite = effectiveSite === 'all' || item.siteId === effectiveSite
         return matchQ && matchSite
       })
       .sort((a, b) => {
@@ -82,12 +98,12 @@ export function ResourcePage({
         const bn = titleOf(b).toLowerCase()
         return sortDir === 'asc' ? an.localeCompare(bn) : bn.localeCompare(an)
       })
-  }, [items, query, siteFilter, sortDir, titleOf])
+  }, [items, query, siteFilter, sortDir, titleOf, lockedSiteId])
 
   function openDialog() {
     const initial: Record<string, string> = {}
     for (const field of fields) {
-      if (field.type === 'site') initial[field.name] = sites[0]?.id ?? ''
+      if (field.type === 'site') initial[field.name] = lockedSiteId ?? sites[0]?.id ?? ''
       else if (field.type === 'select') initial[field.name] = field.options[0]?.value ?? ''
       else initial[field.name] = ''
     }
@@ -102,6 +118,11 @@ export function ResourcePage({
       const raw = item[field.name]
       initial[field.name] = raw == null ? '' : String(raw)
     }
+    if (lockedSiteId) {
+      for (const field of fields) {
+        if (field.type === 'site') initial[field.name] = lockedSiteId
+      }
+    }
     setValues(initial)
     setEditingId(String(item.id ?? ''))
     setError(null)
@@ -113,16 +134,21 @@ export function ResourcePage({
     setBusy(true)
     setError(null)
     try {
+      const withSite =
+        lockedSiteId != null
+          ? { ...values, siteId: lockedSiteId }
+          : values
       const payload = buildPayload
-        ? buildPayload(values, sites)
+        ? buildPayload(withSite, sites)
         : Object.fromEntries(
             fields.map((field) => {
-              const raw = values[field.name] ?? ''
+              const raw = withSite[field.name] ?? ''
               if (field.type === 'number') return [field.name, Number(raw)]
               if (!raw && !field.required) return [field.name, null]
               return [field.name, raw]
             }),
           )
+      if (lockedSiteId) payload.siteId = lockedSiteId
       if (editingId && update) {
         const current = items.find((item) => String(item.id ?? '') === editingId)
         await update(editingId, { ...payload, expectedRevision: Number(current?.revision ?? 0) })
@@ -166,13 +192,15 @@ export function ResourcePage({
   }
 
   return (
-    <section>
-      <div className="page-header">
+    <section className={embedded ? 'resource-embedded' : undefined}>
+      <div className={embedded ? 'embedded-header' : 'page-header'}>
         <div>
-          {title && <h1>{title}</h1>}
+          {title && (embedded ? <h3 style={{ margin: 0 }}>{title}</h3> : <h1>{title}</h1>)}
           {description && <p className="muted">{description}</p>}
         </div>
-        <Button icon={Plus} onClick={openDialog}>{addLabel}</Button>
+        <Button icon={Plus} onClick={openDialog}>
+          {addLabel}
+        </Button>
       </div>
 
       {notice && <div className="notice">{notice}</div>}
@@ -180,16 +208,24 @@ export function ResourcePage({
       {busy && <LinearProgress className="table-busy" label="Loading" />}
 
       <div className="toolbar-row">
-        <input className="search" placeholder="Search…" value={query} onChange={(e) => setQuery(e.target.value)} style={{ flex: 1 }} />
-        {sites.length > 0 && (
+        <input
+          className="search"
+          placeholder="Search…"
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          style={{ flex: 1 }}
+        />
+        {!lockedSiteId && sites.length > 0 && (
           <select value={siteFilter} onChange={(e) => setSiteFilter(e.target.value)} title="Filter by unit">
             <option value="all">All units</option>
             {sites.map((s) => (
-              <option key={s.id} value={s.id}>{s.name}</option>
+              <option key={s.id} value={s.id}>
+                {s.name}
+              </option>
             ))}
           </select>
         )}
-        <Button variant="outlined" onClick={() => setSortDir((d) => d === 'asc' ? 'desc' : 'asc')}>
+        <Button variant="outlined" onClick={() => setSortDir((d) => (d === 'asc' ? 'desc' : 'asc'))}>
           Name {sortDir === 'asc' ? '↑' : '↓'}
         </Button>
       </div>
@@ -247,7 +283,7 @@ export function ResourcePage({
           <form className="dialog" onSubmit={onSave}>
             <h2>{editingId ? `Edit ${title.toLowerCase()}` : addLabel}</h2>
             <p className="dialog-copy">{description}</p>
-            {fields.map((field) => (
+            {visibleFields.map((field) => (
               <div className="field" key={field.name}>
                 <label>{field.label}</label>
                 {field.type === 'site' || field.type === 'select' ? (

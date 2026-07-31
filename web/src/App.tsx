@@ -26,21 +26,6 @@ const PermissionsPage = lazy(() =>
 const KeyAccessPage = lazy(() =>
   import('./pages/KeyAccessPage').then((m) => ({ default: m.KeyAccessPage })),
 )
-const EventsPage = lazy(() =>
-  import('./pages/SimpleResources').then((m) => ({ default: m.EventsPage })),
-)
-const SchedulesPage = lazy(() =>
-  import('./pages/SimpleResources').then((m) => ({ default: m.SchedulesPage })),
-)
-const MultiAuthPage = lazy(() =>
-  import('./pages/MultiAuthPage').then((m) => ({ default: m.MultiAuthPage })),
-)
-const UserGroupsPage = lazy(() =>
-  import('./pages/SimpleResources').then((m) => ({ default: m.UserGroupsPage })),
-)
-const KeyGroupsPage = lazy(() =>
-  import('./pages/SimpleResources').then((m) => ({ default: m.KeyGroupsPage })),
-)
 const DataSyncPage = lazy(() =>
   import('./pages/DataSyncPage').then((m) => ({ default: m.DataSyncPage })),
 )
@@ -164,46 +149,11 @@ export default function App() {
             </Suspense>
           }
         />
-        <Route
-          path="events"
-          element={
-            <Suspense fallback={<PageFallback />}>
-              <EventsPage />
-            </Suspense>
-          }
-        />
-        <Route
-          path="schedules"
-          element={
-            <Suspense fallback={<PageFallback />}>
-              <SchedulesPage />
-            </Suspense>
-          }
-        />
-        <Route
-          path="multi-auth"
-          element={
-            <Suspense fallback={<PageFallback />}>
-              <MultiAuthPage />
-            </Suspense>
-          }
-        />
-        <Route
-          path="user-groups"
-          element={
-            <Suspense fallback={<PageFallback />}>
-              <UserGroupsPage />
-            </Suspense>
-          }
-        />
-        <Route
-          path="key-groups"
-          element={
-            <Suspense fallback={<PageFallback />}>
-              <KeyGroupsPage />
-            </Suspense>
-          }
-        />
+        <Route path="events" element={<Navigate to="/terminals" replace />} />
+        <Route path="schedules" element={<Navigate to="/terminals" replace />} />
+        <Route path="multi-auth" element={<Navigate to="/terminals" replace />} />
+        <Route path="user-groups" element={<Navigate to="/terminals" replace />} />
+        <Route path="key-groups" element={<Navigate to="/terminals" replace />} />
         <Route
           path="data-sync"
           element={

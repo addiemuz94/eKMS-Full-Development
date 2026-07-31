@@ -3,7 +3,7 @@ import { Link } from 'react-router-dom'
 import { Check, Plus, X } from 'lucide-react'
 import { api, ApiError } from '../api/client'
 import type { SiteDto, TerminalDto } from '../api/types'
-import { CabinetSettingsForm } from '../components/CabinetSettingsForm'
+import { CabinetSettingsPanel } from '../components/CabinetSettingsPanel'
 import { Button, LinearProgress, useConfirm } from '../components/ui'
 
 type PairingBanner = {
@@ -412,9 +412,12 @@ export function TerminalsPage() {
 
       {settingsTerminal && (
         <div className="dialog-backdrop">
-          <div className="dialog">
+          <div className="dialog dialog-wide">
             <h2>Cabinet settings — {settingsTerminal.name}</h2>
-            <CabinetSettingsForm terminal={settingsTerminal} />
+            <CabinetSettingsPanel
+              terminal={settingsTerminal}
+              unitName={siteName(settingsTerminal.siteId)}
+            />
             <div className="dialog-actions">
               <Button variant="outlined" icon={X} onClick={() => setSettingsTerminal(null)}>
                 Close

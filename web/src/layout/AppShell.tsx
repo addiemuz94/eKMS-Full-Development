@@ -27,11 +27,6 @@ const GROUPS: NavGroup[] = [
       { to: '/keys', label: 'Key Settings', icon: 'keys' },
       { to: '/permissions', label: 'Permission Settings', icon: 'permissions' },
       { to: '/key-access', label: 'Key Access', icon: 'keyAccess' },
-      { to: '/events', label: 'Event Setup', icon: 'events' },
-      { to: '/schedules', label: 'Schedule Settings', icon: 'schedules' },
-      { to: '/multi-auth', label: 'Multi-authentication Rules', icon: 'multiAuth' },
-      { to: '/user-groups', label: 'User Groups', icon: 'userGroups' },
-      { to: '/key-groups', label: 'Key Groups', icon: 'keyGroups' },
     ],
   },
   {

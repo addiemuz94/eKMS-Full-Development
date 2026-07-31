@@ -626,9 +626,52 @@ button {
   z-index: 30;
 }
 
+.dialog-backdrop .dialog-backdrop {
+  z-index: 40;
+}
+
 .dialog {
   width: min(500px, 100%);
   padding: 22px;
+}
+
+.dialog.dialog-wide {
+  width: min(960px, 100%);
+  max-height: min(92vh, 920px);
+  overflow: auto;
+}
+
+.cabinet-settings-panel {
+  margin-top: 4px;
+}
+
+.cabinet-settings-tabs {
+  margin-bottom: 16px;
+}
+
+.cabinet-settings-tabs .md-segmented {
+  flex-wrap: wrap;
+  row-gap: 6px;
+}
+
+.cabinet-settings-body {
+  min-height: 200px;
+}
+
+.embedded-header {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: flex-start;
+  margin-bottom: 12px;
+}
+
+.embedded-header .muted {
+  margin: 4px 0 0;
+}
+
+.resource-embedded .empty-state {
+  padding: 18px 12px;
 }
 
 .dialog h2 {
