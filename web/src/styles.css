@@ -1480,3 +1480,99 @@ button {
 .map-unit-button.selected {
   background: var(--md-sys-color-primary-container);
 }
+
+/* Key Settings — Layout (cabinet node grid) + List */
+.keys-layout-wrap {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(220px, 280px);
+  gap: 16px;
+  align-items: start;
+}
+
+.keys-layout-heading {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 14px;
+  align-items: baseline;
+  margin-bottom: 14px;
+}
+
+.keys-layout-grid {
+  display: grid;
+  gap: 10px;
+}
+
+.keys-node-cell {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  min-height: 84px;
+  padding: 10px 12px;
+  border: 1px solid var(--md-sys-color-outline-variant);
+  border-radius: 14px;
+  background: var(--md-sys-color-surface-container-low);
+  color: var(--md-sys-color-on-surface);
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 140ms ease, box-shadow 140ms ease, opacity 140ms ease;
+}
+
+.keys-node-cell:disabled {
+  cursor: default;
+}
+
+.keys-node-cell.free {
+  background: var(--md-sys-color-surface);
+  color: var(--md-sys-color-on-surface-variant);
+  border-style: dashed;
+}
+
+.keys-node-cell.assigned {
+  background: var(--md-sys-color-surface-container-high);
+}
+
+.keys-node-cell.enrolled {
+  border-color: var(--md-sys-color-success);
+}
+
+.keys-node-cell.selected {
+  border-color: var(--md-sys-color-primary);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--md-sys-color-primary) 35%, transparent);
+}
+
+.keys-node-cell.dimmed {
+  opacity: 0.38;
+}
+
+.keys-node-addr {
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--md-sys-color-on-surface-variant);
+}
+
+.keys-node-name {
+  font-size: 0.92rem;
+  font-weight: 600;
+  line-height: 1.25;
+  word-break: break-word;
+}
+
+.keys-layout-detail {
+  padding: 16px;
+  position: sticky;
+  top: 12px;
+}
+
+@media (max-width: 860px) {
+  .keys-layout-wrap {
+    grid-template-columns: 1fr;
+  }
+
+  .keys-layout-detail {
+    position: static;
+  }
+}
+

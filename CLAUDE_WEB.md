@@ -60,6 +60,8 @@ See `CLAUDE_TERMINAL.md`'s "Web Portal — Registration Workflow: terminalApp's 
 
 - **Cabinet Settings hub absorbs former Basic Settings pages (Jul 2026).** Removed from sidebar nav: Unit Settings, Event Setup, Schedule Settings, Multi-authentication Rules, User Groups, Key Groups. Old routes redirect to `/terminals`. Terminals → **Settings** opens `CabinetSettingsPanel` with tabs for **Unit** (`UnitSettingsForm` for this cabinet’s site), Timers & video (`CabinetSettingsForm`), and unit-scoped Events/Schedules/User groups/Key groups/Multi-auth (`ResourcePage`/`MultiAuthPage` with `lockedSiteId` + `embedded`). New units still created via Registration wizard step 1. Verify: `npm run build`; deployed to `kms-cvt.com`.
 
+- **Key Settings Layout + List views (Jul 2026).** `/keys` gains a Layout / List `SegmentedControl`. Layout shows the selected cabinet’s node grid (`nodeRows`×`nodesPerRow` or `1..configuredSlotCount`), filled cells with enrollment badge, free nodes dashed; selecting a key opens a side detail panel (Edit / Recycle). List keeps the compact data table. Unit + cabinet filters drive the grid; search/enrollment dim non-matching cells rather than hiding occupancy. Add-key dialog and auto-assign unchanged.
+
 - **Key/slot/grant binding gap — investigation (Jul 2026, Phase G, no fix).** Three independent bindings must line up for take. Portal “key exists” / “grant exists” do **not** imply takeability.
 
   | Binding | Owner | Take needs it? |
