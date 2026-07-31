@@ -117,10 +117,15 @@ fun KeyAttachmentScreen(
     initialSlots: List<KeySlot>,
     isUidKnown: (managedKeyId: String) -> Boolean,
     isPhysicallyAttached: (managedKeyId: String) -> Boolean,
-    /** Whether the currently signed-in session holds a real per-user server token (as opposed
-     * to only a TERMINAL_DEVICE pairing token, or a purely local NFC/fingerprint/face session) —
-     * new-key registration needs this; the existing node-attachment flow below does not. */
-    serverLinked: Boolean,
+    /** Whether this terminal has any authenticated server connection at all — a TERMINAL_DEVICE
+     * pairing token is enough (Jul 2026: `POST /keys`/`/key-slots` were widened onto
+     * TERMINAL_DEVICE_ALLOWED_ROUTES specifically for this, see `CLAUDE_TERMINAL.md`), so
+     * new-key registration no longer needs a real per-user JWT / password login specifically —
+     * fingerprint, face, NFC card, and passkey-signed-in admins can use it too. The existing
+     * node-attachment flow below never needed a per-user token either (its one backend call,
+     * fob-enrollment completion, was already TERMINAL_DEVICE-allowed). Named for what it now
+     * actually gates, not the old `serverLinked` (per-user-JWT) concept it replaced here. */
+    canRegisterNewKey: Boolean,
     notice: String?,
     onBack: () -> Unit,
     onLightOverview: (
@@ -502,10 +507,11 @@ fun KeyAttachmentScreen(
         if (exitScanning) {
             SuperAdminNoticeCard("Checking for missing fobs before leaving…")
         }
-        if (!serverLinked) {
+        if (!canRegisterNewKey) {
             SuperAdminNoticeCard(
-                "Sign in with your server password to register a new key from this screen — " +
-                    "attaching an already-registered key's fob (blue nodes) doesn't need this.",
+                "Connect this terminal to the server (Admin Menu → server address, or re-pair) " +
+                    "to register a new key from this screen — attaching an already-registered " +
+                    "key's fob (blue nodes) doesn't need this.",
             )
         }
 
@@ -571,7 +577,7 @@ fun KeyAttachmentScreen(
                 val onClick = when {
                     busy -> null
                     row is NodeRowState.NeedsAttachment -> { { startAttachment(row.nodeAddress, row.key.id) } }
-                    row is NodeRowState.AvailableForRegistration && serverLinked -> {
+                    row is NodeRowState.AvailableForRegistration && canRegisterNewKey -> {
                         {
                             pendingRegistration = row
                             newKeyName = ""
@@ -592,7 +598,7 @@ fun KeyAttachmentScreen(
                         is NodeRowState.AvailableForRegistration -> {
                             Text("Node ${row.nodeAddress} · Unregistered fob detected", fontWeight = FontWeight.SemiBold)
                             Text(
-                                if (serverLinked) "Tap to register a new key here" else "Sign in with a server password to register",
+                                if (canRegisterNewKey) "Tap to register a new key here" else "Connect this terminal to the server to register",
                                 style = MaterialTheme.typography.bodySmall,
                             )
                         }
