@@ -110,9 +110,24 @@ fun TerminalKeyTakeScreen(
     val context = LocalContext.current
     val videoRecorder = remember { VideoRecordingController() }
     val audio = remember { AudioFeedbackController(context) }
-    var stage by remember { mutableStateOf<TakeStage>(TakeStage.OpeningDoor) }
-    var beeping by remember { mutableStateOf(false) }
-    var beepLoud by remember { mutableStateOf(false) }
+    // Bug fix (Jul 2026, found via ad hoc hardware testing on the multi-key queue): these three
+    // were remembered with no keys, so at Key Menu's call site — where this same composable
+    // instance stays mounted across every queued node in turn, only ever re-parameterized with
+    // a new key/slot, never actually unmounted between nodes — they kept whatever value the
+    // PREVIOUS node last left them at. Only LaunchedEffect(key, slot) below was keyed, so its
+    // coroutine correctly restarted for the new node, but the on-screen stage did not: the
+    // screen kept showing the just-completed node's own "Close the door to finish" prompt
+    // (WaitingForDoorClose) until the new node's onDoorOpenConfirmed happened to overwrite it,
+    // reading exactly like the next queued key was blocked on closing the previous one's door —
+    // even though the queue's own advance (onKeyRemoved, see TerminalAdminApp.kt) was already
+    // correct. The single-key KEY_RETRIEVAL path never showed this: it unmounts this composable
+    // back to the grid and remounts fresh for each take, so it already got new state for free.
+    // Keying these three the same way LaunchedEffect already is makes every queued node start
+    // from a genuinely clean OpeningDoor/not-beeping state, matching what the single-key path
+    // already had.
+    var stage by remember(key, slot) { mutableStateOf<TakeStage>(TakeStage.OpeningDoor) }
+    var beeping by remember(key, slot) { mutableStateOf(false) }
+    var beepLoud by remember(key, slot) { mutableStateOf(false) }
 
     DisposableEffect(videoRecordingEnabled) {
         if (videoRecordingEnabled) videoRecorder.start("key_take")

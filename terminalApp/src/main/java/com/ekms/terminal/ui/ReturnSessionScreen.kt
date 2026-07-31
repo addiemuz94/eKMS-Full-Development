@@ -13,30 +13,25 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 
 /**
- * Continuous multi-key return session (CLAUDE.md "Terminal App UX Baseline (Production)" §2
- * rework): shown after a key return completes — success, failure, or abandonment — instead of
- * dropping straight back to standby, so the operator can scan the next fob immediately. Ends
- * via [onDone] or an idle timeout; the timeout itself is owned by `TerminalAdminApp` (not this
- * screen), since it must keep counting across this screen being torn down and rebuilt every
- * time a new scan restarts the underlying return attempt.
- *
- * Phase 9F (visual/theme only — no idle-timeout logic here to touch, per this file's own doc
- * above; `SESSION_IDLE_TIMEOUT_MILLIS` lives in `TerminalAdminApp.kt`, untouched): the "Returned
- * this session" card gets a light `outlineVariant` border (was bare/borderless) plus explicit
- * spacing between its title and each key name (was zero gap — `SoftCard`'s content lambda has no
- * `verticalArrangement` of its own). "Done" is now [IconActionButton] ([ActionButtonType.ACCEPT])
- * in place of [SoftPrimaryButton] — a clean fit, the one confirm action ending this session.
+ * Continuous multi-key return session (CLAUDE.md "Terminal App UX Baseline (Production)" §2 —
+ * Return Flow session rebuild, Jul 2026, full scrap-and-rebuild of this screen's own ending
+ * logic, not layered on top of it): shown between key returns — after success, failure, or
+ * abandonment all count — instead of dropping straight back to standby, so the operator can
+ * scan the next fob immediately. Door-close is now the session's **sole** ending trigger
+ * (`CabinetHardwareController.beginReturnSessionDoorMonitor`, owned by `TerminalAdminApp`, not
+ * this screen) — there is no Done button and no idle timeout any more. The old
+ * `SESSION_IDLE_TIMEOUT_MILLIS`/Done-button model this superseded is documented as such in
+ * `CLAUDE_TERMINAL.md`, not silently dropped from history.
  */
 @Composable
 fun ReturnSessionScreen(
     padding: PaddingValues,
     returnedKeyNames: List<String>,
-    onDone: () -> Unit,
 ) {
     TerminalPage(padding) {
         HeaderCard(
             title = "Key returned",
-            description = "Scan the next key to keep returning, or tap Done when finished.",
+            description = "Scan the next key to keep returning, or close the door to finish.",
         )
         if (returnedKeyNames.isNotEmpty()) {
             SoftCard(
@@ -55,11 +50,5 @@ fun ReturnSessionScreen(
                 }
             }
         }
-        IconActionButton(
-            type = ActionButtonType.ACCEPT,
-            label = "Done",
-            onClick = onDone,
-            modifier = Modifier.fillMaxWidth(),
-        )
     }
 }

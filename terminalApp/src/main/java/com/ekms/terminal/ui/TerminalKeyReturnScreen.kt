@@ -1,5 +1,6 @@
 package com.ekms.terminal.ui
 
+import android.util.Log
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -44,25 +45,34 @@ import kotlinx.coroutines.delay
  * Baseline (Production)" §2), mirroring the Key Take Flow's timer
  * structure but direction-reversed, with its own distinct settings and
  * abandonment behavior. Driven by [CabinetHardwareController] through
- * three callback groups:
+ * two callback groups:
  *
- * 1. [onBeginReturnFlow]: Blue Light On -> Eject Door -> confirm door
- *    open. A failure here ends the flow with the door never opened.
+ * 1. [onBeginNodeCycle]: Blue Light On -> Engage electromagnet -> idempotent door check/eject.
+ *    A failure here ends this node's cycle with the door never opened (a fresh session) or,
+ *    for a continuing session, leaves the already-open door and the rest of the session alone.
  * 2. [onPollInsertion]: polls bolt presence. Two independent clocks — 5 s
- *    from door-open only raises beep volume; [abandonAtEpochMillis] is an
+ *    from unlock only raises beep volume; [abandonAtEpochMillis] is an
  *    absolute deadline the caller computed at the *original card swipe*
- *    (not from door-open, and not paused for however long an optional
- *    Key Return Certification login took) — the hard no-insert ceiling.
+ *    (not from unlock, and not paused for however long an optional
+ *    Key Return Certification login took) — the hard no-insert ceiling for *this node's own
+ *    cycle only* (Return Flow session rebuild, Jul 2026 — an abandonment here no longer ends
+ *    the whole session; the door stays open and the session keeps listening for the next scan).
  *    Return Flow rework: also sweeps [wrongSlotCandidateNodeAddresses] for
  *    an unexpected insertion — see [onWrongSlotDetected]/[onWrongSlotCleared]. Follow-up
  *    revision: the sweep identifies the fob via [resolveKeyFobUid] (the caller's
  *    `CardUidResolver` lookup) rather than inferring "wrong key" from bare presence alone;
  *    `onWrongSlotDetected`'s `confirmedKey` flag says whether a genuinely enrolled key fob
  *    was identified or only unresolved presence (still flagged — see this screen's doc for why).
- * 3. [onWaitForDoorClose]: polls the door until closed. The Door-Close
- *    Warning Time countdown (distinct Admin Menu setting from Take
- *    Warning Time) only triggers a "please close the door" voice line at
- *    expiry; closing the door always completes the flow, however late.
+ *
+ * **Return Flow session rebuild (Jul 2026, full scrap-and-rebuild — supersedes the old
+ * per-key door-close-wait entirely, not layered on top of it):** there is no longer a
+ * per-node "wait for the door to close" step at all — insertion confirmed IS this node's
+ * cycle ending (electromagnet locked, light off, checkout closed out), immediately followed
+ * by [onNodeCycleComplete] so the session returns to its own listening state
+ * (`ReturnSessionScreen`, not this screen) for the next scan. The door itself, and the
+ * session-level Door-Close Warning Time countdown that plays the "please close the door"
+ * voice line, are both owned by `TerminalAdminApp`/`CabinetHardwareController` now — this
+ * screen has no door-close awareness of its own any more.
  *
  * [key]/[slot] may be null — the pre-existing "only key currently taken"
  * heuristic fallback for the login screen's UID-less manual key-card tap
@@ -72,15 +82,14 @@ import kotlinx.coroutines.delay
  * real return to begin with. [abandonAtEpochMillis] is only meaningful
  * (and only read) when [slot] is non-null.
  *
- * The continuous beep runs from door-open confirmation through door-close
- * confirmation on every path except a door-open hardware fault, which
+ * The continuous beep runs from unlock confirmation through this node's own
+ * insertion-or-abandonment on every path except an unlock hardware fault, which
  * never starts it; it also forces full volume for as long as a wrong-slot
- * warning is active, on top of the normal 5s-from-door-open escalation.
- * [onEvent] fires once per terminal or notable outcome (success /
- * failed-return / abandoned-return / door-left-open) — these
- * are three genuinely different failure modes (never inserted / inserted
- * but door left open / successful close) and are logged distinctly, never
- * collapsed into one case.
+ * warning is active, on top of the normal 5s-from-unlock escalation.
+ * [onEvent] fires once per terminal or notable outcome for *this node's own cycle*
+ * (success / failed / abandoned) — three genuinely different outcomes, logged distinctly,
+ * never collapsed into one case. Door-left-open is no longer one of them — it's now a
+ * session-level warning owned by the caller, not a per-node outcome of this screen.
  *
  * Phase 9F (visual/theme only — a stricter pass than Take Flow's, given the attemptId-keyed
  * abandonment-race fix and wrong-slot sweep here are both still only "believed correct by code
@@ -95,17 +104,9 @@ import kotlinx.coroutines.delay
  *   item"); the icon is additive, same underlying alarm tone and text for both, per the
  *   established "equally anomalous" design intent (`connectionHints`' doc, `CardUidResolver`'s
  *   permanent NFC UID rule).
- * - **Flagged, not implemented**: the task asked for a "5s-escalation state" reskin analogous to
- *   Take Flow's door-left-open, but no such visual state exists here to reskin — `beepLoud`
- *   (the 5s threshold flag) only ever drives `audio.beep(loud = ...)`; it never changes `stage`,
- *   `title`, `message`, or `assistText` today, unlike Take Flow's `warningExpired`, which was
- *   already a dedicated, pre-existing stage field with its own render branches before this pass
- *   touched anything. Making the 5s mark visible would mean adding a brand-new render-time
- *   condition where none exists — a real, if small, behavior addition, not a reskin of something
- *   already there. Left untouched and flagged here per the hard constraint's "stop and flag it."
  * - **No dedicated Success render state exists** — matching Key Take Flow's identical shape,
- *   a successful return calls `onCompleted()` immediately with no intermediate success screen
- *   to reskin.
+ *   a successful return calls `onNodeCycleComplete()` immediately with no intermediate success
+ *   screen to reskin.
  * - `checkoutSummary`'s card ("Checked out by X · Ym ago", built in `TerminalAdminApp.kt` from
  *   `TerminalCheckoutStore`) gets the same light `1.dp` `outlineVariant` border used elsewhere in
  *   this sweep for visibility in light mode — it was a bare, borderless `SoftCard` before.
@@ -115,10 +116,8 @@ import kotlinx.coroutines.delay
  *   (out of this task's named scope), though it already renders via already-theme-clean
  *   `SoftWaitPanel`/`SoftTextButton` and so incidentally still benefits from this same pass's
  *   `SoftWaitPanel` default-visibility fix (see that composable's own doc).
- * - `SessionIdle` (the continuous-session idle UI) and the Done button live in a separate file,
- *   `ReturnSessionScreen.kt` — not part of this file's `ReturnStage`, but close enough to this
- *   same feature (and explicitly named in the task's checklist) that it's treated as in-scope
- *   too; see that file's own Phase 9F note.
+ * - `ReturnSessionScreen.kt` (the "waiting for the next scan or door-close" view) is a separate
+ *   file, not part of this file's `ReturnStage` — see that file's own doc.
  */
 @Composable
 fun TerminalKeyReturnScreen(
@@ -128,9 +127,8 @@ fun TerminalKeyReturnScreen(
     abandonAtEpochMillis: Long?,
     wrongSlotCandidateNodeAddresses: List<Int>,
     checkoutSummary: String?,
-    doorCloseWarningTimeSeconds: Int,
     videoRecordingEnabled: Boolean,
-    onBeginReturnFlow: (nodeAddress: Int, onDoorOpenConfirmed: () -> Unit, onFailure: (String) -> Unit) -> Unit,
+    onBeginNodeCycle: (nodeAddress: Int, onNodeUnlocked: () -> Unit, onFailure: (String) -> Unit) -> Unit,
     onPollInsertion: (
         nodeAddress: Int,
         abandonAtEpochMillis: Long,
@@ -144,15 +142,8 @@ fun TerminalKeyReturnScreen(
         onFailure: (String) -> Unit,
     ) -> Unit,
     resolveKeyFobUid: (rawUid: String) -> Boolean,
-    onWaitForDoorClose: (
-        nodeAddress: Int,
-        warningSeconds: Int,
-        onWarningExpired: () -> Unit,
-        onDoorClosed: () -> Unit,
-        onFailure: (String) -> Unit,
-    ) -> Unit,
     onEvent: (ReturnFlowOutcome) -> Unit,
-    onCompleted: () -> Unit,
+    onNodeCycleComplete: () -> Unit,
 ) {
     val context = LocalContext.current
     val videoRecorder = remember { VideoRecordingController() }
@@ -178,10 +169,10 @@ fun TerminalKeyReturnScreen(
         if (nodeAddress == null || deadline == null) {
             // Hardware-free testing convenience only — see the class doc.
             delay(NO_NODE_AUTO_COMPLETE_MILLIS)
-            onCompleted()
+            onNodeCycleComplete()
             return@LaunchedEffect
         }
-        onBeginReturnFlow(
+        onBeginNodeCycle(
             nodeAddress,
             {
                 beeping = true
@@ -192,29 +183,17 @@ fun TerminalKeyReturnScreen(
                     wrongSlotCandidateNodeAddresses,
                     resolveKeyFobUid,
                     {
+                        // Return Flow session rebuild (Jul 2026): insertion confirmed IS this
+                        // node's cycle ending now — no more per-node door-close wait. The
+                        // electromagnet/light are already released by this point (moved into
+                        // CabinetHardwareController.pollForKeyInsertion's own insertion branch).
+                        beeping = false
                         beepLoud = false
                         wrongSlotNodeAddress = null
                         wrongSlotConfirmedKey = false
-                        stage = ReturnStage.WaitingForDoorClose(warningExpired = false)
-                        onWaitForDoorClose(
-                            nodeAddress,
-                            doorCloseWarningTimeSeconds,
-                            {
-                                audio.playVoiceLine(VoiceLine.PLEASE_CLOSE_THE_DOOR)
-                                stage = ReturnStage.WaitingForDoorClose(warningExpired = true)
-                                onEvent(ReturnFlowOutcome.DoorLeftOpen(key, slot))
-                            },
-                            {
-                                beeping = false
-                                onEvent(ReturnFlowOutcome.Success(key, slot))
-                                onCompleted()
-                            },
-                            { message ->
-                                beeping = false
-                                stage = ReturnStage.Failed(message)
-                                onEvent(ReturnFlowOutcome.Failed(key, slot, message))
-                            },
-                        )
+                        Log.d("ReturnFlowDiag", "TerminalKeyReturnScreen: inserted, Success -> onEvent then onNodeCycleComplete")
+                        onEvent(ReturnFlowOutcome.Success(key, slot))
+                        onNodeCycleComplete()
                     },
                     { wrongNodeAddress, confirmedKey ->
                         wrongSlotNodeAddress = wrongNodeAddress
@@ -275,7 +254,7 @@ fun TerminalKeyReturnScreen(
         val currentStage = stage
         if (currentStage is ReturnStage.Failed || currentStage is ReturnStage.Abandoned) {
             delay(EXIT_AUTO_RETURN_MILLIS)
-            onCompleted()
+            onNodeCycleComplete()
         }
     }
 
@@ -370,31 +349,20 @@ fun TerminalKeyReturnScreen(
             }
             SoftWaitPanel(
                 tone = tone,
-                title = when (val currentStage = stage) {
+                title = when (stage) {
                     ReturnStage.OpeningDoor -> "Opening door…"
                     ReturnStage.WaitingForInsertion -> "Insert the key"
-                    is ReturnStage.WaitingForDoorClose -> "Close the door"
                     is ReturnStage.Failed -> "Key return problem"
                     ReturnStage.Abandoned -> "Key return cancelled"
                 },
                 message = when (val currentStage = stage) {
                     ReturnStage.OpeningDoor, ReturnStage.WaitingForInsertion ->
                         if (key != null) "Insert ${key.displayName} now." else "Insert the key now."
-                    is ReturnStage.WaitingForDoorClose ->
-                        if (currentStage.warningExpired) "Please close the door." else "Close the door to finish."
                     is ReturnStage.Failed -> currentStage.message
                     ReturnStage.Abandoned -> "No key was inserted in time. The slot has been secured."
                 },
-                showProgress = when (val current = stage) {
-                    ReturnStage.OpeningDoor -> true
-                    is ReturnStage.WaitingForDoorClose -> !current.warningExpired
-                    else -> false
-                },
-                assistText = when (val current = stage) {
-                    ReturnStage.WaitingForInsertion -> "Door open"
-                    is ReturnStage.WaitingForDoorClose -> if (current.warningExpired) "Please close the door" else null
-                    else -> null
-                },
+                showProgress = stage == ReturnStage.OpeningDoor,
+                assistText = if (stage == ReturnStage.WaitingForInsertion) "Node unlocked" else null,
                 assistAttention = true,
                 modifier = Modifier.fillMaxWidth(),
             )
@@ -409,22 +377,24 @@ private const val EXIT_AUTO_RETURN_MILLIS = 3_000L
 private sealed interface ReturnStage {
     data object OpeningDoor : ReturnStage
     data object WaitingForInsertion : ReturnStage
-    data class WaitingForDoorClose(val warningExpired: Boolean) : ReturnStage
     data class Failed(val message: String) : ReturnStage
     data object Abandoned : ReturnStage
 }
 
 /**
- * Terminal or notable outcomes the caller logs via `TerminalAdminStore.logEvent`.
- * [Abandoned] is the deliberate asymmetry with the Key Take Flow's abandonment:
- * Return's abandonment additionally implies a two-party alert (the terminal user
- * and Super Admin), not just a log entry — see the caller for how that's recorded.
+ * Terminal or notable outcomes of *this node's own cycle* that the caller logs via
+ * `TerminalAdminStore.logEvent`. [Abandoned] is the deliberate asymmetry with the Key Take
+ * Flow's abandonment: Return's abandonment additionally implies a two-party alert (the
+ * terminal user and Super Admin), not just a log entry — see the caller for how that's
+ * recorded. Door-left-open is deliberately not one of these (Return Flow session rebuild, Jul
+ * 2026) — it's now a session-level warning owned by `TerminalAdminApp`/
+ * `CabinetHardwareController.beginReturnSessionDoorMonitor`, not a per-node outcome of this
+ * screen, since the door itself is no longer scoped to one node's cycle.
  */
 sealed interface ReturnFlowOutcome {
     data class Success(val key: ManagedKey?, val slot: KeySlot) : ReturnFlowOutcome
     data class Failed(val key: ManagedKey?, val slot: KeySlot, val message: String) : ReturnFlowOutcome
     data class Abandoned(val key: ManagedKey?, val slot: KeySlot) : ReturnFlowOutcome
-    data class DoorLeftOpen(val key: ManagedKey?, val slot: KeySlot) : ReturnFlowOutcome
 }
 
 /**
