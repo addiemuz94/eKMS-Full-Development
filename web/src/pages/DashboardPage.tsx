@@ -21,6 +21,16 @@ const SYNC_EVENT_TYPES = new Set([
   'TERMINAL_SYNC_PULL',
 ])
 
+const ROLE_LABELS: Record<string, string> = {
+  SUPER_ADMIN: 'Super Admin',
+  REGIONAL_ADMIN: 'Regional Admin',
+  TECHNICIAN: 'Technician',
+  VENDOR: 'Vendor',
+  GOD_ADMIN: 'System account',
+}
+
+const ROLE_ORDER = ['SUPER_ADMIN', 'REGIONAL_ADMIN', 'TECHNICIAN', 'VENDOR', 'GOD_ADMIN'] as const
+
 function countUsersByRole(users: UserDto[]) {
   const counts: Record<string, number> = {}
   for (const user of users) {
@@ -28,6 +38,21 @@ function countUsersByRole(users: UserDto[]) {
     counts[role] = (counts[role] ?? 0) + 1
   }
   return counts
+}
+
+function orderedRoleEntries(counts: Record<string, number>): Array<[string, number]> {
+  const seen = new Set<string>()
+  const entries: Array<[string, number]> = []
+  for (const role of ROLE_ORDER) {
+    if (role in counts) {
+      entries.push([role, counts[role]])
+      seen.add(role)
+    }
+  }
+  for (const [role, count] of Object.entries(counts)) {
+    if (!seen.has(role)) entries.push([role, count])
+  }
+  return entries
 }
 
 function personnelSiteCount(users: UserDto[], siteId: string | null) {
@@ -71,6 +96,7 @@ export function DashboardPage() {
   const selectedSiteId = selectedTerminal?.siteId ?? (siteFilter !== 'all' ? siteFilter : null)
 
   const roleCounts = useMemo(() => countUsersByRole(users), [users])
+  const roleEntries = useMemo(() => orderedRoleEntries(roleCounts), [roleCounts])
 
   useEffect(() => {
     void (async () => {
@@ -194,7 +220,7 @@ export function DashboardPage() {
 
   async function onDownloadReport() {
     if (!reportSiteId) {
-      setError('Select a unit for the location report.')
+      setError('Select a location for the location report.')
       return
     }
     setReportBusy(true)
@@ -220,8 +246,8 @@ export function DashboardPage() {
         <div>
           <h1>Dashboard</h1>
           <p className="muted">
-            Terminal-centric overview of sites, personnel, and keys. Physical key actions stay on the
-            Android Terminal.
+            Cabinet-centric overview of locations, personnel, and keys. Physical key actions stay on
+            the Android cabinet.
           </p>
         </div>
         {loading && (
@@ -234,69 +260,58 @@ export function DashboardPage() {
 
       {error && <div className="error-banner">{error}</div>}
 
-      <div className="metrics">
-        {loading ? (
-          <>
-            <MetricSkeleton />
-            <MetricSkeleton />
-            <MetricSkeleton />
-            <MetricSkeleton />
-          </>
-        ) : (
-          <>
-            <div className="metric">
-              <div className="metric-label">Sites</div>
-              <strong>{sites.length}</strong>
-            </div>
-            <div className="metric">
-              <div className="metric-label">Terminals</div>
-              <strong>{terminals.length}</strong>
-            </div>
-            <div className="metric metric-wide">
-              <div className="metric-label">Personnel by role</div>
-              <div className="role-metrics">
-                {Object.entries(roleCounts).length ? (
-                  Object.entries(roleCounts).map(([role, count]) => (
-                    <span key={role} className="role-metric-chip">
-                      {role.replaceAll('_', ' ')}: <strong>{count}</strong>
-                    </span>
-                  ))
-                ) : (
-                  <strong>0</strong>
-                )}
+      <div className="card dashboard-overview-card">
+        <h2>Overview</h2>
+        <p className="muted">Current counts across the organisation.</p>
+        <div className="metrics">
+          {loading ? (
+            <>
+              <MetricSkeleton />
+              <MetricSkeleton />
+              <MetricSkeleton />
+              <MetricSkeleton />
+            </>
+          ) : (
+            <>
+              <div className="metric">
+                <div className="metric-label">Locations</div>
+                <strong>{sites.length}</strong>
               </div>
-            </div>
-            <div className="metric">
-              <div className="metric-label">Keys</div>
-              <strong>{keys.length}</strong>
-            </div>
-          </>
-        )}
-      </div>
-
-      <div className="card dashboard-report-card">
-        <h2>Location report</h2>
-        <p className="muted">
-          Download a PDF of key pickup and return records for a unit (who, what, when, where, why, how).
-        </p>
-        <div className="toolbar-row">
-          <select
-            value={reportSiteId}
-            onChange={(e) => setReportSiteId(e.target.value)}
-            title="Unit for PDF export"
-          >
-            <option value="">Select unit…</option>
-            {sites.map((site) => (
-              <option key={site.id} value={site.id}>
-                {site.name}
-              </option>
-            ))}
-          </select>
-          <Button icon={Download} loading={reportBusy} disabled={!reportSiteId} onClick={() => void onDownloadReport()}>
-            Download PDF
-          </Button>
+              <div className="metric">
+                <div className="metric-label">Cabinets</div>
+                <strong>{terminals.length}</strong>
+              </div>
+              <div className="metric">
+                <div className="metric-label">Personnel</div>
+                <strong>{users.length}</strong>
+              </div>
+              <div className="metric">
+                <div className="metric-label">Keys</div>
+                <strong>{keys.length}</strong>
+              </div>
+            </>
+          )}
         </div>
       </div>
+
+      {!loading && (
+        <div className="card personnel-role-card">
+          <h2>Personnel by role</h2>
+          <p className="muted">How accounts are split across roles.</p>
+          {roleEntries.length ? (
+            <div className="role-stat-grid" role="list">
+              {roleEntries.map(([role, count]) => (
+                <div key={role} className="role-stat" role="listitem">
+                  <div className="role-stat-label">{ROLE_LABELS[role] ?? role.replaceAll('_', ' ')}</div>
+                  <div className="role-stat-value">{count}</div>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div className="role-stat-empty">No personnel records yet.</div>
+          )}
+        </div>
+      )}
 
       {!loading && (
         <>
@@ -308,8 +323,61 @@ export function DashboardPage() {
             siteFilter={siteFilter}
             selectedTerminalId={selectedTerminalId}
             onRegionFilterChange={setRegionFilter}
-            onSiteFilterChange={setSiteFilter}
-            onSelectTerminal={setSelectedTerminalId}
+            onSiteFilterChange={(id) => {
+              setSiteFilter(id)
+              if (id !== 'all') setReportSiteId(id)
+            }}
+            onSelectTerminal={(id) => {
+              setSelectedTerminalId(id)
+              if (!id) return
+              const terminal = terminals.find((t) => t.id === id)
+              if (terminal) {
+                setReportSiteId(terminal.siteId)
+                setSiteFilter(terminal.siteId)
+              }
+            }}
+            footer={
+              <div className="dashboard-map-report-bar">
+                <div>
+                  <h3>Location report</h3>
+                  <p className="muted">
+                    Export a PDF of key pickup and return records for the selected location.
+                  </p>
+                </div>
+                <div className="toolbar-row">
+                  <select
+                    value={reportSiteId}
+                    onChange={(e) => {
+                      const next = e.target.value
+                      setReportSiteId(next)
+                      if (next) {
+                        setSiteFilter(next)
+                        if (selectedTerminal && selectedTerminal.siteId !== next) {
+                          setSelectedTerminalId(null)
+                        }
+                      }
+                    }}
+                    title="Location for PDF export"
+                    aria-label="Location for PDF export"
+                  >
+                    <option value="">Select location…</option>
+                    {sites.map((site) => (
+                      <option key={site.id} value={site.id}>
+                        {site.name}
+                      </option>
+                    ))}
+                  </select>
+                  <Button
+                    icon={Download}
+                    loading={reportBusy}
+                    disabled={!reportSiteId}
+                    onClick={() => void onDownloadReport()}
+                  >
+                    Download PDF
+                  </Button>
+                </div>
+              </div>
+            }
           />
 
           {selectedTerminal && (
@@ -321,7 +389,7 @@ export function DashboardPage() {
                   <div className="mono">{selectedTerminal.id}</div>
                 </div>
                 <div>
-                  <span className="muted">Unit</span>
+                  <span className="muted">Location</span>
                   <div>{sites.find((s) => s.id === selectedTerminal.siteId)?.name ?? '—'}</div>
                 </div>
                 <div>
@@ -331,14 +399,14 @@ export function DashboardPage() {
                   </div>
                 </div>
                 <div>
-                  <span className="muted">Personnel at unit</span>
+                  <span className="muted">Personnel at location</span>
                   <div>{personnelSiteCount(users, selectedTerminal.siteId)}</div>
                 </div>
                 <div>
-                  <span className="muted">Pairing</span>
+                  <span className="muted">Setup</span>
                   <div>
                     <span className={`badge${selectedTerminal.paired ? ' badge-success' : ''}`}>
-                      {selectedTerminal.paired ? 'Paired' : 'Not paired'}
+                      {selectedTerminal.paired ? 'Set up' : 'Not set up'}
                     </span>
                   </div>
                 </div>
@@ -354,7 +422,7 @@ export function DashboardPage() {
                   {selectedTerminal
                     ? `Scoped to ${selectedTerminal.name}`
                     : selectedSiteId
-                      ? `Scoped to ${sites.find((s) => s.id === selectedSiteId)?.name ?? 'selected unit'}`
+                      ? `Scoped to ${sites.find((s) => s.id === selectedSiteId)?.name ?? 'selected location'}`
                       : 'All visible terminals and units'}
                 </p>
               </div>
@@ -367,7 +435,7 @@ export function DashboardPage() {
                 >
                   <option value="audit">Audit events</option>
                   <option value="sync">Sync-related</option>
-                  <option value="keys">Key checkout / return</option>
+                  <option value="keys">Key pickup / return</option>
                 </select>
               </label>
             </div>

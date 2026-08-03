@@ -197,6 +197,8 @@ enum class AuditEventType {
     /** Key Return Flow: the key was inserted and locked but the door was still open after the Door-Close Warning Time countdown. */
     KEY_RETURN_DOOR_LEFT_OPEN,
     USER_ACCOUNT_STATUS_CHANGED,
+    /** Personnel account created (portal or terminal-linked create). Dedicated registration log category. */
+    PERSONNEL_REGISTERED,
     USER_CREDENTIAL_ENROLLMENT_REQUESTED,
     RECORD_MOVED_TO_BIN,
     RECORD_RESTORED,

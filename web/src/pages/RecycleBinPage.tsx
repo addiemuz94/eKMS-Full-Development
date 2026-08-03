@@ -14,7 +14,7 @@ export function RecycleBinPage() {
     try {
       setEntries(await api.listRecycleBin())
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : 'Failed to load Recycle Bin')
+      setError(err instanceof ApiError ? err.message : 'Failed to load deleted items')
     } finally {
       setBusy(false)
     }
@@ -28,10 +28,10 @@ export function RecycleBinPage() {
     <section>
       <div className="page-header">
         <div>
-          <h1>Recycle Bin</h1>
+          <h1>Deleted items</h1>
           <p className="muted">
-            Super Admin only. Soft-deleted records can be restored for 60 days or purged earlier. Audit
-            history is retained.
+            Super Admin only. Restore items removed in the last 60 days, or permanently delete them
+            before expiry. Audit history is retained.
           </p>
         </div>
         <Button variant="tonal" loading={busy} onClick={() => void reload()}>
@@ -82,7 +82,12 @@ export function RecycleBinPage() {
                         loading={busy}
                         onClick={() =>
                           void (async () => {
-                            if (!(await confirmAction({ message: 'Permanently purge this record?', danger: true })))
+                            if (
+                              !(await confirmAction({
+                                message: 'Permanently delete this record? This cannot be undone.',
+                                danger: true,
+                              }))
+                            )
                               return
                             await api.purgeRecycleBin({
                               recordType: entry.recordType,
@@ -92,7 +97,7 @@ export function RecycleBinPage() {
                           })()
                         }
                       >
-                        Purge
+                        Permanently delete
                       </Button>
                     </div>
                   </td>
@@ -102,7 +107,7 @@ export function RecycleBinPage() {
           </table>
         </div>
       ) : (
-        !busy && <div className="empty-state">Recycle Bin is empty.</div>
+        !busy && <div className="empty-state">No deleted items.</div>
       )}
 
       {dialog}

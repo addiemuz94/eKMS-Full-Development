@@ -38,10 +38,18 @@ export function DataSyncPage() {
     if (terminalFilter) setPanel('conflicts')
   }, [terminalFilter])
 
+  const activeTerminalIds = useMemo(() => new Set(terminals.map((t) => t.id)), [terminals])
+
   const visibleConflicts = useMemo(() => {
-    if (!terminalFilter) return conflicts
-    return conflicts.filter((c) => String(c.terminalId) === terminalFilter)
-  }, [conflicts, terminalFilter])
+    const activeOnly = conflicts.filter((c) => {
+      const tid = c.terminalId == null ? null : String(c.terminalId)
+      // Drop conflicts for soft-deleted cabinets (history lives under Activity archive / Deleted items).
+      if (tid && !activeTerminalIds.has(tid)) return false
+      if (terminalFilter && tid !== terminalFilter) return false
+      return true
+    })
+    return activeOnly
+  }, [conflicts, terminalFilter, activeTerminalIds])
 
   const filteredTerminal = useMemo(
     () => (terminalFilter ? terminals.find((t) => t.id === terminalFilter) ?? null : null),
@@ -66,7 +74,7 @@ export function DataSyncPage() {
         <div>
           <h1>Data Synchronization</h1>
           <p className="muted">
-            Review offline Terminal conflicts. Never silently overwrite — choose Keep Server, Keep Terminal
+            Review offline cabinet conflicts. Never silently overwrite — choose Keep Server, Keep Cabinet
             Change, or merge later.
             {filteredTerminal ? ` Filtered to ${filteredTerminal.name}.` : ''}
           </p>
@@ -85,13 +93,13 @@ export function DataSyncPage() {
         onChange={setPanel}
         options={[
           { value: 'conflicts', label: 'Conflicts' },
-          { value: 'terminals', label: 'Terminals' },
+          { value: 'terminals', label: 'Cabinets' },
         ]}
       />
 
       {panel === 'terminals' && (
         <div className="card">
-          <h3>Registered terminals</h3>
+          <h3>Registered cabinets</h3>
           <div className="meta">
             {(terminalFilter ? terminals.filter((t) => t.id === terminalFilter) : terminals).map(
               (terminal) => (
@@ -101,7 +109,7 @@ export function DataSyncPage() {
                 </div>
               ),
             )}
-            {!terminals.length && <div>No terminals registered yet.</div>}
+            {!terminals.length && <div>No cabinets registered yet.</div>}
           </div>
         </div>
       )}
@@ -114,7 +122,7 @@ export function DataSyncPage() {
             </h3>
             <div className="meta">
               <div>
-                Terminal: <span className="mono">{String(conflict.terminalId)}</span>
+                Cabinet: <span className="mono">{String(conflict.terminalId)}</span>
               </div>
               <div>Server revision: {String(conflict.serverRevision)}</div>
               <div>
@@ -131,7 +139,7 @@ export function DataSyncPage() {
                 loading={busy}
                 onClick={() => void resolve(String(conflict.id), 'KEEP_TERMINAL_CHANGE')}
               >
-                Keep terminal change
+                Keep cabinet change
               </Button>
               <Button variant="outlined" disabled>
                 Merge manually
@@ -142,7 +150,7 @@ export function DataSyncPage() {
 
       {panel === 'conflicts' && !visibleConflicts.length && !busy && (
         <div className="empty-state">
-          {terminalFilter ? 'No open sync conflicts for this terminal.' : 'No open sync conflicts.'}
+          {terminalFilter ? 'No open sync conflicts for this cabinet.' : 'No open sync conflicts.'}
         </div>
       )}
     </section>

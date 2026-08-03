@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import L from 'leaflet'
 import 'leaflet/dist/leaflet.css'
 import 'leaflet.markercluster'
@@ -31,6 +31,8 @@ type Props = {
   onRegionFilterChange: (regionId: string) => void
   onSiteFilterChange: (siteId: string) => void
   onSelectTerminal: (terminalId: string | null) => void
+  /** Optional footer (e.g. location report export) rendered inside the same map card. */
+  footer?: ReactNode
 }
 
 const STREET_TILE_URL = 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png'
@@ -123,7 +125,7 @@ export function buildTerminalPoints(
         id: terminal.id,
         name: terminal.name,
         siteId: terminal.siteId,
-        siteName: site?.name ?? 'Unknown unit',
+        siteName: site?.name ?? 'Unknown location',
         lat: pos.lat,
         lng: pos.lng,
         known: pos.known,
@@ -150,6 +152,7 @@ export function TerminalsMap({
   onRegionFilterChange,
   onSiteFilterChange,
   onSelectTerminal,
+  footer,
 }: Props) {
   const [mapError, setMapError] = useState<string | null>(null)
   const [basemap, setBasemap] = useState<MapBasemap>('satellite')
@@ -160,20 +163,58 @@ export function TerminalsMap({
   const icons = useMemo(() => makeIcons(), [])
   const regionMode = useMemo(() => resolveRegionFilterMode(sites, regions), [sites, regions])
 
+  const cabinetCountByProvince = useMemo(() => {
+    const counts = new Map<string, number>()
+    for (const terminal of terminals) {
+      const site = sites.find((s) => s.id === terminal.siteId)
+      const province = (site?.province ?? '').trim()
+      if (!province) continue
+      counts.set(province, (counts.get(province) ?? 0) + 1)
+    }
+    return counts
+  }, [sites, terminals])
+
+  const cabinetCountBySiteId = useMemo(() => {
+    const counts = new Map<string, number>()
+    for (const terminal of terminals) {
+      counts.set(terminal.siteId, (counts.get(terminal.siteId) ?? 0) + 1)
+    }
+    return counts
+  }, [terminals])
+
+  const cabinetCountByAdminRegion = useMemo(() => {
+    const counts = new Map<string, number>()
+    for (const terminal of terminals) {
+      const site = sites.find((s) => s.id === terminal.siteId)
+      const regionId = site?.regionId
+      if (!regionId) continue
+      counts.set(regionId, (counts.get(regionId) ?? 0) + 1)
+    }
+    return counts
+  }, [sites, terminals])
+
   const regionOptions = useMemo(() => {
     if (regionMode === 'admin') {
       return regions
         .slice()
         .sort((a, b) => a.displayOrder - b.displayOrder || a.name.localeCompare(b.name))
-        .map((r) => ({ value: r.id, label: r.name }))
+        .map((r) => {
+          const count = cabinetCountByAdminRegion.get(r.id) ?? 0
+          return { value: r.id, label: `${r.name} (${count})` }
+        })
     }
     const names = new Set<string>()
     for (const site of sites) {
       const province = site.province?.trim()
       if (province) names.add(province)
     }
-    return [...names].sort((a, b) => a.localeCompare(b)).map((name) => ({ value: name, label: name }))
-  }, [regionMode, regions, sites])
+    return [...names]
+      .sort((a, b) => a.localeCompare(b))
+      .map((name) => {
+        const count = cabinetCountByProvince.get(name) ?? 0
+        return { value: name, label: `${name} (${count})` }
+      })
+  }, [regionMode, regions, sites, cabinetCountByProvince, cabinetCountByAdminRegion])
 
   const points = useMemo(
     () => buildTerminalPoints(sites, terminals, regionFilter, siteFilter, regionMode),
@@ -288,9 +329,10 @@ export function TerminalsMap({
     <div className="map-card">
       <div className="map-card-header">
         <div>
-          <h2>Terminals in Malaysia</h2>
+          <h2>Cabinets & location report</h2>
           <p className="muted">
-            Key cabinet locations by GPS coordinates or unit geography. Filter by region and unit.
+            Select a cabinet on the map or list to scope the location report. Download exports key
+            pickup and return records for that location.
           </p>
         </div>
         <SegmentedControl
@@ -308,7 +350,7 @@ export function TerminalsMap({
         <div className="map-canvas-wrap">
           {mapError ? (
             <div className="empty-state" style={{ margin: 16 }}>
-              Map unavailable: {mapError}. Terminal list still works.
+              Map unavailable: {mapError}. Cabinet list still works.
             </div>
           ) : (
             <div className="map-canvas" ref={mapEl} />
@@ -316,12 +358,12 @@ export function TerminalsMap({
           {selected && (
             <div className="layout-map-detail">
               <strong>{selected.name}</strong>
-              <span>Unit: {selected.siteName}</span>
+              <span>Location: {selected.siteName}</span>
               <span className="mono">ID: {selected.id}</span>
               <span>
                 Status:{' '}
                 <span className={`badge${selected.paired ? ' badge-success' : ''}`}>
-                  {selected.paired ? 'Paired' : 'Not paired'}
+                  {selected.paired ? 'Set up' : 'Not set up'}
                 </span>
               </span>
               {!selected.known && (
@@ -336,7 +378,7 @@ export function TerminalsMap({
 
           <div className="map-filter-stack">
             <label className="map-filter-label">
-              {regionMode === 'admin' ? 'Region' : 'State / region'}
+              {regionMode === 'admin' ? 'Location' : 'State / location'}
               <select
                 value={regionFilter}
                 onChange={(e) => {
@@ -346,7 +388,9 @@ export function TerminalsMap({
                 }}
               >
                 <option value="all">
-                  {regionMode === 'admin' ? 'All regions' : 'All states'}
+                  {regionMode === 'admin'
+                    ? `All locations (${terminals.length})`
+                    : `All states (${terminals.length})`}
                 </option>
                 {regionOptions.map((option) => (
                   <option key={option.value} value={option.value}>
@@ -357,16 +401,16 @@ export function TerminalsMap({
             </label>
             {regionMode === 'province' && regionOptions.length === 0 && (
               <p className="muted map-filter-hint">
-                Set each unit&apos;s Malaysian state on Unit Settings so this filter has options.
+                Set each location&apos;s Malaysian state on Location Settings so this filter has options.
               </p>
             )}
             {regionMode === 'admin' && regionOptions.length === 0 && (
               <p className="muted map-filter-hint">
-                No admin regions yet — assign a region on each unit to enable this filter.
+                No admin locations yet — assign a location on each site to enable this filter.
               </p>
             )}
             <label className="map-filter-label">
-              Unit
+              Location
               <select
                 value={siteFilter}
                 onChange={(e) => {
@@ -374,12 +418,22 @@ export function TerminalsMap({
                   onSelectTerminal(null)
                 }}
               >
-                <option value="all">All units</option>
-                {sitesInRegion.map((site) => (
-                  <option key={site.id} value={site.id}>
-                    {site.name}
-                  </option>
-                ))}
+                <option value="all">
+                  All locations (
+                  {sitesInRegion.reduce(
+                    (sum, site) => sum + (cabinetCountBySiteId.get(site.id) ?? 0),
+                    0,
+                  )}
+                  )
+                </option>
+                {sitesInRegion.map((site) => {
+                  const count = cabinetCountBySiteId.get(site.id) ?? 0
+                  return (
+                    <option key={site.id} value={site.id}>
+                      {site.name} ({count})
+                    </option>
+                  )
+                })}
               </select>
             </label>
           </div>
@@ -406,6 +460,8 @@ export function TerminalsMap({
           )}
         </div>
       </div>
+
+      {footer ? <div className="map-card-footer">{footer}</div> : null}
     </div>
   )
 }

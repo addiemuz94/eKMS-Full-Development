@@ -452,15 +452,10 @@ class TerminalAdminStore(context: Context) {
     }
 
     /**
-     * Local event outbox: terminal-originated records (starting with the
-     * Key Take Flow's take/failed-take/abandoned-take/door-left-open
-     * events — see CLAUDE.md "Terminal App UX Baseline (Production)" §1)
-     * persisted here using the same shared [AuditEvent] shape the eventual
-     * backend's `POST /v1/audit/events` expects. There is no sync transport
-     * yet — see the "no backend yet" project status — so nothing drains
-     * this today; it exists so a future sync pass has real data to send
-     * rather than needing to be retrofitted. [terminalId]/[siteId] are left
-     * null until this terminal has a real backend-assigned identity.
+     * Local event outbox: take/return (and related) audits pushed via
+     * [TerminalSyncCoordinator.push] into MySQL `audit_events` for the
+     * Super Admin Activity Report. Stamps [terminalId]/[siteId] from the
+     * paired cabinet when available so offline rows stay attributable.
      */
     @Synchronized
     fun logEvent(
@@ -470,12 +465,15 @@ class TerminalAdminStore(context: Context) {
         entityId: String? = null,
         detail: String? = null,
     ): AuditEvent {
+        val settings = readCabinetSettings()
+        val terminalId = settings.cabinetId.trim().ifBlank { null }
+        val siteId = settings.siteId.trim().ifBlank { null }
         val event = AuditEvent(
             id = "event_" + UUID.randomUUID().toString(),
             eventType = eventType,
             actorUserId = actorUserId,
-            terminalId = null,
-            siteId = null,
+            terminalId = terminalId,
+            siteId = siteId,
             entityType = entityType,
             entityId = entityId,
             occurredAtEpochMillis = System.currentTimeMillis(),
@@ -506,6 +504,7 @@ class TerminalAdminStore(context: Context) {
         val mergedSettings = current.copy(
             cabinetName = snapshot.terminal.name.ifBlank { current.cabinetName },
             cabinetId = snapshot.terminal.id.ifBlank { current.cabinetId },
+            siteId = snapshot.terminal.siteId.ifBlank { current.siteId },
             configuredKeyNodeCount = snapshot.terminal.configuredSlotCount.coerceIn(
                 MIN_KEY_NODE_COUNT,
                 MAX_KEY_NODE_COUNT,
@@ -703,6 +702,7 @@ class TerminalAdminStore(context: Context) {
             val loaded = TerminalCabinetSettings(
                 cabinetName = item.optString("cabinetName", ""),
                 cabinetId = item.optString("cabinetId", ""),
+                siteId = item.optString("siteId", ""),
                 serverAddress = TerminalApiClient.resolveProductionBaseUrl(
                     item.optString("serverAddress", ""),
                 ),
@@ -746,6 +746,7 @@ class TerminalAdminStore(context: Context) {
         val item = JSONObject()
             .put("cabinetName", settings.cabinetName)
             .put("cabinetId", settings.cabinetId)
+            .put("siteId", settings.siteId)
             .put("serverAddress", settings.serverAddress)
             .put("activationCode", settings.activationCode)
             .put("configuredKeyNodeCount", settings.configuredKeyNodeCount)
@@ -863,6 +864,8 @@ data class TerminalAdminSnapshot(
 data class TerminalCabinetSettings(
     val cabinetName: String = "",
     val cabinetId: String = "",
+    /** Unit (site) id from bootstrap/download — stamped onto local audit events. */
+    val siteId: String = "",
     /** Device-local API base; defaults to production. Admin Menu / pairing Advanced may override for LAN. */
     val serverAddress: String = TerminalApiClient.DEFAULT_BASE_URL,
     val activationCode: String = "",

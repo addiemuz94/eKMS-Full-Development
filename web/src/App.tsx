@@ -18,15 +18,14 @@ const TerminalsPage = lazy(() =>
 const PersonnelPage = lazy(() =>
   import('./pages/PersonnelPage').then((m) => ({ default: m.PersonnelPage })),
 )
-const KeysPage = lazy(() => import('./pages/KeysPage').then((m) => ({ default: m.KeysPage })))
-const PermissionsPage = lazy(() =>
-  import('./pages/PermissionsPage').then((m) => ({ default: m.PermissionsPage })),
-)
-const KeyAccessPage = lazy(() =>
-  import('./pages/KeyAccessPage').then((m) => ({ default: m.KeyAccessPage })),
-)
 const DataSyncPage = lazy(() =>
   import('./pages/DataSyncPage').then((m) => ({ default: m.DataSyncPage })),
+)
+const ActivityReportPage = lazy(() =>
+  import('./pages/LogsPages').then((m) => ({ default: m.ActivityReportPage })),
+)
+const ActivityArchivePage = lazy(() =>
+  import('./pages/LogsPages').then((m) => ({ default: m.ActivityArchivePage })),
 )
 const KeyRecordsPage = lazy(() =>
   import('./pages/LogsPages').then((m) => ({ default: m.KeyRecordsPage })),
@@ -42,6 +41,12 @@ const EquipmentLogsPage = lazy(() =>
 )
 const RecycleBinPage = lazy(() =>
   import('./pages/RecycleBinPage').then((m) => ({ default: m.RecycleBinPage })),
+)
+const FlushDataPage = lazy(() =>
+  import('./pages/FlushDataPage').then((m) => ({ default: m.FlushDataPage })),
+)
+const WebsiteSettingsPage = lazy(() =>
+  import('./pages/WebsiteSettingsPage').then((m) => ({ default: m.WebsiteSettingsPage })),
 )
 
 function RequireAuth({ children }: { children: React.ReactNode }) {
@@ -109,6 +114,8 @@ export default function App() {
             </Suspense>
           }
         />
+        <Route path="previous-cabinets" element={<Navigate to="/activity-archive" replace />} />
+        <Route path="personnel/cabinets" element={<Navigate to="/terminals" replace />} />
         <Route
           path="personnel"
           element={
@@ -117,30 +124,9 @@ export default function App() {
             </Suspense>
           }
         />
-        <Route
-          path="keys"
-          element={
-            <Suspense fallback={<PageFallback />}>
-              <KeysPage />
-            </Suspense>
-          }
-        />
-        <Route
-          path="permissions"
-          element={
-            <Suspense fallback={<PageFallback />}>
-              <PermissionsPage />
-            </Suspense>
-          }
-        />
-        <Route
-          path="key-access"
-          element={
-            <Suspense fallback={<PageFallback />}>
-              <KeyAccessPage />
-            </Suspense>
-          }
-        />
+        <Route path="keys" element={<Navigate to="/terminals" replace />} />
+        <Route path="permissions" element={<Navigate to="/terminals" replace />} />
+        <Route path="key-access" element={<Navigate to="/terminals" replace />} />
         <Route path="events" element={<Navigate to="/terminals" replace />} />
         <Route path="schedules" element={<Navigate to="/terminals" replace />} />
         <Route path="multi-auth" element={<Navigate to="/terminals" replace />} />
@@ -151,6 +137,22 @@ export default function App() {
           element={
             <Suspense fallback={<PageFallback />}>
               <DataSyncPage />
+            </Suspense>
+          }
+        />
+        <Route
+          path="activity-report"
+          element={
+            <Suspense fallback={<PageFallback />}>
+              <ActivityReportPage />
+            </Suspense>
+          }
+        />
+        <Route
+          path="activity-archive"
+          element={
+            <Suspense fallback={<PageFallback />}>
+              <ActivityArchivePage />
             </Suspense>
           }
         />
@@ -191,6 +193,22 @@ export default function App() {
           element={
             <Suspense fallback={<PageFallback />}>
               <RecycleBinPage />
+            </Suspense>
+          }
+        />
+        <Route
+          path="flush-data"
+          element={
+            <Suspense fallback={<PageFallback />}>
+              <FlushDataPage />
+            </Suspense>
+          }
+        />
+        <Route
+          path="settings"
+          element={
+            <Suspense fallback={<PageFallback />}>
+              <WebsiteSettingsPage />
             </Suspense>
           }
         />

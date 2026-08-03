@@ -1,8 +1,53 @@
 import { Router } from 'express';
 import { z } from 'zod';
 import pool from '../db.js';
-import { queryKeyCheckoutReportRows, streamKeyOperationsPdf } from '../reportPdf.js';
-import { badRequest, conflict, newId, notFound, nowMs, writeAudit } from '../util.js';
+import {
+  queryKeyCheckoutReportRows,
+  streamActivityLogsPdf,
+  streamKeyOperationsPdf,
+} from '../reportPdf.js';
+import { badRequest, conflict, newId, notFound, nowMs, writeAudit, appendCabinetScopeSql, parseCabinetScope } from '../util.js';
+
+const ACTIVITY_CATEGORY_TYPES = {
+  KEY_TAKE: ['KEY_TAKEN', 'KEY_TAKE_FAILED', 'KEY_TAKE_ABANDONED', 'KEY_TAKE_DOOR_LEFT_OPEN'],
+  KEY_RETURN: [
+    'KEY_RETURNED',
+    'KEY_RETURN_FAILED',
+    'KEY_RETURN_ABANDONED',
+    'KEY_RETURN_DOOR_LEFT_OPEN',
+  ],
+  CABINET_REGISTRATION: ['TERMINAL_CREATED', 'TERMINAL_PAIRED'],
+  PERSONNEL_REGISTRATION: ['PERSONNEL_REGISTERED'],
+};
+
+const ALL_ACTIVITY_CATEGORIES = Object.keys(ACTIVITY_CATEGORY_TYPES);
+
+function parseActivityCategories(raw) {
+  if (raw == null || raw === '') return [...ALL_ACTIVITY_CATEGORIES];
+  const list = Array.isArray(raw)
+    ? raw
+    : String(raw)
+        .split(',')
+        .map((s) => s.trim())
+        .filter(Boolean);
+  const valid = list.filter((c) => ACTIVITY_CATEGORY_TYPES[c]);
+  return valid.length ? valid : [...ALL_ACTIVITY_CATEGORIES];
+}
+
+function eventTypesForCategories(categories) {
+  const types = [];
+  for (const cat of categories) {
+    types.push(...(ACTIVITY_CATEGORY_TYPES[cat] || []));
+  }
+  return [...new Set(types)];
+}
+
+function categoryForEventType(eventType) {
+  for (const [cat, types] of Object.entries(ACTIVITY_CATEGORY_TYPES)) {
+    if (types.includes(eventType)) return cat;
+  }
+  return null;
+}
 
 function softDeleteRouter({ table, mapRow, createSchema, updateSchema, insertSql, updateSql, entityType }) {
   const router = Router();
@@ -569,7 +614,7 @@ appointmentPermissionsRouter.patch('/:id', async (req, res) => {
   return res.json(mapAppointment(rows[0], await appointmentKeyIds(req.params.id)));
 });
 
-async function queryAudit(req, eventTypes) {
+async function queryAudit(req, eventTypes, options = {}) {
   const siteId = req.query.siteId;
   const terminalId = req.query.terminalId;
   const userId = req.query.userId;
@@ -577,9 +622,12 @@ async function queryAudit(req, eventTypes) {
   const fromMs = req.query.fromEpochMillis ? Number(req.query.fromEpochMillis) : null;
   const toMs = req.query.untilEpochMillis ? Number(req.query.untilEpochMillis) : null;
   const limit = Math.min(Number(req.query.limit || 100), 500);
+  const cabinetScope = options.cabinetScope ?? 'ACTIVE';
+
+  if (!eventTypes.length) return [];
 
   let sql = `SELECT * FROM audit_events WHERE event_type IN (${eventTypes.map((_, i) => `:t${i}`).join(',')})`;
-  const params = {};
+  let params = {};
   eventTypes.forEach((t, i) => {
     params[`t${i}`] = t;
   });
@@ -607,6 +655,7 @@ async function queryAudit(req, eventTypes) {
     sql += ` AND occurred_at_epoch_ms <= :toMs`;
     params.toMs = toMs;
   }
+  ({ sql, params } = appendCabinetScopeSql(sql, params, cabinetScope));
   sql += ` ORDER BY occurred_at_epoch_ms DESC LIMIT ${limit}`;
   const [rows] = await pool.execute(sql, params);
   return rows.map((row) => ({
@@ -616,9 +665,113 @@ async function queryAudit(req, eventTypes) {
     terminalId: row.terminal_id,
     siteId: row.site_id,
     actorUserId: row.actor_user_id,
+    entityType: row.entity_type,
     entityId: row.entity_id,
     detail: row.detail,
   }));
+}
+
+async function enrichActivityRows(rows) {
+  if (!rows.length) return [];
+  const siteIds = [...new Set(rows.map((r) => r.siteId).filter(Boolean))];
+  const terminalIds = [...new Set(rows.map((r) => r.terminalId).filter(Boolean))];
+  const actorIds = [...new Set(rows.map((r) => r.actorUserId).filter(Boolean))];
+
+  const siteNames = {};
+  const terminalNames = {};
+  const actorNames = {};
+
+  if (siteIds.length) {
+    const [sites] = await pool.query(
+      `SELECT id, name FROM sites WHERE id IN (${siteIds.map(() => '?').join(',')})`,
+      siteIds,
+    );
+    for (const s of sites) siteNames[s.id] = s.name;
+  }
+  if (terminalIds.length) {
+    const [terminals] = await pool.query(
+      `SELECT id, name FROM terminals WHERE id IN (${terminalIds.map(() => '?').join(',')})`,
+      terminalIds,
+    );
+    for (const t of terminals) terminalNames[t.id] = t.name;
+  }
+  if (actorIds.length) {
+    const [users] = await pool.query(
+      `SELECT id, display_name FROM users WHERE id IN (${actorIds.map(() => '?').join(',')})`,
+      actorIds,
+    );
+    for (const u of users) actorNames[u.id] = u.display_name;
+  }
+
+  return rows
+    .map((row) => ({
+      ...row,
+      category: categoryForEventType(row.eventType),
+      siteName: row.siteId ? siteNames[row.siteId] ?? null : null,
+      terminalName: row.terminalId ? terminalNames[row.terminalId] ?? null : null,
+      actorName: row.actorUserId ? actorNames[row.actorUserId] ?? null : null,
+    }))
+    .filter((row) => row.category != null);
+}
+
+async function queryActivityLogs(filter = {}) {
+  const categories = parseActivityCategories(filter.categories);
+  const eventTypes = eventTypesForCategories(categories);
+  const fakeReq = {
+    query: {
+      siteId: filter.siteId,
+      terminalId: filter.terminalId,
+      userId: filter.userId,
+      keyId: filter.keyId,
+      fromEpochMillis: filter.fromEpochMillis,
+      untilEpochMillis: filter.untilEpochMillis,
+      limit: filter.limit ?? 200,
+    },
+  };
+  const rows = await queryAudit(fakeReq, eventTypes, {
+    cabinetScope: filter.cabinetScope ?? 'ACTIVE',
+  });
+  return enrichActivityRows(rows);
+}
+
+async function queryActivitySummary(filter = {}) {
+  const categories = parseActivityCategories(filter.categories);
+  const byCategory = {};
+  for (const cat of ALL_ACTIVITY_CATEGORIES) byCategory[cat] = 0;
+  const cabinetScope = filter.cabinetScope ?? 'ACTIVE';
+
+  let total = 0;
+  for (const cat of categories) {
+    const types = ACTIVITY_CATEGORY_TYPES[cat];
+    if (!types.length) continue;
+    let sql = `SELECT COUNT(*) AS cnt FROM audit_events WHERE event_type IN (${types.map((_, i) => `:t${i}`).join(',')})`;
+    let params = {};
+    types.forEach((t, i) => {
+      params[`t${i}`] = t;
+    });
+    if (filter.siteId) {
+      sql += ` AND site_id = :siteId`;
+      params.siteId = filter.siteId;
+    }
+    if (filter.terminalId) {
+      sql += ` AND terminal_id = :terminalId`;
+      params.terminalId = filter.terminalId;
+    }
+    if (filter.fromEpochMillis != null && !Number.isNaN(Number(filter.fromEpochMillis))) {
+      sql += ` AND occurred_at_epoch_ms >= :fromMs`;
+      params.fromMs = Number(filter.fromEpochMillis);
+    }
+    if (filter.untilEpochMillis != null && !Number.isNaN(Number(filter.untilEpochMillis))) {
+      sql += ` AND occurred_at_epoch_ms <= :toMs`;
+      params.toMs = Number(filter.untilEpochMillis);
+    }
+    ({ sql, params } = appendCabinetScopeSql(sql, params, cabinetScope));
+    const [rows] = await pool.execute(sql, params);
+    const count = Number(rows[0]?.cnt ?? 0);
+    byCategory[cat] = count;
+    total += count;
+  }
+  return { total, byCategory };
 }
 
 const reportsRouter = Router();
@@ -633,6 +786,7 @@ reportsRouter.get('/system-operation-logs', async (req, res) => {
       'LOGIN_SUCCEEDED',
       'LOGIN_DENIED',
       'USER_ACCOUNT_STATUS_CHANGED',
+      'PERSONNEL_REGISTERED',
       'RECORD_MOVED_TO_BIN',
       'RECORD_RESTORED',
       'RECORD_PURGED',
@@ -659,9 +813,41 @@ reportsRouter.get('/equipment-operation-logs', async (req, res) => {
   });
 });
 
+reportsRouter.get('/activity-logs', async (req, res) => {
+  const items = await queryActivityLogs({
+    siteId: req.query.siteId,
+    terminalId: req.query.terminalId,
+    userId: req.query.userId,
+    keyId: req.query.keyId,
+    fromEpochMillis: req.query.fromEpochMillis,
+    untilEpochMillis: req.query.untilEpochMillis,
+    limit: req.query.limit,
+    categories: req.query.categories,
+    cabinetScope: parseCabinetScope(req.query.cabinetScope, 'ACTIVE'),
+  });
+  res.json({ items });
+});
+
+reportsRouter.get('/activity-summary', async (req, res) => {
+  const summary = await queryActivitySummary({
+    siteId: req.query.siteId,
+    terminalId: req.query.terminalId,
+    fromEpochMillis: req.query.fromEpochMillis,
+    untilEpochMillis: req.query.untilEpochMillis,
+    categories: req.query.categories,
+    cabinetScope: parseCabinetScope(req.query.cabinetScope, 'ACTIVE'),
+  });
+  res.json(summary);
+});
+
 reportsRouter.post('/exports', async (req, res) => {
   const schema = z.object({
-    kind: z.enum(['KEY_OPERATIONS', 'SYSTEM_OPERATION_LOGS', 'EQUIPMENT_OPERATION_LOGS']),
+    kind: z.enum([
+      'KEY_OPERATIONS',
+      'SYSTEM_OPERATION_LOGS',
+      'EQUIPMENT_OPERATION_LOGS',
+      'ACTIVITY_LOGS',
+    ]),
     format: z.enum(['PDF', 'EXCEL']),
     filter: z
       .object({
@@ -672,6 +858,17 @@ reportsRouter.post('/exports', async (req, res) => {
         fromEpochMillis: z.number().optional(),
         untilEpochMillis: z.number().optional(),
         limit: z.number().int().positive().optional(),
+        cabinetScope: z.enum(['ACTIVE', 'DELETED']).optional(),
+        categories: z
+          .array(
+            z.enum([
+              'KEY_TAKE',
+              'KEY_RETURN',
+              'CABINET_REGISTRATION',
+              'PERSONNEL_REGISTRATION',
+            ]),
+          )
+          .optional(),
       })
       .default({}),
   });
@@ -683,6 +880,9 @@ reportsRouter.post('/exports', async (req, res) => {
   if (parsed.data.kind === 'KEY_OPERATIONS') {
     const checkoutRows = await queryKeyCheckoutReportRows(pool, filter);
     rowCount = checkoutRows.length;
+  } else if (parsed.data.kind === 'ACTIVITY_LOGS') {
+    const items = await queryActivityLogs({ ...filter, limit: filter.limit ?? 500 });
+    rowCount = items.length;
   } else {
     const fakeReq = { query: { ...filter } };
     const eventMap = {
@@ -748,6 +948,31 @@ reportsRouter.get('/exports/:id', async (req, res) => {
       siteName = siteRows[0]?.name ?? null;
     }
     return streamKeyOperationsPdf(res, { rows, siteName, filter, generatedAtEpochMillis: now });
+  }
+
+  if (job.kind === 'ACTIVITY_LOGS') {
+    const rows = await queryActivityLogs({ ...filter, limit: filter.limit ?? 500 });
+    let siteName = null;
+    let terminalName = null;
+    if (filter.siteId) {
+      const [siteRows] = await pool.execute(`SELECT name FROM sites WHERE id = :id LIMIT 1`, {
+        id: filter.siteId,
+      });
+      siteName = siteRows[0]?.name ?? null;
+    }
+    if (filter.terminalId) {
+      const [termRows] = await pool.execute(`SELECT name FROM terminals WHERE id = :id LIMIT 1`, {
+        id: filter.terminalId,
+      });
+      terminalName = termRows[0]?.name ?? null;
+    }
+    return streamActivityLogsPdf(res, {
+      rows,
+      siteName,
+      terminalName,
+      filter,
+      generatedAtEpochMillis: now,
+    });
   }
 
   const fakeReq = { query: { ...filter } };

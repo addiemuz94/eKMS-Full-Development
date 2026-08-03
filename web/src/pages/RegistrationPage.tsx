@@ -1,24 +1,25 @@
 /**
- * Continuous new-unit registration wizard.
+ * Continuous new-location registration wizard (sites API; UI label = Location).
  *
- * Flow (one unit carried through every step — no re-selecting):
- *   1. Register Unit
- *   2. Key Cabinet(s) for that unit (no pairing code yet)
- *   3. Cabinet Settings (timers / certification / video toggles)
- *   4. Keys for that unit
- *   5. Permissions — grant existing personnel
- *   6. Generate pairing code(s) — last step, give to on-site technician
+ * Flow (one location/site carried through every step — no re-selecting):
+ *   1. Register Location
+ *   2. Key Cabinet(s) for that location (no setup code yet)
+ *   3. Keys for that location (same Layout/List UX as Key Settings)
+ *   4. Key Permission — allow existing personnel to take keys
+ *   5. Generate setup code(s) — last step, give to on-site technician
  *
- * Dialogs never close on backdrop click; Cancel / Save only.
+ * Cabinet behavioral settings (timers / video) live under Cabinet Management after
+ * the cabinet exists — not a wizard step. Dialogs never close on backdrop click.
  */
 import { useEffect, useMemo, useState, type FormEvent } from 'react'
 import { Check, Plus, X } from 'lucide-react'
 import { api, ApiError } from '../api/client'
-import { assignKeyToNextAvailableNode, countAvailableNodes } from '../api/keySlotAssignment'
-import type { KeyDto, KeySlotDto, SiteDto, TerminalDto, UserDto } from '../api/types'
-import { CabinetSettingsForm } from '../components/CabinetSettingsForm'
+import { layoutSummary, parseCabinetLayout } from '../api/cabinetLayout'
+import { CabinetLayoutFields } from '../components/CabinetLayoutFields'
+import type { KeyDto, SiteDto, TerminalDto, UserDto } from '../api/types'
 import { Button, LinearProgress, useConfirm } from '../components/ui'
 import { MALAYSIA_STATES, citiesForState } from '../geo/malaysiaLocations'
+import { KeysPage } from './KeysPage'
 
 type PairingBanner = {
   code: string
@@ -28,23 +29,20 @@ type PairingBanner = {
 }
 
 const STEPS = [
-  { label: 'Unit', title: 'Register Unit' },
+  { label: 'Location', title: 'Register Location' },
   { label: 'Key Cabinet', title: 'Register Key Cabinet' },
-  { label: 'Cabinet Settings', title: 'Cabinet Settings' },
   { label: 'Keys', title: 'Register Keys' },
-  { label: 'Permissions', title: 'Set Permissions' },
-  { label: 'Pairing Code', title: 'Generate Pairing Code' },
+  { label: 'Key Permission', title: 'Key Permission' },
+  { label: 'Setup Code', title: 'Setup Code' },
 ] as const
 
 function SectionHeader({
   step,
   title,
-  desc,
   unitName,
 }: {
   step: number
   title: string
-  desc: string
   unitName?: string | null
 }) {
   return (
@@ -54,19 +52,16 @@ function SectionHeader({
         {unitName ? (
           <>
             {' · '}
-            <span style={{ color: 'var(--md-sys-color-primary, #0055a5)' }}>Unit: {unitName}</span>
+            <span style={{ color: 'var(--md-sys-color-primary, #0055a5)' }}>Location: {unitName}</span>
           </>
         ) : null}
       </p>
-      <h2 style={{ margin: '0 0 6px' }}>{title}</h2>
-      <p className="muted" style={{ margin: 0 }}>
-        {desc}
-      </p>
+      <h2 style={{ margin: 0 }}>{title}</h2>
     </div>
   )
 }
 
-// ─── Step 1: Unit ────────────────────────────────────────────────────────────
+// ─── Step 1: Location (site) ─────────────────────────────────────────────────
 
 function StepUnit({
   unit,
@@ -82,7 +77,6 @@ function StepUnit({
   const [name, setName] = useState('')
   const [province, setProvince] = useState('')
   const [city, setCity] = useState('')
-  const [parentSiteId, setParentSiteId] = useState('')
   const cityOptions = useMemo(() => citiesForState(province), [province])
 
   async function reload() {
@@ -91,7 +85,7 @@ function StepUnit({
     try {
       setSites(await api.listSites())
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : 'Failed to load units')
+      setError(err instanceof ApiError ? err.message : 'Failed to load locations')
     } finally {
       setBusy(false)
     }
@@ -104,7 +98,7 @@ function StepUnit({
   async function onSave(e: FormEvent) {
     e.preventDefault()
     if (!name.trim()) {
-      setError('Unit name is required.')
+      setError('Location name is required.')
       return
     }
     if (!province) {
@@ -122,17 +116,15 @@ function StepUnit({
         name: name.trim(),
         province,
         city,
-        parentSiteId: parentSiteId || null,
       })
       setOpen(false)
       setName('')
       setProvince('')
       setCity('')
-      setParentSiteId('')
       await reload()
       onUnitReady(created)
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : 'Failed to register unit')
+      setError(err instanceof ApiError ? err.message : 'Failed to register location')
     } finally {
       setBusy(false)
     }
@@ -140,11 +132,7 @@ function StepUnit({
 
   return (
     <div>
-      <SectionHeader
-        step={1}
-        title="Register Unit"
-        desc="Create the new site/unit first. Every later step in this wizard stays locked to this unit — you will not choose it again."
-      />
+      <SectionHeader step={1} title="Register Location" />
       {error && <div className="error-banner">{error}</div>}
       {busy && <LinearProgress className="table-busy" label="Loading" />}
 
@@ -155,18 +143,18 @@ function StepUnit({
             ? ` · ${[unit.province, unit.city].filter(Boolean).join(', ')}`
             : ''}
           <p className="muted" style={{ margin: '8px 0 0' }}>
-            Continue to the next step, or register a different unit below (that becomes the active
+            Continue to the next step, or register a different location below (that becomes the active
             registration).
           </p>
         </div>
       ) : (
         <div className="notice" style={{ marginBottom: 16 }}>
-          No unit selected yet. Register a new unit to start this continuous registration.
+          No location selected yet. Register a new location to start this continuous registration.
         </div>
       )}
 
       <div className="toolbar-row" style={{ marginBottom: 12 }}>
-        <Button icon={Plus} onClick={() => { setError(null); setOpen(true) }}>Register new unit</Button>
+        <Button icon={Plus} onClick={() => { setError(null); setOpen(true) }}>Register new location</Button>
         {sites.length > 0 && (
           <select
             value={unit?.id ?? ''}
@@ -174,9 +162,9 @@ function StepUnit({
               const found = sites.find((s) => s.id === e.target.value)
               if (found) onUnitReady(found)
             }}
-            title="Or continue with an existing unit"
+            title="Or continue with an existing location"
           >
-            <option value="">Or continue with existing unit…</option>
+            <option value="">Or continue with existing location…</option>
             {sites.map((s) => (
               <option key={s.id} value={s.id}>
                 {s.name}
@@ -190,12 +178,12 @@ function StepUnit({
       {open && (
         <div className="dialog-backdrop">
           <form className="dialog" onSubmit={onSave}>
-            <h2>Register new unit</h2>
+            <h2>Register new location</h2>
             <p className="dialog-copy">
-              This unit is carried into Key Cabinet, Keys, Permissions, then Pairing Code.
+              This location is carried into Key Cabinet, Keys, Key Permission, then Setup Code.
             </p>
             <div className="field">
-              <label>Unit name</label>
+              <label>Location name</label>
               <input value={name} onChange={(e) => setName(e.target.value)} required placeholder="Johor HQ" />
             </div>
             <div className="field">
@@ -227,23 +215,12 @@ function StepUnit({
                 ))}
               </select>
             </div>
-            <div className="field">
-              <label>Superior unit (optional)</label>
-              <select value={parentSiteId} onChange={(e) => setParentSiteId(e.target.value)}>
-                <option value="">— None —</option>
-                {sites.map((s) => (
-                  <option key={s.id} value={s.id}>
-                    {s.name}
-                  </option>
-                ))}
-              </select>
-            </div>
             <div className="dialog-actions">
               <Button variant="outlined" icon={X} onClick={() => setOpen(false)}>
                 Cancel
               </Button>
               <Button type="submit" icon={Check} loading={busy}>
-                Save unit & continue
+                Save location & continue
               </Button>
             </div>
           </form>
@@ -253,9 +230,15 @@ function StepUnit({
   )
 }
 
-// ─── Step 2: Key Cabinet (unit locked, no pairing yet) ───────────────────────
+// ─── Step 2: Key Cabinet (location locked, no setup code yet) ────────────────
 
-function StepCabinet({ unit }: { unit: SiteDto }) {
+function StepCabinet({
+  unit,
+  onCabinetRegistered,
+}: {
+  unit: SiteDto
+  onCabinetRegistered: (pairing: PairingBanner) => void
+}) {
   const [terminals, setTerminals] = useState<TerminalDto[]>([])
   const [error, setError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
@@ -263,11 +246,9 @@ function StepCabinet({ unit }: { unit: SiteDto }) {
   const [open, setOpen] = useState(false)
   const [name, setName] = useState('')
   const [boxAddress, setBoxAddress] = useState('1')
-  const [serialNumber, setSerialNumber] = useState('')
-  const [nodeCount, setNodeCount] = useState('24')
+  const [nodeRows, setNodeRows] = useState('3')
+  const [nodesPerRow, setNodesPerRow] = useState('8')
   const [vendorDeviceId, setVendorDeviceId] = useState('')
-  const [nodeRows, setNodeRows] = useState('')
-  const [nodesPerRow, setNodesPerRow] = useState('')
   const [latitude, setLatitude] = useState('')
   const [longitude, setLongitude] = useState('')
 
@@ -291,43 +272,45 @@ function StepCabinet({ unit }: { unit: SiteDto }) {
   function resetForm() {
     setName('')
     setBoxAddress('1')
-    setSerialNumber('')
-    setNodeCount('24')
+    setNodeRows('3')
+    setNodesPerRow('8')
     setVendorDeviceId('')
-    setNodeRows('')
-    setNodesPerRow('')
     setLatitude('')
     setLongitude('')
   }
 
   async function onSave(e: FormEvent) {
     e.preventDefault()
-    const slots = Number(nodeCount)
-    if (!Number.isFinite(slots) || slots < 1 || slots > 127) {
-      setError('Configured node count must be between 1 and 127.')
+    const layout = parseCabinetLayout(nodeRows, nodesPerRow)
+    if (!layout.ok) {
+      setError(layout.message)
       return
     }
     setBusy(true)
     setError(null)
     try {
-      // Pairing code is issued by the API on create, but we deliberately do not show it here —
-      // Step 6 (Generate Pairing Code) is the only place the technician code is presented.
-      await api.createTerminal({
+      const result = await api.createTerminal({
         siteId: unit.id,
         name: name.trim() || `${unit.name} Cabinet`,
         boxAddress: Math.max(1, Number(boxAddress) || 1),
-        serialNumber: serialNumber.trim() || null,
-        configuredSlotCount: Math.min(127, Math.max(1, slots)),
+        configuredSlotCount: layout.value.totalSlots,
         vendorDeviceId: vendorDeviceId.trim() || null,
-        nodeRows: nodeRows.trim() ? Number(nodeRows) : null,
-        nodesPerRow: nodesPerRow.trim() ? Number(nodesPerRow) : null,
+        nodeRows: layout.value.rows,
+        nodesPerRow: layout.value.columns,
+        serialNumber: null,
         latitude: latitude.trim() ? Number(latitude) : null,
         longitude: longitude.trim() ? Number(longitude) : null,
+      })
+      onCabinetRegistered({
+        code: result.pairingCode,
+        expiresAtEpochMillis: result.pairingCodeExpiresAtEpochMillis,
+        terminalName: result.terminal.name,
+        terminalId: result.terminal.id,
       })
       setOpen(false)
       resetForm()
       setNotice(
-        `Cabinet registered under ${unit.name}. Pairing code is generated in the last step.`,
+        `Cabinet registered under ${unit.name}. The setup code is available in the final step.`,
       )
       await reload()
     } catch (err) {
@@ -339,12 +322,7 @@ function StepCabinet({ unit }: { unit: SiteDto }) {
 
   return (
     <div>
-      <SectionHeader
-        step={2}
-        title="Register Key Cabinet"
-        desc={`Cabinets are registered under “${unit.name}” only. Unit is already set — no need to choose again. Pairing code comes in the last step.`}
-        unitName={unit.name}
-      />
+      <SectionHeader step={2} title="Register Key Cabinet" unitName={unit.name} />
       {notice && <div className="notice">{notice}</div>}
       {error && <div className="error-banner">{error}</div>}
       {busy && <LinearProgress className="table-busy" label="Loading" />}
@@ -358,7 +336,7 @@ function StepCabinet({ unit }: { unit: SiteDto }) {
             setOpen(true)
           }}
         >
-          Register cabinet for this unit
+          Register cabinet for this location
         </Button>
       </div>
 
@@ -369,7 +347,7 @@ function StepCabinet({ unit }: { unit: SiteDto }) {
               <tr>
                 <th>Cabinet</th>
                 <th>Layout</th>
-                <th>Paired</th>
+                <th>Setup</th>
                 <th>Cabinet ID</th>
               </tr>
             </thead>
@@ -378,11 +356,11 @@ function StepCabinet({ unit }: { unit: SiteDto }) {
                 <tr key={t.id}>
                   <td className="cell-title">{t.name}</td>
                   <td>
-                    Box {t.boxAddress} · {t.configuredSlotCount} nodes
+                    Cabinet number {t.boxAddress} · {layoutSummary(t)}
                   </td>
                   <td>
                     <span className={`badge${t.paired ? ' badge-success' : ''}`}>
-                      {t.paired ? 'Paired' : 'Not paired'}
+                      {t.paired ? 'Set up' : 'Not set up'}
                     </span>
                   </td>
                   <td className="mono" style={{ fontSize: '0.78rem' }}>
@@ -396,7 +374,7 @@ function StepCabinet({ unit }: { unit: SiteDto }) {
       ) : (
         !busy && (
           <div className="empty-state">
-            No cabinets for this unit yet. Register one before continuing.
+            No cabinets for this location. Register a cabinet before continuing.
           </div>
         )
       )}
@@ -406,11 +384,11 @@ function StepCabinet({ unit }: { unit: SiteDto }) {
           <form className="dialog" onSubmit={onSave}>
             <h2>Register key cabinet</h2>
             <p className="dialog-copy">
-              Unit is fixed to <strong>{unit.name}</strong>. Pairing code will be generated in the
-              final wizard step — not shown here.
+              Location is fixed to <strong>{unit.name}</strong>. The setup code is issued on save and
+              shown in the final step.
             </p>
             <div className="field">
-              <label>Unit</label>
+              <label>Location</label>
               <input value={unit.name} disabled readOnly />
             </div>
             <div className="field">
@@ -422,35 +400,19 @@ function StepCabinet({ unit }: { unit: SiteDto }) {
                 placeholder={`${unit.name} Cabinet`}
               />
             </div>
-            <div className="split">
-              <div className="field">
-                <label>Box address</label>
-                <input value={boxAddress} onChange={(e) => setBoxAddress(e.target.value)} required />
-              </div>
-              <div className="field">
-                <label>Node count (1–127)</label>
-                <input value={nodeCount} onChange={(e) => setNodeCount(e.target.value)} required />
-              </div>
+            <div className="field">
+              <label>Cabinet number</label>
+              <input value={boxAddress} onChange={(e) => setBoxAddress(e.target.value)} required />
             </div>
-            <div className="split">
-              <div className="field">
-                <label>Serial number (optional)</label>
-                <input value={serialNumber} onChange={(e) => setSerialNumber(e.target.value)} />
-              </div>
-              <div className="field">
-                <label>Vendor device ID (optional)</label>
-                <input value={vendorDeviceId} onChange={(e) => setVendorDeviceId(e.target.value)} />
-              </div>
-            </div>
-            <div className="split">
-              <div className="field">
-                <label>Node rows (optional)</label>
-                <input value={nodeRows} onChange={(e) => setNodeRows(e.target.value)} />
-              </div>
-              <div className="field">
-                <label>Nodes per row (optional)</label>
-                <input value={nodesPerRow} onChange={(e) => setNodesPerRow(e.target.value)} />
-              </div>
+            <CabinetLayoutFields
+              rows={nodeRows}
+              columns={nodesPerRow}
+              onRowsChange={setNodeRows}
+              onColumnsChange={setNodesPerRow}
+            />
+            <div className="field">
+              <label>Vendor device ID (optional)</label>
+              <input value={vendorDeviceId} onChange={(e) => setVendorDeviceId(e.target.value)} />
             </div>
             <div className="split">
               <div className="field">
@@ -477,293 +439,23 @@ function StepCabinet({ unit }: { unit: SiteDto }) {
   )
 }
 
-// ─── Step 3: Cabinet Settings (per terminal of this unit) ────────────────────────────
-
-function StepCabinetSettings({ unit }: { unit: SiteDto }) {
-  const [terminals, setTerminals] = useState<TerminalDto[]>([])
-  const [selectedId, setSelectedId] = useState('')
-  const [error, setError] = useState<string | null>(null)
-  const [busy, setBusy] = useState(false)
-
-  async function reload() {
-    setBusy(true)
-    setError(null)
-    try {
-      const all = await api.listTerminals()
-      const mine = all.filter((t) => t.siteId === unit.id)
-      setTerminals(mine)
-      setSelectedId((prev) => {
-        if (prev && mine.some((t) => t.id === prev)) return prev
-        return mine[0]?.id ?? ''
-      })
-    } catch (err) {
-      setError(err instanceof ApiError ? err.message : 'Failed to load cabinets')
-    } finally {
-      setBusy(false)
-    }
-  }
-
-  useEffect(() => {
-    void reload()
-  }, [unit.id])
-
-  const selected = terminals.find((t) => t.id === selectedId) ?? null
-
-  return (
-    <div>
-      <SectionHeader
-        step={3}
-        title="Cabinet Settings"
-        desc={`Configure Take/Return warning times and video/certification toggles for cabinets under "${unit.name}". These sync to the device after pairing.`}
-        unitName={unit.name}
-      />
-      {error && <div className="error-banner">{error}</div>}
-      {busy && <LinearProgress className="table-busy" label="Loading" />}
-
-      {!busy && terminals.length === 0 ? (
-        <div className="empty-state">
-          No cabinets for this unit yet. Go back to Key Cabinet and register one first.
-        </div>
-      ) : (
-        <>
-          {terminals.length > 1 && (
-            <div className="field" style={{ marginBottom: 16, maxWidth: 420 }}>
-              <label>Cabinet</label>
-              <select value={selectedId} onChange={(e) => setSelectedId(e.target.value)}>
-                {terminals.map((t) => (
-                  <option key={t.id} value={t.id}>
-                    {t.name}
-                  </option>
-                ))}
-              </select>
-            </div>
-          )}
-          {selected && (
-            <div className="data-panel" style={{ padding: 16 }}>
-              <CabinetSettingsForm
-                terminal={selected}
-                title={terminals.length === 1 ? selected.name : undefined}
-              />
-            </div>
-          )}
-        </>
-      )}
-    </div>
-  )
-}
-
-
-// ─── Step 4: Keys (unit locked) ──────────────────────────────────────────────
+// ─── Step 3: Keys (same UX as Key Settings, location locked) ─────────────────
 
 function StepKeys({ unit }: { unit: SiteDto }) {
-  const [keys, setKeys] = useState<KeyDto[]>([])
-  const [terminals, setTerminals] = useState<TerminalDto[]>([])
-  const [slotsByTerminal, setSlotsByTerminal] = useState<Record<string, KeySlotDto[]>>({})
-  const [availableNodes, setAvailableNodes] = useState<number | null>(null)
-  const [error, setError] = useState<string | null>(null)
-  const [busy, setBusy] = useState(false)
-  const [open, setOpen] = useState(false)
-  const [displayName, setDisplayName] = useState('')
-  const [selectedTerminalId, setSelectedTerminalId] = useState('')
-
-  async function reload() {
-    setBusy(true)
-    setError(null)
-    try {
-      const [allKeys, allTerminals] = await Promise.all([api.listKeys(), api.listTerminals()])
-      setKeys(allKeys.filter((k) => k.siteId === unit.id))
-      const unitTerminals = allTerminals.filter((t) => t.siteId === unit.id)
-      setTerminals(unitTerminals)
-
-      const slotLists = await Promise.all(unitTerminals.map((t) => api.listKeySlots(t.id)))
-      const byTerminal: Record<string, KeySlotDto[]> = {}
-      unitTerminals.forEach((t, i) => {
-        byTerminal[t.id] = slotLists[i]
-      })
-      setSlotsByTerminal(byTerminal)
-
-      if (unitTerminals.length === 1) {
-        setAvailableNodes(await countAvailableNodes(unitTerminals[0]))
-      } else {
-        setAvailableNodes(null)
-      }
-    } catch (err) {
-      setError(err instanceof ApiError ? err.message : 'Failed to load keys')
-    } finally {
-      setBusy(false)
-    }
-  }
-
-  useEffect(() => {
-    void reload()
-  }, [unit.id])
-
-  function nodeLabelFor(keyId: string): string {
-    for (const terminal of terminals) {
-      const slot = (slotsByTerminal[terminal.id] ?? []).find((s) => s.managedKeyId === keyId)
-      if (slot) return `Node ${slot.nodeAddress}` + (terminals.length > 1 ? ` (${terminal.name})` : '')
-    }
-    return 'Not assigned'
-  }
-
-  async function onSave(e: FormEvent) {
-    e.preventDefault()
-    setBusy(true)
-    setError(null)
-    try {
-      const created = await api.createKey({ siteId: unit.id, displayName: displayName.trim() })
-      const targetTerminal =
-        terminals.length === 1 ? terminals[0] : terminals.find((t) => t.id === selectedTerminalId)
-      if (targetTerminal) {
-        const assignment = await assignKeyToNextAvailableNode(targetTerminal, created.id)
-        if (!assignment.ok) {
-          setError(
-            assignment.reason === 'CAPACITY_FULL'
-              ? `“${targetTerminal.name}” has no free key nodes left (${targetTerminal.configuredSlotCount} configured). The key was created but is not assigned to a cabinet slot.`
-              : `Key was created, but assigning a cabinet node failed: ${assignment.message}`,
-          )
-        }
-      } else if (terminals.length === 0) {
-        setError(
-          `“${unit.name}” has no cabinet registered yet — the key was created without a slot assignment. Register a Key Cabinet first.`,
-        )
-      }
-      setOpen(false)
-      setDisplayName('')
-      await reload()
-    } catch (err) {
-      setError(err instanceof ApiError ? err.message : 'Failed to save key')
-    } finally {
-      setBusy(false)
-    }
-  }
-
-  const capacityFull = terminals.length === 1 && availableNodes === 0
-
   return (
     <div>
-      <SectionHeader
-        step={4}
-        title="Register Keys"
-        desc={`Add managed keys for “${unit.name}”. Raw NFC UIDs never appear here.`}
-        unitName={unit.name}
-      />
-      {error && <div className="error-banner">{error}</div>}
-      {busy && <LinearProgress className="table-busy" label="Loading" />}
-
-      <div className="toolbar-row" style={{ marginBottom: 12 }}>
-        <Button
-          icon={Plus}
-          disabled={capacityFull}
-          onClick={() => {
-            setDisplayName('')
-            setSelectedTerminalId(terminals[0]?.id ?? '')
-            setError(null)
-            setOpen(true)
-          }}
-        >
-          Add key for this unit
-        </Button>
-        {terminals.length === 1 && availableNodes != null && (
-          <span className="muted" style={{ marginLeft: 12 }}>
-            {capacityFull
-              ? `Cabinet full — 0 of ${terminals[0].configuredSlotCount} nodes free`
-              : `${availableNodes} of ${terminals[0].configuredSlotCount} nodes free`}
-          </span>
-        )}
-      </div>
-
-      {keys.length ? (
-        <div className="data-panel">
-          <table className="data-table">
-            <thead>
-              <tr>
-                <th>Key</th>
-                <th>Cabinet node</th>
-                <th>Enrollment</th>
-              </tr>
-            </thead>
-            <tbody>
-              {keys.map((k) => (
-                <tr key={k.id}>
-                  <td className="cell-title">{k.displayName}</td>
-                  <td>{nodeLabelFor(k.id)}</td>
-                  <td>
-                    {k.fobEnrollmentReference ? (
-                      <span className="badge badge-success">Enrolled</span>
-                    ) : (
-                      <span className="muted">Not enrolled</span>
-                    )}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      ) : (
-        !busy && <div className="empty-state">No keys for this unit yet.</div>
-      )}
-
-      {open && (
-        <div className="dialog-backdrop">
-          <form className="dialog" onSubmit={onSave}>
-            <h2>Add key</h2>
-            <p className="dialog-copy">
-              Unit is fixed to <strong>{unit.name}</strong>.
-            </p>
-            <div className="field">
-              <label>Unit</label>
-              <input value={unit.name} disabled readOnly />
-            </div>
-            <div className="field">
-              <label>Key name</label>
-              <input value={displayName} onChange={(e) => setDisplayName(e.target.value)} required />
-            </div>
-            {terminals.length > 1 && (
-              <div className="field">
-                <label>Cabinet</label>
-                <select
-                  value={selectedTerminalId}
-                  onChange={(e) => setSelectedTerminalId(e.target.value)}
-                  required
-                >
-                  <option value="" disabled>
-                    Select the cabinet this key's node will be assigned in
-                  </option>
-                  {terminals.map((t) => (
-                    <option key={t.id} value={t.id}>
-                      {t.name} (Box {t.boxAddress})
-                    </option>
-                  ))}
-                </select>
-              </div>
-            )}
-            {terminals.length === 0 && (
-              <p className="dialog-copy muted">
-                No cabinet is registered for this unit yet — the key will be created without a
-                node assignment.
-              </p>
-            )}
-            <div className="dialog-actions">
-              <Button variant="outlined" icon={X} onClick={() => setOpen(false)}>
-                Cancel
-              </Button>
-              <Button type="submit" icon={Check} loading={busy}>
-                Save
-              </Button>
-            </div>
-          </form>
-        </div>
-      )}
+      <SectionHeader step={3} title="Register Keys" unitName={unit.name} />
+      <KeysPage lockedSiteId={unit.id} embedded />
     </div>
   )
 }
 
-// ─── Step 6: Permissions (unit locked) ───────────────────────────────────────
+// ─── Step 4: Key Permission (location locked) ───────────────────────────────
 
 function StepPermissions({ unit }: { unit: SiteDto }) {
   const [grants, setGrants] = useState<Record<string, unknown>[]>([])
   const [users, setUsers] = useState<UserDto[]>([])
+  const [allUserNames, setAllUserNames] = useState<UserDto[]>([])
   const [keys, setKeys] = useState<KeyDto[]>([])
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
@@ -781,13 +473,21 @@ function StepPermissions({ unit }: { unit: SiteDto }) {
         api.listKeys(),
       ])
       const unitKeys = keyRows.filter((k) => k.siteId === unit.id)
-      setUsers(userRows)
+      const assigned = userRows.filter(
+        (u) => u.role !== 'SUPER_ADMIN' && (u.assignedSiteIds ?? []).includes(unit.id),
+      )
+      setAllUserNames(userRows)
+      setUsers(assigned)
       setKeys(unitKeys)
       setGrants(grantRows.filter((g) => g.siteId === unit.id))
-      if (!userId && userRows[0]) setUserId(userRows[0].id)
-      if (!keyId && unitKeys[0]) setKeyId(unitKeys[0].id)
+      setUserId((prev) =>
+        prev && assigned.some((u) => u.id === prev) ? prev : (assigned[0]?.id ?? ''),
+      )
+      setKeyId((prev) =>
+        prev && unitKeys.some((k) => k.id === prev) ? prev : (unitKeys[0]?.id ?? ''),
+      )
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : 'Failed to load permissions')
+      setError(err instanceof ApiError ? err.message : 'Failed to load key permissions')
     } finally {
       setBusy(false)
     }
@@ -810,7 +510,7 @@ function StepPermissions({ unit }: { unit: SiteDto }) {
       setOpen(false)
       await reload()
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : 'Failed to save grant')
+      setError(err instanceof ApiError ? err.message : 'Failed to save key permission')
     } finally {
       setBusy(false)
     }
@@ -818,12 +518,7 @@ function StepPermissions({ unit }: { unit: SiteDto }) {
 
   return (
     <div>
-      <SectionHeader
-        step={5}
-        title="Set Permissions"
-        desc={`Grant keys to existing personnel for “${unit.name}”. Manage unit assignments on the Personnel page.`}
-        unitName={unit.name}
-      />
+      <SectionHeader step={4} title="Key Permission" unitName={unit.name} />
       {error && <div className="error-banner">{error}</div>}
       {busy && <LinearProgress className="table-busy" label="Loading" />}
 
@@ -836,11 +531,19 @@ function StepPermissions({ unit }: { unit: SiteDto }) {
           }}
           disabled={!users.length || !keys.length}
         >
-          Add access grant
+          Add key permission
         </Button>
       </div>
 
-      {grants.length ? (
+      {!keys.length && !busy ? (
+        <div className="empty-state">
+          Register at least one key for this location before granting key permission.
+        </div>
+      ) : !users.length && !busy ? (
+        <div className="empty-state">
+          Assign personnel to this location in User Management before granting key permission.
+        </div>
+      ) : grants.length ? (
         <div className="data-panel">
           <table className="data-table">
             <thead>
@@ -853,7 +556,7 @@ function StepPermissions({ unit }: { unit: SiteDto }) {
               {grants.map((g) => (
                 <tr key={String(g.id)}>
                   <td className="cell-title">
-                    {users.find((u) => u.id === g.userId)?.displayName ?? String(g.userId)}
+                    {allUserNames.find((u) => u.id === g.userId)?.displayName ?? String(g.userId)}
                   </td>
                   <td>
                     {Array.isArray(g.keyIds)
@@ -868,18 +571,19 @@ function StepPermissions({ unit }: { unit: SiteDto }) {
           </table>
         </div>
       ) : (
-        !busy && <div className="empty-state">No grants for this unit yet.</div>
+        !busy && <div className="empty-state">No key permissions for this location yet.</div>
       )}
 
       {open && (
         <div className="dialog-backdrop">
           <form className="dialog" onSubmit={onSave}>
-            <h2>Add access grant</h2>
+            <h2>Grant key permission</h2>
             <p className="dialog-copy">
-              Unit is fixed to <strong>{unit.name}</strong>.
+              Location is fixed to <strong>{unit.name}</strong>. Personnel listed are those assigned
+              to this location.
             </p>
             <div className="field">
-              <label>Unit</label>
+              <label>Location</label>
               <input value={unit.name} disabled readOnly />
             </div>
             <div className="field">
@@ -907,7 +611,7 @@ function StepPermissions({ unit }: { unit: SiteDto }) {
                 Cancel
               </Button>
               <Button type="submit" icon={Check} loading={busy}>
-                Save
+                Grant key permission
               </Button>
             </div>
           </form>
@@ -917,9 +621,17 @@ function StepPermissions({ unit }: { unit: SiteDto }) {
   )
 }
 
-// ─── Step 7: Pairing code (LAST) ─────────────────────────────────────────────
+// ─── Step 5: Setup code (LAST) ───────────────────────────────────────────────
 
-function StepPairing({ unit }: { unit: SiteDto }) {
+function StepPairing({
+  unit,
+  issuedPairings,
+  onPairingIssued,
+}: {
+  unit: SiteDto
+  issuedPairings: Record<string, PairingBanner>
+  onPairingIssued: (pairing: PairingBanner) => void
+}) {
   const { confirmAction, dialog } = useConfirm()
   const [terminals, setTerminals] = useState<TerminalDto[]>([])
   const [pairing, setPairing] = useState<PairingBanner | null>(null)
@@ -943,12 +655,31 @@ function StepPairing({ unit }: { unit: SiteDto }) {
     void reload()
   }, [unit.id])
 
+  function showStoredCode(terminal: TerminalDto) {
+    const stored = issuedPairings[terminal.id]
+    if (stored) {
+      setPairing(stored)
+      return true
+    }
+    return false
+  }
+
   async function onGenerate(terminal: TerminalDto) {
+    // Prefer the create-time code when still held in wizard state.
+    if (!terminal.paired && showStoredCode(terminal)) {
+      return
+    }
+
+    const hasStored = Boolean(issuedPairings[terminal.id])
+    const needsRevokeWarning = terminal.paired || hasStored
+    const message = needsRevokeWarning
+      ? 'Generate a new setup code for this cabinet? Any previous code and existing device session will be revoked. Copy the new code before leaving this page.'
+      : 'Issue a 6-digit setup code for this cabinet? Copy the code before leaving this page for the on-site technician.'
+
     if (
       !(await confirmAction({
-        message:
-          'Generate a 6-digit pairing code for this cabinet? If a previous code or device session exists, it will be revoked. Copy the new code for the on-site technician.',
-        danger: true,
+        message,
+        danger: needsRevokeWarning,
       }))
     ) {
       return
@@ -957,15 +688,17 @@ function StepPairing({ unit }: { unit: SiteDto }) {
     setError(null)
     try {
       const result = await api.regenerateTerminalPairingCode(terminal.id)
-      setPairing({
+      const banner: PairingBanner = {
         code: result.code,
         expiresAtEpochMillis: result.expiresAtEpochMillis,
         terminalName: terminal.name,
         terminalId: terminal.id,
-      })
+      }
+      onPairingIssued(banner)
+      setPairing(banner)
       await reload()
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : 'Failed to generate pairing code')
+      setError(err instanceof ApiError ? err.message : 'Failed to generate setup code')
     } finally {
       setBusy(false)
     }
@@ -973,18 +706,13 @@ function StepPairing({ unit }: { unit: SiteDto }) {
 
   return (
     <div>
-      <SectionHeader
-        step={6}
-        title="Generate Pairing Code"
-        desc={`Last step. Issue the one-time 6-digit code for a cabinet under “${unit.name}”. The on-site technician enters it on the terminal; settings then download from the database.`}
-        unitName={unit.name}
-      />
+      <SectionHeader step={5} title="Setup Code" unitName={unit.name} />
       {error && <div className="error-banner">{error}</div>}
       {busy && <LinearProgress className="table-busy" label="Loading" />}
 
       {pairing && (
         <div className="notice pairing-code-banner" role="status">
-          <h3>Pairing code — copy now</h3>
+          <h3>Setup code (copy before leaving this page)</h3>
           <p className="muted">
             For <strong>{pairing.terminalName}</strong>. Shown once — the server only stores a hash.
             Expires {new Date(pairing.expiresAtEpochMillis).toLocaleString()}.
@@ -1005,33 +733,40 @@ function StepPairing({ unit }: { unit: SiteDto }) {
             <thead>
               <tr>
                 <th>Cabinet</th>
-                <th>Paired</th>
+                <th>Setup</th>
                 <th className="col-actions">Actions</th>
               </tr>
             </thead>
             <tbody>
-              {terminals.map((t) => (
-                <tr key={t.id}>
-                  <td className="cell-title">{t.name}</td>
-                  <td>
-                    <span className={`badge${t.paired ? ' badge-success' : ''}`}>
-                      {t.paired ? 'Paired' : 'Not paired'}
-                    </span>
-                  </td>
-                  <td className="col-actions">
-                    <Button variant="link" disabled={busy} onClick={() => void onGenerate(t)}>
-                      Generate 6-digit code
-                    </Button>
-                  </td>
-                </tr>
-              ))}
+              {terminals.map((t) => {
+                const hasCode = Boolean(issuedPairings[t.id])
+                return (
+                  <tr key={t.id}>
+                    <td className="cell-title">{t.name}</td>
+                    <td>
+                      <span className={`badge${t.paired ? ' badge-success' : ''}`}>
+                        {t.paired ? 'Set up' : 'Not set up'}
+                      </span>
+                    </td>
+                    <td className="col-actions">
+                      <Button variant="link" disabled={busy} onClick={() => void onGenerate(t)}>
+                        {hasCode && !t.paired
+                          ? 'Show setup code'
+                          : t.paired || hasCode
+                            ? 'Regenerate setup code'
+                            : 'Generate setup code'}
+                      </Button>
+                    </td>
+                  </tr>
+                )
+              })}
             </tbody>
           </table>
         </div>
       ) : (
         !busy && (
           <div className="empty-state">
-            No cabinets for this unit. Go back to step 2 and register a key cabinet first.
+            No cabinets for this location. Register a key cabinet in step 2 first.
           </div>
         )
       )}
@@ -1046,20 +781,96 @@ function StepPairing({ unit }: { unit: SiteDto }) {
 export function RegistrationPage() {
   const [step, setStep] = useState(0)
   const [unit, setUnit] = useState<SiteDto | null>(null)
+  const [issuedPairings, setIssuedPairings] = useState<Record<string, PairingBanner>>({})
+  const [cabinetCount, setCabinetCount] = useState(0)
+  const [keyCount, setKeyCount] = useState(0)
+  const [gateMessage, setGateMessage] = useState<string | null>(null)
+
+  function rememberPairing(pairing: PairingBanner) {
+    setIssuedPairings((prev) => ({ ...prev, [pairing.terminalId]: pairing }))
+  }
+
+  async function refreshCounts(siteId: string): Promise<{ cabinets: number; keys: number }> {
+    try {
+      const [terms, keys] = await Promise.all([api.listTerminals(), api.listKeys()])
+      const cabinets = terms.filter((t) => t.siteId === siteId).length
+      const keyTotal = keys.filter((k) => k.siteId === siteId).length
+      setCabinetCount(cabinets)
+      setKeyCount(keyTotal)
+      return { cabinets, keys: keyTotal }
+    } catch {
+      return { cabinets: cabinetCount, keys: keyCount }
+    }
+  }
+
+  useEffect(() => {
+    if (!unit) {
+      setCabinetCount(0)
+      setKeyCount(0)
+      return
+    }
+    void refreshCounts(unit.id)
+  }, [unit, step])
+
+  function stepBlockedReason(
+    target: number,
+    cabinets = cabinetCount,
+    keys = keyCount,
+  ): string | null {
+    if (target <= 0) return null
+    if (!unit) return 'Register a location in step 1 first.'
+    if (target >= 2 && cabinets < 1) {
+      return 'Register at least one key cabinet before continuing to Keys or Setup Code.'
+    }
+    if (target >= 3 && keys < 1) {
+      return 'Register at least one key before continuing to Key Permission.'
+    }
+    return null
+  }
+
+  async function tryGoToStep(target: number) {
+    let cabinets = cabinetCount
+    let keys = keyCount
+    if (unit && target > 0) {
+      const counts = await refreshCounts(unit.id)
+      cabinets = counts.cabinets
+      keys = counts.keys
+    }
+    const reason = stepBlockedReason(target, cabinets, keys)
+    if (reason) {
+      setGateMessage(reason)
+      return
+    }
+    setGateMessage(null)
+    setStep(target)
+  }
 
   function goNext() {
-    if (step === 0 && !unit) return
-    setStep((s) => Math.min(s + 1, STEPS.length - 1))
+    void tryGoToStep(Math.min(step + 1, STEPS.length - 1))
   }
 
   function goPrev() {
+    setGateMessage(null)
     setStep((s) => Math.max(s - 1, 0))
   }
 
   function onUnitReady(site: SiteDto) {
     setUnit(site)
+    setIssuedPairings({})
+    setGateMessage(null)
     setStep(1)
   }
+
+  function resetWizard() {
+    setStep(0)
+    setUnit(null)
+    setIssuedPairings({})
+    setCabinetCount(0)
+    setKeyCount(0)
+    setGateMessage(null)
+  }
+
+  const nextBlocked = stepBlockedReason(step + 1)
 
   return (
     <section className="stack">
@@ -1067,41 +878,54 @@ export function RegistrationPage() {
         <div>
           <h1>Registration</h1>
           <p className="muted">
-            Continuous new-unit onboarding: register the unit once, then add its cabinets, keys and
-            permissions without re-selecting the unit. The 6-digit pairing code is generated only at
-            the last step for the on-site technician.
+            Register a location, then configure its cabinet, keys, permissions, and setup code.
           </p>
         </div>
       </div>
 
       <div className="wizard-stepper">
-        {STEPS.map((s, i) => (
-          <button
-            key={s.label}
-            type="button"
-            className={`wizard-step${i === step ? ' wizard-step-active' : ''}${i < step ? ' wizard-step-done' : ''}`}
-            onClick={() => {
-              if (i > 0 && !unit) return
-              setStep(i)
-            }}
-            disabled={i > 0 && !unit}
-            title={i > 0 && !unit ? 'Register a unit in step 1 first' : s.title}
-          >
-            <span className="wizard-step-num">{i + 1}</span>
-            <span className="wizard-step-label">{s.label}</span>
-          </button>
-        ))}
+        {STEPS.map((s, i) => {
+          const blocked = stepBlockedReason(i)
+          return (
+            <button
+              key={s.label}
+              type="button"
+              className={`wizard-step${i === step ? ' wizard-step-active' : ''}${i < step ? ' wizard-step-done' : ''}`}
+              onClick={() => void tryGoToStep(i)}
+              disabled={Boolean(blocked) && i !== step}
+              title={blocked ?? s.title}
+            >
+              <span className="wizard-step-num">{i + 1}</span>
+              <span className="wizard-step-label">{s.label}</span>
+            </button>
+          )
+        })}
       </div>
+
+      {gateMessage && <div className="error-banner">{gateMessage}</div>}
 
       <div className="card wizard-body">
         {step === 0 && <StepUnit unit={unit} onUnitReady={onUnitReady} />}
-        {step === 1 && unit && <StepCabinet unit={unit} />}
-        {step === 2 && unit && <StepCabinetSettings unit={unit} />}
-        {step === 3 && unit && <StepKeys unit={unit} />}
-        {step === 4 && unit && <StepPermissions unit={unit} />}
-        {step === 5 && unit && <StepPairing unit={unit} />}
+        {step === 1 && unit && (
+          <StepCabinet
+            unit={unit}
+            onCabinetRegistered={(pairing) => {
+              rememberPairing(pairing)
+              void refreshCounts(unit.id)
+            }}
+          />
+        )}
+        {step === 2 && unit && <StepKeys unit={unit} />}
+        {step === 3 && unit && <StepPermissions unit={unit} />}
+        {step === 4 && unit && (
+          <StepPairing
+            unit={unit}
+            issuedPairings={issuedPairings}
+            onPairingIssued={rememberPairing}
+          />
+        )}
         {step > 0 && !unit && (
-          <div className="empty-state">Register a unit in step 1 to continue.</div>
+          <div className="empty-state">Register a location in step 1 to continue.</div>
         )}
       </div>
 
@@ -1114,18 +938,12 @@ export function RegistrationPage() {
           {unit ? ` · ${unit.name}` : ''}
         </span>
         {step < STEPS.length - 1 ? (
-          <Button onClick={goNext} disabled={step === 0 && !unit}>
+          <Button onClick={goNext} disabled={Boolean(nextBlocked)} title={nextBlocked ?? undefined}>
             Next →
           </Button>
         ) : (
-          <Button
-            icon={Plus}
-            onClick={() => {
-              setStep(0)
-              setUnit(null)
-            }}
-          >
-            Start another unit
+          <Button icon={Plus} onClick={resetWizard}>
+            Start another location
           </Button>
         )}
       </div>

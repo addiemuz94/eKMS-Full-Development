@@ -33,6 +33,8 @@ export type TerminalDto = {
   /** True after a terminal redeemed a pairing code successfully. */
   paired?: boolean
   revision: number
+  /** Present when API returns lifecycle; list endpoints default to ACTIVE only. */
+  lifecycle?: { state?: string }
 }
 
 export type TerminalRegistrationResponse = {
@@ -132,4 +134,31 @@ export type KeyAccessRequestDto = {
   approvedByUserId?: string | null
   approvedAtEpochMillis?: number | null
   passkeyExpiresAtEpochMillis?: number | null
+}
+
+export type ReportCategory =
+  | 'KEY_TAKE'
+  | 'KEY_RETURN'
+  | 'CABINET_REGISTRATION'
+  | 'PERSONNEL_REGISTRATION'
+
+export type ActivityLogRow = {
+  id: string
+  occurredAtEpochMillis: number
+  eventType: string
+  category: ReportCategory
+  terminalId?: string | null
+  siteId?: string | null
+  actorUserId?: string | null
+  entityType?: string | null
+  entityId?: string | null
+  detail?: string | null
+  siteName?: string | null
+  terminalName?: string | null
+  actorName?: string | null
+}
+
+export type ActivitySummaryResponse = {
+  total: number
+  byCategory: Partial<Record<ReportCategory, number>>
 }

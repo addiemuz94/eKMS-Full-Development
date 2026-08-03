@@ -2,12 +2,28 @@ import { useCallback, useEffect, useMemo, useState, type FormEvent } from 'react
 import { Check, Plus, X } from 'lucide-react'
 import { api, ApiError } from '../api/client'
 import type { SiteDto, UserDto } from '../api/types'
+import { useAuth } from '../auth/AuthContext'
 import { Button, LinearProgress, useConfirm } from '../components/ui'
 
 type SortKey = 'name' | 'role' | 'site'
 type SortDir = 'asc' | 'desc'
 
+const ROLE_LABELS: Record<string, string> = {
+  SUPER_ADMIN: 'Super Admin',
+  REGIONAL_ADMIN: 'Regional Admin',
+  TECHNICIAN: 'Technician',
+  VENDOR: 'Vendor',
+  GOD_ADMIN: 'System account',
+}
+
+function isSelf(person: UserDto, session: { userId?: string; email: string } | null) {
+  if (!session) return false
+  if (session.userId && person.id === session.userId) return true
+  return person.email.trim().toLowerCase() === session.email.trim().toLowerCase()
+}
+
 export function PersonnelPage() {
+  const { session } = useAuth()
   const { confirmAction, dialog } = useConfirm()
   const [people, setPeople] = useState<UserDto[]>([])
   const [sites, setSites] = useState<SiteDto[]>([])
@@ -48,25 +64,40 @@ export function PersonnelPage() {
 
   function toggleSort(k: SortKey) {
     if (sort === k) setDir((d) => (d === 'asc' ? 'desc' : 'asc'))
-    else { setSort(k); setDir('asc') }
+    else {
+      setSort(k)
+      setDir('asc')
+    }
   }
-  const arrow = (k: SortKey) => sort === k ? (dir === 'asc' ? ' ↑' : ' ↓') : ''
+  const arrow = (k: SortKey) => (sort === k ? (dir === 'asc' ? ' ↑' : ' ↓') : '')
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase()
     return people
       .filter((p) => {
-        const sn = (p.assignedSiteIds ?? []).map((id) => sites.find((s) => s.id === id)?.name ?? '').join(' ')
-        const matchQ = !q || p.displayName.toLowerCase().includes(q) || p.email.toLowerCase().includes(q) || (p.staffId ?? '').toLowerCase().includes(q) || sn.toLowerCase().includes(q)
+        const sn = (p.assignedSiteIds ?? [])
+          .map((id) => sites.find((s) => s.id === id)?.name ?? '')
+          .join(' ')
+        const matchQ =
+          !q ||
+          p.displayName.toLowerCase().includes(q) ||
+          p.email.toLowerCase().includes(q) ||
+          (p.staffId ?? '').toLowerCase().includes(q) ||
+          sn.toLowerCase().includes(q)
         const matchRole = roleFilter === 'all' || p.role === roleFilter
         const matchSite = siteFilter === 'all' || (p.assignedSiteIds ?? []).includes(siteFilter)
         return matchQ && matchRole && matchSite
       })
       .sort((a, b) => {
-        let av = '', bv = ''
-        if (sort === 'name') { av = a.displayName; bv = b.displayName }
-        else if (sort === 'role') { av = a.role; bv = b.role }
-        else {
+        let av = '',
+          bv = ''
+        if (sort === 'name') {
+          av = a.displayName
+          bv = b.displayName
+        } else if (sort === 'role') {
+          av = a.role
+          bv = b.role
+        } else {
           av = (a.assignedSiteIds ?? []).map((id) => sites.find((s) => s.id === id)?.name ?? '').join()
           bv = (b.assignedSiteIds ?? []).map((id) => sites.find((s) => s.id === id)?.name ?? '').join()
         }
@@ -93,7 +124,7 @@ export function PersonnelPage() {
     setEmail(person.email)
     setStaffId(person.staffId ?? '')
     setRole(person.role)
-    setSiteId(person.assignedSiteIds?.[0] ?? '')
+    setSiteId(person.assignedSiteIds?.[0] ?? sites[0]?.id ?? '')
     setPassword('')
     setError(null)
     setOpen(true)
@@ -103,6 +134,10 @@ export function PersonnelPage() {
     e.preventDefault()
     if (!email.trim() || !email.includes('@')) {
       setError('Enter a valid account email.')
+      return
+    }
+    if (role !== 'SUPER_ADMIN' && !siteId) {
+      setError('Assign at least one location for this role.')
       return
     }
     setBusy(true)
@@ -132,7 +167,9 @@ export function PersonnelPage() {
       await reload()
     } catch (err) {
       if (err instanceof ApiError && err.status === 409) {
-        setError('This person was changed by someone else since you opened it. Reloading — please reapply.')
+        setError(
+          'This person was changed by someone else since you opened it. Reloading — please reapply.',
+        )
         setOpen(false)
         setEditingPerson(null)
         await reload()
@@ -148,10 +185,12 @@ export function PersonnelPage() {
     <section>
       <div className="page-header">
         <div>
-          <h1>Personnel Management</h1>
+          <h1>User Management</h1>
           <p className="muted">
-            Create technician and vendor accounts for each unit. NFC, fingerprint and face enrollment
-            stay on the physical terminal only — they are not stored in the portal database.
+            Create and edit user accounts for the organization. Assign people to a location under
+            Cabinet Management → Assign User. Super Admins can edit or move other Super Admin
+            accounts to deleted items (not their own signed-in account). Fingerprint, face, and card
+            enrollments stay stored on the cabinet only.
           </p>
         </div>
         <Button
@@ -162,7 +201,7 @@ export function PersonnelPage() {
             setOpen(true)
           }}
         >
-          Add personnel
+          Add person
         </Button>
       </div>
 
@@ -172,7 +211,7 @@ export function PersonnelPage() {
       <div className="toolbar-row">
         <input
           className="search"
-          placeholder="Search name, email, staff ID or unit…"
+          placeholder="Search name, email, staff ID or location…"
           value={query}
           onChange={(e) => setQuery(e.target.value)}
           style={{ flex: 1 }}
@@ -184,10 +223,12 @@ export function PersonnelPage() {
           <option value="REGIONAL_ADMIN">Regional Admin</option>
           <option value="SUPER_ADMIN">Super Admin</option>
         </select>
-        <select value={siteFilter} onChange={(e) => setSiteFilter(e.target.value)} title="Filter by unit">
-          <option value="all">All units</option>
+        <select value={siteFilter} onChange={(e) => setSiteFilter(e.target.value)} title="Filter by location">
+          <option value="all">All locations</option>
           {sites.map((s) => (
-            <option key={s.id} value={s.id}>{s.name}</option>
+            <option key={s.id} value={s.id}>
+              {s.name}
+            </option>
           ))}
         </select>
       </div>
@@ -197,54 +238,78 @@ export function PersonnelPage() {
           <table className="data-table">
             <thead>
               <tr>
-                <th style={{ cursor: 'pointer' }} onClick={() => toggleSort('name')}>Name{arrow('name')}</th>
+                <th style={{ cursor: 'pointer' }} onClick={() => toggleSort('name')}>
+                  Name{arrow('name')}
+                </th>
                 <th>Staff ID</th>
                 <th>Email</th>
-                <th style={{ cursor: 'pointer' }} onClick={() => toggleSort('role')}>Role{arrow('role')}</th>
+                <th style={{ cursor: 'pointer' }} onClick={() => toggleSort('role')}>
+                  Role{arrow('role')}
+                </th>
                 <th>Status</th>
-                <th style={{ cursor: 'pointer' }} onClick={() => toggleSort('site')}>Units{arrow('site')}</th>
+                <th style={{ cursor: 'pointer' }} onClick={() => toggleSort('site')}>
+                  Locations{arrow('site')}
+                </th>
                 <th>Credentials</th>
                 <th className="col-actions">Actions</th>
               </tr>
             </thead>
             <tbody>
-              {filtered.map((person) => (
-                <tr key={person.id}>
-                  <td className="cell-title">{person.displayName}</td>
-                  <td className="mono">{person.staffId?.trim() || '—'}</td>
-                  <td>{person.email}</td>
-                  <td>
-                    <span className="badge">{person.role}</span>
-                  </td>
-                  <td>
-                    <span className="badge">{person.accountStatus || 'ACTIVE'}</span>
-                  </td>
-                  <td>{siteLabel(person.assignedSiteIds)}</td>
-                  <td>
-                    <span className="badge">Terminal-local only</span>
-                  </td>
-                  <td className="col-actions">
-                    {person.role !== 'SUPER_ADMIN' && (
+              {filtered.map((person) => {
+                const self = isSelf(person, session)
+                return (
+                  <tr key={person.id}>
+                    <td className="cell-title">{person.displayName}</td>
+                    <td className="mono">{person.staffId?.trim() || '—'}</td>
+                    <td>{person.email}</td>
+                    <td>
+                      <span className="badge">{ROLE_LABELS[person.role] ?? person.role}</span>
+                    </td>
+                    <td>
+                      <span className="badge">{person.accountStatus || 'ACTIVE'}</span>
+                    </td>
+                    <td>{siteLabel(person.assignedSiteIds)}</td>
+                    <td>
+                      <span className="badge">Stored on cabinet only</span>
+                    </td>
+                    <td className="col-actions">
                       <div className="row-actions">
-                        <Button variant="link" onClick={() => openEdit(person)}>Edit</Button>
-                        <Button
-                          variant="link"
-                          onClick={() =>
-                            void (async () => {
-                              if (!(await confirmAction({ message: 'Move personnel to Recycle Bin?', danger: true })))
-                                return
-                              await api.deleteUser(person.id)
-                              await reload()
-                            })()
-                          }
-                        >
-                          Recycle
+                        <Button variant="link" onClick={() => openEdit(person)}>
+                          Edit
                         </Button>
+                        {self ? (
+                          <span className="muted" style={{ fontSize: '0.82rem' }}>
+                            Signed in
+                          </span>
+                        ) : (
+                          <Button
+                            variant="link"
+                            onClick={() =>
+                              void (async () => {
+                                if (
+                                  !(await confirmAction({
+                                    message:
+                                      person.role === 'SUPER_ADMIN'
+                                        ? 'Delete this Super Admin? They will move to Deleted items (can restore for 60 days) and lose portal access.'
+                                        : 'Delete this personnel account? It will move to Deleted items and can be restored for 60 days.',
+                                    danger: true,
+                                  }))
+                                ) {
+                                  return
+                                }
+                                await api.deleteUser(person.id)
+                                await reload()
+                              })()
+                            }
+                          >
+                            Delete
+                          </Button>
+                        )}
                       </div>
-                    )}
-                  </td>
-                </tr>
-              ))}
+                    </td>
+                  </tr>
+                )
+              })}
             </tbody>
           </table>
         </div>
@@ -257,7 +322,7 @@ export function PersonnelPage() {
           <form className="dialog" onSubmit={onSave}>
             <h2>{editingPerson ? 'Edit personnel' : 'Add personnel'}</h2>
             <p className="dialog-copy">
-              Same account can sign in on the web portal and (when server-linked) on the terminal.
+              Same account can sign in on the web portal and (when server-linked) on the cabinet.
             </p>
             <div className="field">
               <label>Display name</label>
@@ -279,23 +344,30 @@ export function PersonnelPage() {
               <div className="field">
                 <label>Role</label>
                 <select value={role} onChange={(e) => setRole(e.target.value)}>
-                  <option value="TECHNICIAN">TECHNICIAN</option>
-                  <option value="VENDOR">VENDOR</option>
-                  <option value="REGIONAL_ADMIN">REGIONAL_ADMIN</option>
-                  <option value="SUPER_ADMIN">SUPER_ADMIN</option>
+                  <option value="TECHNICIAN">Technician</option>
+                  <option value="VENDOR">Vendor</option>
+                  <option value="REGIONAL_ADMIN">Regional Admin</option>
+                  <option value="SUPER_ADMIN">Super Admin</option>
                 </select>
               </div>
               {role !== 'SUPER_ADMIN' && (
                 <div className="field">
-                  <label>Assigned unit</label>
+                  <label>Assigned location</label>
                   <select value={siteId} onChange={(e) => setSiteId(e.target.value)} required>
                     {sites.map((s) => (
-                      <option key={s.id} value={s.id}>{s.name}</option>
+                      <option key={s.id} value={s.id}>
+                        {s.name}
+                      </option>
                     ))}
                   </select>
                 </div>
               )}
             </div>
+            {role === 'SUPER_ADMIN' && (
+              <p className="muted" style={{ margin: '0 0 12px', fontSize: '0.88rem' }}>
+                Super Admin has org-wide access; location assignment is not required.
+              </p>
+            )}
             {!editingPerson && (
               <div className="field">
                 <label>Initial password (min 8, optional)</label>

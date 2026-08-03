@@ -20,7 +20,6 @@ export function UnitsPage() {
   const [name, setName] = useState('')
   const [province, setProvince] = useState('')
   const [city, setCity] = useState('')
-  const [parentSiteId, setParentSiteId] = useState('')
 
   const cityOptions = useMemo(() => citiesForState(province), [province])
 
@@ -30,7 +29,7 @@ export function UnitsPage() {
     try {
       setSites(await api.listSites())
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : 'Failed to load units')
+      setError(err instanceof ApiError ? err.message : 'Failed to load locations')
     } finally {
       setBusy(false)
     }
@@ -56,13 +55,11 @@ export function UnitsPage() {
     const q = query.trim().toLowerCase()
     return sites
       .filter((site) => {
-        const parent = sites.find((candidate) => candidate.id === site.parentSiteId)?.name ?? ''
         const matchesQuery =
           !q ||
           site.name.toLowerCase().includes(q) ||
           (site.province ?? '').toLowerCase().includes(q) ||
-          (site.city ?? '').toLowerCase().includes(q) ||
-          parent.toLowerCase().includes(q)
+          (site.city ?? '').toLowerCase().includes(q)
         const hasLocation = Boolean(site.province?.trim() && site.city?.trim())
         const matchesView = view === 'all' || hasLocation
         const matchesState = !stateFilter || (site.province ?? '') === stateFilter
@@ -79,7 +76,6 @@ export function UnitsPage() {
     setName('')
     setProvince('')
     setCity('')
-    setParentSiteId('')
   }
 
   function openEdit(site: SiteDto) {
@@ -87,7 +83,6 @@ export function UnitsPage() {
     setName(site.name)
     setProvince(site.province ?? '')
     setCity(site.city ?? '')
-    setParentSiteId(site.parentSiteId ?? '')
     setError(null)
     setOpen(true)
   }
@@ -95,7 +90,7 @@ export function UnitsPage() {
   async function onSave(e: FormEvent) {
     e.preventDefault()
     if (!name.trim()) {
-      setError('Unit name is required.')
+      setError('Location name is required.')
       return
     }
     if (!province) {
@@ -114,18 +109,16 @@ export function UnitsPage() {
           name: name.trim(),
           province,
           city,
-          parentSiteId: parentSiteId || null,
           expectedRevision: editingSite.revision,
         })
-        setNotice('Unit saved.')
+        setNotice('Location saved.')
       } else {
         await api.createSite({
           name: name.trim(),
           province,
           city,
-          parentSiteId: parentSiteId || null,
         })
-        setNotice('Unit saved.')
+        setNotice('Location saved.')
       }
       setOpen(false)
       setEditingSite(null)
@@ -134,13 +127,13 @@ export function UnitsPage() {
     } catch (err) {
       if (err instanceof ApiError && err.status === 409) {
         setError(
-          'This unit was changed by someone else since you opened it. Reloading the latest version — please reapply your edit.',
+          'This location was changed by someone else since you opened it. Reloading the latest version — please reapply your edit.',
         )
         setOpen(false)
         setEditingSite(null)
         await reload()
       } else {
-        setError(err instanceof ApiError ? err.message : 'Failed to save unit')
+        setError(err instanceof ApiError ? err.message : 'Failed to save location')
       }
     } finally {
       setBusy(false)
@@ -148,32 +141,28 @@ export function UnitsPage() {
   }
 
   async function onArchive(id: string) {
-    if (!(await confirmAction({ message: 'Move this unit to the Recycle Bin?', danger: true }))) return
+    if (!(await confirmAction({ message: 'Delete this location? It will move to Deleted items and can be restored for 60 days.', danger: true }))) return
     setBusy(true)
     setError(null)
     try {
       await api.deleteSite(id)
-      setNotice('Unit moved to Recycle Bin.')
+      setNotice('Location deleted.')
       await reload()
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : 'Failed to archive unit')
+      setError(err instanceof ApiError ? err.message : 'Failed to archive location')
     } finally {
       setBusy(false)
     }
   }
 
-  function parentName(site: SiteDto) {
-    if (!site.parentSiteId) return '—'
-    return sites.find((candidate) => candidate.id === site.parentSiteId)?.name ?? '—'
-  }
 
   return (
     <section>
       <div className="page-header">
         <div>
-          <h1>Unit Settings</h1>
+          <h1>Location Settings</h1>
           <p className="muted">
-            Create the organisation hierarchy used by terminals, personnel, keys, permissions and reports.
+            Create the organisation hierarchy used by cabinets, personnel, keys, permissions and reports.
           </p>
         </div>
         <Button
@@ -184,19 +173,19 @@ export function UnitsPage() {
             setOpen(true)
           }}
         >
-          Add unit
+          Add location
         </Button>
       </div>
 
       {notice && <div className="notice">{notice}</div>}
       {error && <div className="error-banner">{error}</div>}
 
-      {busy && <LinearProgress className="table-busy" label="Loading units" />}
+      {busy && <LinearProgress className="table-busy" label="Loading locations" />}
 
       <div className="toolbar-row">
         <input
           className="search"
-          placeholder="Search unit, state, city or superior unit"
+          placeholder="Search location, state, or city"
           value={query}
           onChange={(e) => setQuery(e.target.value)}
           style={{ flex: 1 }}
@@ -208,7 +197,7 @@ export function UnitsPage() {
           ))}
         </select>
         <SegmentedControl
-          ariaLabel="Unit filter"
+          ariaLabel="Location filter"
           value={view}
           onChange={setView}
           options={[
@@ -223,10 +212,9 @@ export function UnitsPage() {
           <table className="data-table">
             <thead>
               <tr>
-                <th style={{ cursor: 'pointer' }} onClick={() => toggleSort('name')}>Unit{arrow('name')}</th>
+                <th style={{ cursor: 'pointer' }} onClick={() => toggleSort('name')}>Location{arrow('name')}</th>
                 <th style={{ cursor: 'pointer' }} onClick={() => toggleSort('province')}>State / province{arrow('province')}</th>
                 <th style={{ cursor: 'pointer' }} onClick={() => toggleSort('city')}>City{arrow('city')}</th>
-                <th>Superior unit</th>
                 <th className="col-actions">Actions</th>
               </tr>
             </thead>
@@ -236,13 +224,12 @@ export function UnitsPage() {
                   <td className="cell-title">{site.name}</td>
                   <td>{site.province?.trim() || '—'}</td>
                   <td>{site.city?.trim() || '—'}</td>
-                  <td>{parentName(site)}</td>
                   <td className="col-actions">
                     <Button variant="link" onClick={() => openEdit(site)}>
                       Edit
                     </Button>
                     <Button variant="link" onClick={() => void onArchive(site.id)}>
-                      Recycle
+                      Delete
                     </Button>
                   </td>
                 </tr>
@@ -251,18 +238,18 @@ export function UnitsPage() {
           </table>
         </div>
       ) : (
-        !busy && <div className="empty-state">No active unit matches the current search.</div>
+        !busy && <div className="empty-state">No active location matches the current search.</div>
       )}
 
       {open && (
         <div className="dialog-backdrop">
           <form className="dialog" onSubmit={onSave}>
-            <h2>{editingSite ? 'Edit unit' : 'Add unit'}</h2>
+            <h2>{editingSite ? 'Edit location' : 'Add location'}</h2>
             <p className="dialog-copy">
-              Choose a Malaysian state/province and city so the unit appears correctly on the dashboard map.
+              Choose a Malaysian state/province and city so the location appears correctly on the dashboard map.
             </p>
             <div className="field">
-              <label>Unit name</label>
+              <label>Location name</label>
               <input value={name} onChange={(e) => setName(e.target.value)} required />
             </div>
             <div className="field">
@@ -294,19 +281,6 @@ export function UnitsPage() {
                 ))}
               </select>
             </div>
-            <div className="field">
-              <label>Superior unit (optional)</label>
-              <select value={parentSiteId} onChange={(e) => setParentSiteId(e.target.value)}>
-                <option value="">— None —</option>
-                {sites
-                  .filter((site) => site.id !== editingSite?.id)
-                  .map((site) => (
-                    <option key={site.id} value={site.id}>
-                      {site.name}
-                    </option>
-                  ))}
-              </select>
-            </div>
             <div className="dialog-actions">
               <Button
                 variant="outlined"
@@ -319,7 +293,7 @@ export function UnitsPage() {
                 Cancel
               </Button>
               <Button type="submit" icon={Check} loading={busy}>
-                {editingSite ? 'Save changes' : 'Save unit'}
+                {editingSite ? 'Save changes' : 'Save location'}
               </Button>
             </div>
           </form>
@@ -329,7 +303,7 @@ export function UnitsPage() {
       {busy && !open && !filtered.length && (
         <div className="busy-inline" style={{ marginTop: 16 }}>
           <CircularProgress size={22} />
-          Loading units…
+          Loading locations…
         </div>
       )}
 

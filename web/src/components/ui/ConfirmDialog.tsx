@@ -10,6 +10,15 @@ export type ConfirmOptions = {
   danger?: boolean
 }
 
+export type ConfirmTwiceOptions = {
+  title?: string
+  firstMessage: string
+  secondMessage: string
+  firstConfirmLabel?: string
+  secondConfirmLabel?: string
+  cancelLabel?: string
+}
+
 type ConfirmDialogProps = ConfirmOptions & {
   onConfirm: () => void
   onCancel: () => void
@@ -27,8 +36,10 @@ export function ConfirmDialog({
   return (
     <div className="dialog-backdrop">
       <div className="dialog" role="alertdialog" aria-modal="true">
-        <h2>{title ?? (danger ? 'Confirm' : 'Are you sure?')}</h2>
-        <p className="dialog-copy">{message}</p>
+        <h2>{title ?? (danger ? 'Confirm' : 'Confirm action')}</h2>
+        <p className="dialog-copy" style={{ whiteSpace: 'pre-wrap' }}>
+          {message}
+        </p>
         <div className="dialog-actions">
           <Button variant="outlined" icon={X} onClick={onCancel}>
             {cancelLabel}
@@ -54,6 +65,8 @@ type PendingConfirm = {
  * dialog. Render `dialog` once, anywhere in the component's JSX tree, and it appears
  * only while a confirmation is pending. Never resolves from a backdrop click, matching
  * every other dialog in this app.
+ *
+ * `confirmDangerTwice` runs two sequential danger dialogs; Cancel on either aborts.
  */
 export function useConfirm() {
   const [pending, setPending] = useState<PendingConfirm | null>(null)
@@ -63,6 +76,27 @@ export function useConfirm() {
       setPending({ options, resolve })
     })
   }, [])
+
+  const confirmDangerTwice = useCallback(
+    async (options: ConfirmTwiceOptions) => {
+      const first = await confirmAction({
+        title: options.title ?? 'Confirm deletion',
+        message: options.firstMessage,
+        confirmLabel: options.firstConfirmLabel ?? 'Continue',
+        cancelLabel: options.cancelLabel ?? 'Cancel',
+        danger: true,
+      })
+      if (!first) return false
+      return confirmAction({
+        title: options.title ?? 'Final confirmation',
+        message: options.secondMessage,
+        confirmLabel: options.secondConfirmLabel ?? 'Delete permanently',
+        cancelLabel: options.cancelLabel ?? 'Cancel',
+        danger: true,
+      })
+    },
+    [confirmAction],
+  )
 
   function settle(confirmed: boolean) {
     pending?.resolve(confirmed)
@@ -81,5 +115,5 @@ export function useConfirm() {
     />
   ) : null
 
-  return { confirmAction, dialog }
+  return { confirmAction, confirmDangerTwice, dialog }
 }

@@ -1,90 +1,158 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useState } from 'react'
+import { LogOut } from 'lucide-react'
 import { NavLink, Outlet, useLocation } from 'react-router-dom'
 import { useAuth } from '../auth/AuthContext'
-import { Button, SegmentedControl } from '../components/ui'
-import { useTheme, type ThemeMode } from '../theme/ThemeContext'
+import { Button } from '../components/ui'
 import { NAV_ICONS, type NavIconName } from './NavIcons'
 
-type NavItem = { to: string; label: string; icon: NavIconName; end?: boolean }
-type NavGroup = { title: string; icon: NavIconName; items: NavItem[] }
+type NavItem = {
+  to: string
+  label: string
+  description: string
+  icon: NavIconName
+  end?: boolean
+}
 
-const GROUPS: NavGroup[] = [
+type NavGroup = { kind: 'group'; title: string; items: NavItem[] }
+type NavTopLink = { kind: 'link'; item: NavItem }
+type NavEntry = NavTopLink | NavGroup
+
+const NAV: NavEntry[] = [
   {
-    title: 'Home',
-    icon: 'groupHome',
+    kind: 'link',
+    item: {
+      to: '/',
+      label: 'Home',
+      description: 'Location map and cabinet status overview',
+      icon: 'home',
+      end: true,
+    },
+  },
+  {
+    kind: 'group',
+    title: 'Cabinets',
     items: [
-      { to: '/', label: 'Dashboard', icon: 'home', end: true },
-      { to: '/registration', label: 'Registration', icon: 'units' },
+      {
+        to: '/registration',
+        label: 'Registration',
+        description: 'Register a location, cabinet, keys, and setup code',
+        icon: 'units',
+      },
+      {
+        to: '/terminals',
+        label: 'Cabinet Management',
+        description: 'Configure location, cabinet, keys, and access',
+        icon: 'terminals',
+      },
+      {
+        to: '/personnel',
+        label: 'User Management',
+        description: 'Create and manage personnel accounts',
+        icon: 'personnel',
+        end: true,
+      },
     ],
   },
   {
-    title: 'Cabinets & Settings',
-    icon: 'groupSettings',
+    kind: 'group',
+    title: 'Reports',
     items: [
-      { to: '/terminals', label: 'Terminals', icon: 'terminals' },
-      { to: '/personnel', label: 'Personnel Management', icon: 'personnel' },
-      { to: '/keys', label: 'Key Settings', icon: 'keys' },
-      { to: '/permissions', label: 'Permission Settings', icon: 'permissions' },
-      { to: '/key-access', label: 'Key Access', icon: 'keyAccess' },
+      {
+        to: '/activity-report',
+        label: 'Activity Report',
+        description: 'Key pickup, return, and registration events',
+        icon: 'keyRecords',
+      },
+      {
+        to: '/activity-archive',
+        label: 'Activity archive',
+        description: 'Activity for removed cabinets',
+        icon: 'recycleBin',
+      },
+      {
+        to: '/key-records',
+        label: 'Pickup & Return',
+        description: 'Key pickup and return history',
+        icon: 'keyRecords',
+      },
+      {
+        to: '/operation-logs',
+        label: 'Operation Log',
+        description: 'Cabinet operator action history',
+        icon: 'operationLogs',
+      },
     ],
   },
   {
-    title: 'Report Data',
-    icon: 'groupReports',
-    items: [
-      { to: '/key-records', label: 'Pickup & Return Records', icon: 'keyRecords' },
-      { to: '/operation-logs', label: 'Operation Log', icon: 'operationLogs' },
-    ],
-  },
-  {
+    kind: 'group',
     title: 'Logs',
-    icon: 'groupLogs',
     items: [
-      { to: '/system-logs', label: 'System Operation Log', icon: 'systemLogs' },
-      { to: '/equipment-logs', label: 'Equipment Operation Log', icon: 'equipmentLogs' },
+      {
+        to: '/system-logs',
+        label: 'System Log',
+        description: 'Portal and system events',
+        icon: 'systemLogs',
+      },
+      {
+        to: '/equipment-logs',
+        label: 'Equipment Log',
+        description: 'Hardware and equipment events',
+        icon: 'equipmentLogs',
+      },
     ],
   },
   {
-    title: 'Super Admin',
-    icon: 'groupAdmin',
-    items: [{ to: '/recycle-bin', label: 'Recycle Bin', icon: 'recycleBin' }],
+    kind: 'group',
+    title: 'Admin',
+    items: [
+      {
+        to: '/recycle-bin',
+        label: 'Deleted items',
+        description: 'Restore items removed in the last 60 days',
+        icon: 'recycleBin',
+      },
+      {
+        to: '/flush-data',
+        label: 'Erase data',
+        description: 'Permanently delete selected data (cannot be undone)',
+        icon: 'flushData',
+      },
+      {
+        to: '/settings',
+        label: 'Website settings',
+        description: 'Appearance preferences and sign out',
+        icon: 'settings',
+      },
+    ],
   },
 ]
 
-function pathInGroup(pathname: string, group: NavGroup) {
-  return group.items.some((item) =>
-    item.end ? pathname === item.to : pathname === item.to || pathname.startsWith(`${item.to}/`),
+function NavItemLink({ item }: { item: NavItem }) {
+  const ItemIcon = NAV_ICONS[item.icon]
+  return (
+    <NavLink
+      to={item.to}
+      end={item.end}
+      className={({ isActive }) => `nav-link${isActive ? ' active' : ''}`}
+      title={item.description}
+    >
+      <ItemIcon className="nav-icon" aria-hidden />
+      <span className="nav-link-text">
+        <span className="nav-link-label">{item.label}</span>
+        <span className="nav-link-desc">{item.description}</span>
+      </span>
+    </NavLink>
   )
 }
 
 export function AppShell() {
-  const { session, logout } = useAuth()
-  const { mode, setMode } = useTheme()
   const location = useLocation()
+  const { logout } = useAuth()
   const [navOpen, setNavOpen] = useState(false)
-  const [openGroups, setOpenGroups] = useState<Record<string, boolean>>(() => {
-    const initial: Record<string, boolean> = {}
-    for (const group of GROUPS) {
-      initial[group.title] = pathInGroup(location.pathname, group) || group.title === 'Home'
-    }
-    return initial
-  })
-
-  const activeGroupTitle = useMemo(
-    () => GROUPS.find((group) => pathInGroup(location.pathname, group))?.title ?? 'Home',
-    [location.pathname],
-  )
 
   useEffect(() => {
     setNavOpen(false)
   }, [location.pathname])
-
-  useEffect(() => {
-    setOpenGroups((current) => ({
-      ...current,
-      [activeGroupTitle]: true,
-    }))
-  }, [activeGroupTitle])
 
   useEffect(() => {
     document.body.style.overflow = navOpen ? 'hidden' : ''
@@ -92,13 +160,6 @@ export function AppShell() {
       document.body.style.overflow = ''
     }
   }, [navOpen])
-
-  function toggleGroup(title: string) {
-    setOpenGroups((current) => ({
-      ...current,
-      [title]: !current[title],
-    }))
-  }
 
   return (
     <div className={`app-shell${navOpen ? ' nav-open' : ''}`}>
@@ -112,7 +173,7 @@ export function AppShell() {
       )}
 
       <aside className="sidebar">
-        <div className="brand-block">
+        <div className="sidebar-brand brand-block">
           <div className="brand-mark">EK</div>
           <div>
             <h1 className="brand">eKMS</h1>
@@ -120,78 +181,63 @@ export function AppShell() {
           </div>
         </div>
 
-        {GROUPS.map((group) => {
-          const isOpen = Boolean(openGroups[group.title])
-          const GroupIcon = NAV_ICONS[group.icon]
-          return (
-            <section className={`sidebar-group${isOpen ? ' open' : ''}`} key={group.title}>
-              <button
-                className="sidebar-group-title"
-                type="button"
-                aria-expanded={isOpen}
-                onClick={() => toggleGroup(group.title)}
-              >
-                <span className="sidebar-group-label">
-                  <GroupIcon className="nav-icon" />
-                  <span>{group.title}</span>
-                </span>
-                <span className="sidebar-chevron" aria-hidden="true">
-                  {isOpen ? '▾' : '▸'}
-                </span>
-              </button>
-              {isOpen && (
-                <div className="nav-list">
-                  {group.items.map((item) => {
-                    const ItemIcon = NAV_ICONS[item.icon]
-                    return (
-                      <NavLink
-                        key={item.to}
-                        to={item.to}
-                        end={item.end}
-                        className={({ isActive }) => `nav-link${isActive ? ' active' : ''}`}
-                      >
-                        <ItemIcon className="nav-icon" />
-                        <span>{item.label}</span>
-                      </NavLink>
-                    )
-                  })}
+        <nav className="sidebar-nav" aria-label="Primary">
+          {NAV.map((entry) => {
+            if (entry.kind === 'link') {
+              return (
+                <section className="sidebar-group sidebar-top-link" key={entry.item.to}>
+                  <div className="nav-list">
+                    <NavItemLink item={entry.item} />
+                  </div>
+                </section>
+              )
+            }
+            return (
+              <section className="sidebar-group open" key={entry.title}>
+                <div className="sidebar-group-title sidebar-group-heading" aria-hidden={false}>
+                  <span className="sidebar-group-label">{entry.title}</span>
                 </div>
-              )}
-            </section>
-          )
-        })}
+                <div className="nav-list">
+                  {entry.items.map((item) => (
+                    <NavItemLink key={item.to} item={item} />
+                  ))}
+                </div>
+              </section>
+            )
+          })}
+        </nav>
+
+        <div className="sidebar-footer">
+          <Button
+            variant="outlined"
+            className="sidebar-logout"
+            icon={LogOut}
+            onClick={logout}
+          >
+            Sign out
+          </Button>
+        </div>
       </aside>
 
       <main className="main">
-        <div className="topbar">
-          <div className="topbar-left">
-            <Button
-              variant="tonal"
-              className="nav-toggle"
-              aria-expanded={navOpen}
-              aria-label={navOpen ? 'Close menu' : 'Open menu'}
-              onClick={() => setNavOpen((open) => !open)}
-            >
-              {navOpen ? 'Close' : 'Menu'}
-            </Button>
-            <div className="topbar-eyebrow">Website management portal</div>
-          </div>
-          <div className="session-pill">
-            <SegmentedControl<ThemeMode>
-              ariaLabel="Theme"
-              value={mode}
-              onChange={setMode}
-              options={[
-                { value: 'system', label: 'System' },
-                { value: 'light', label: 'Light' },
-                { value: 'dark', label: 'Dark' },
-              ]}
-            />
-            <span className="session-name">{session?.displayName}</span>
-            <Button variant="outlined" onClick={logout}>
-              Sign out
-            </Button>
-          </div>
+        <div className="topbar topbar-minimal">
+          <Button
+            variant="tonal"
+            className="nav-toggle"
+            aria-expanded={navOpen}
+            aria-label={navOpen ? 'Close menu' : 'Open menu'}
+            onClick={() => setNavOpen((open) => !open)}
+          >
+            {navOpen ? 'Close' : 'Menu'}
+          </Button>
+          <Button
+            variant="outlined"
+            className="topbar-logout"
+            icon={LogOut}
+            onClick={logout}
+          >
+            Sign out
+          </Button>
         </div>
         <div className="content">
           <Outlet />

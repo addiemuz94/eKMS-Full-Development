@@ -155,13 +155,13 @@ export function MultiAuthPage({ lockedSiteId, embedded = false }: Props = {}) {
       <div className={embedded ? 'embedded-header' : 'page-header'}>
         <div>
           {embedded ? (
-            <h3 style={{ margin: 0 }}>Multi-authentication Rules</h3>
+            <h3 style={{ margin: 0 }}>Two-person approval</h3>
           ) : (
-            <h1>Multi-authentication Rules</h1>
+            <h1>Two-person approval</h1>
           )}
           <p className="muted">
             {embedded
-              ? 'Primary and assistant personnel groups required for a key group in this unit.'
+              ? 'Primary and assistant personnel groups required for a key group in this location.'
               : 'Primary and assistant personnel groups required for a key group.'}
           </p>
         </div>
@@ -178,7 +178,7 @@ export function MultiAuthPage({ lockedSiteId, embedded = false }: Props = {}) {
           <table className="data-table">
             <thead>
               <tr>
-                {!lockedSiteId && <th>Unit</th>}
+                {!lockedSiteId && <th>Location</th>}
                 <th>Primary group</th>
                 <th>Assistant groups</th>
                 <th>Key group</th>
@@ -212,7 +212,8 @@ export function MultiAuthPage({ lockedSiteId, embedded = false }: Props = {}) {
                           void (async () => {
                             if (
                               !(await confirmAction({
-                                message: 'Move rule to Recycle Bin?',
+                                message:
+                                  'Delete this rule? It will move to Deleted items and can be restored for 60 days.',
                                 danger: true,
                               }))
                             )
@@ -222,7 +223,7 @@ export function MultiAuthPage({ lockedSiteId, embedded = false }: Props = {}) {
                           })()
                         }
                       >
-                        Recycle
+                        Delete
                       </Button>
                     </div>
                   </td>
@@ -233,20 +234,20 @@ export function MultiAuthPage({ lockedSiteId, embedded = false }: Props = {}) {
         </div>
       ) : (
         !busy && (
-          <div className="empty-state">No multi-auth rules yet. Create user and key groups first.</div>
+          <div className="empty-state">No two-person approval rules yet. Create user and key groups first.</div>
         )
       )}
 
       {open && (
         <div className="dialog-backdrop">
           <form className="dialog" onSubmit={onSave}>
-            <h2>{editingRule ? 'Edit multi-auth rule' : 'Add multi-auth rule'}</h2>
+            <h2>{editingRule ? 'Edit two-person approval rule' : 'Add two-person approval rule'}</h2>
             <p className="dialog-copy">
               Require one primary group plus optional assistant groups for a key group.
             </p>
             {!lockedSiteId && (
               <div className="field">
-                <label>Unit</label>
+                <label>Location</label>
                 <select value={siteId} onChange={(e) => setSiteId(e.target.value)} required>
                   {sites.map((site) => (
                     <option key={site.id} value={site.id}>

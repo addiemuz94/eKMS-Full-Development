@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import pool from '../db.js';
+import { appendCabinetScopeSql, parseCabinetScope } from '../util.js';
 
 const router = Router();
 
@@ -10,9 +11,11 @@ router.get('/', async (req, res) => {
   const fromMs = req.query.fromEpochMillis ? Number(req.query.fromEpochMillis) : null;
   const toMs = req.query.toEpochMillis ? Number(req.query.toEpochMillis) : null;
   const limit = Math.min(Number(req.query.limit || 100), 500);
+  // Default ACTIVE — deleted-cabinet history belongs on Activity archive / Deleted items.
+  const cabinetScope = parseCabinetScope(req.query.cabinetScope, 'ACTIVE');
 
   let sql = `SELECT * FROM audit_events WHERE 1=1`;
-  const params = {};
+  let params = {};
   if (siteId) {
     sql += ` AND site_id = :siteId`;
     params.siteId = siteId;
@@ -33,6 +36,7 @@ router.get('/', async (req, res) => {
     sql += ` AND occurred_at_epoch_ms <= :toMs`;
     params.toMs = toMs;
   }
+  ({ sql, params } = appendCabinetScopeSql(sql, params, cabinetScope));
   sql += ` ORDER BY occurred_at_epoch_ms DESC LIMIT ${limit}`;
 
   const [rows] = await pool.execute(sql, params);

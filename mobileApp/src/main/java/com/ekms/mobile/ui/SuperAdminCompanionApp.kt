@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Dns
 import androidx.compose.material.icons.filled.Home
+import androidx.compose.material.icons.filled.ListAlt
 import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material.icons.filled.PhoneAndroid
 import androidx.compose.material.icons.filled.VpnKey
@@ -54,6 +55,7 @@ import com.ekms.mobile.ui.auth.LoginScreen
 import com.ekms.mobile.ui.common.ConnectionStatusChip
 import com.ekms.mobile.ui.dashboard.DashboardScreen
 import com.ekms.mobile.ui.digitalkey.DigitalKeyComingSoonDialog
+import com.ekms.mobile.ui.logs.LogsScreen
 import com.ekms.mobile.ui.nav.MobileDestination
 import com.ekms.mobile.ui.terminals.TerminalsScreen
 import com.ekms.mobile.ui.theme.EkmsMobileTheme
@@ -163,8 +165,13 @@ fun SuperAdminCompanionApp() {
                 }
             },
             bottomBar = {
+                val destinations = if (profile?.role == UserRole.SUPER_ADMIN) {
+                    MobileDestination.entries
+                } else {
+                    MobileDestination.entries.filter { it != MobileDestination.LOGS }
+                }
                 NavigationBar {
-                    MobileDestination.entries.forEach { destination ->
+                    destinations.forEach { destination ->
                         NavigationBarItem(
                             selected = currentRoute == destination.route,
                             onClick = { goToTab(destination.route) },
@@ -261,6 +268,18 @@ fun SuperAdminCompanionApp() {
                                 onNotice = { notice = it },
                             )
                         }
+                        composable(MobileDestination.LOGS.route) {
+                            LogsScreen(
+                                apiClient = apiClient,
+                                profile = profile ?: apiClient.profile,
+                                refreshEpoch = refreshEpoch,
+                                onLiveStatus = { ok, busy ->
+                                    serverReachable = ok
+                                    syncing = busy
+                                },
+                                onNotice = { notice = it },
+                            )
+                        }
                     }
                 }
             }
@@ -290,4 +309,5 @@ private val MobileDestination.icon: ImageVector
         MobileDestination.TERMINALS -> Icons.Filled.Dns
         MobileDestination.ACCESS -> Icons.Filled.VpnKey
         MobileDestination.ALERTS -> Icons.Filled.Notifications
+        MobileDestination.LOGS -> Icons.Filled.ListAlt
     }

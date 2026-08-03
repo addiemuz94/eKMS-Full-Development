@@ -178,11 +178,11 @@ export function ResourcePage({
 
   async function onRemove(id: string) {
     if (!remove) return
-    if (!(await confirmAction({ message: 'Move this record to the Recycle Bin?', danger: true }))) return
+    if (!(await confirmAction({ message: 'Delete this record? It will move to Deleted items and can be restored for 60 days.', danger: true }))) return
     setBusy(true)
     try {
       await remove(id)
-      setNotice('Moved to Recycle Bin.')
+      setNotice('Record deleted.')
       await reload()
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'Delete failed')
@@ -216,8 +216,8 @@ export function ResourcePage({
           style={{ flex: 1 }}
         />
         {!lockedSiteId && sites.length > 0 && (
-          <select value={siteFilter} onChange={(e) => setSiteFilter(e.target.value)} title="Filter by unit">
-            <option value="all">All units</option>
+          <select value={siteFilter} onChange={(e) => setSiteFilter(e.target.value)} title="Filter by location">
+            <option value="all">All locations</option>
             {sites.map((s) => (
               <option key={s.id} value={s.id}>
                 {s.name}
@@ -262,7 +262,7 @@ export function ResourcePage({
                         )}
                         {remove && (
                           <Button variant="link" onClick={() => void onRemove(id)}>
-                            Recycle
+                            Delete
                           </Button>
                         )}
                         {extraActions?.(item, reload)}

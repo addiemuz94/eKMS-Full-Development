@@ -13,6 +13,7 @@ import {
   writeAudit,
 } from '../util.js';
 import { issuePairingCode, revokeTerminalSessions } from './pairing.js';
+import { cascadeSoftDeleteTerminal } from '../cascadeDelete.js';
 
 const router = Router();
 
@@ -398,42 +399,66 @@ router.patch('/:id', async (req, res) => {
 });
 
 router.delete('/:id', async (req, res) => {
+  const cascade = Boolean(req.body?.cascade);
   const [existing] = await pool.execute(
     `SELECT * FROM terminals WHERE id = :id AND lifecycle_state = 'ACTIVE' LIMIT 1`,
     { id: req.params.id },
   );
   if (!existing[0]) return notFound(res, 'Terminal not found');
 
-  const [[deps]] = await pool.execute(
-    `SELECT COUNT(*) AS c FROM key_slots WHERE terminal_id = :id AND lifecycle_state = 'ACTIVE'`,
-    { id: req.params.id },
-  );
-  if (Number(deps.c) > 0) {
-    return res.status(409).json({
-      error: 'DEPENDENCY_BLOCKED',
-      message: 'Terminal has active key slots',
-      dependentRecordCount: Number(deps.c),
+  if (!cascade) {
+    const [[deps]] = await pool.execute(
+      `SELECT COUNT(*) AS c FROM key_slots WHERE terminal_id = :id AND lifecycle_state = 'ACTIVE'`,
+      { id: req.params.id },
+    );
+    if (Number(deps.c) > 0) {
+      return res.status(409).json({
+        error: 'DEPENDENCY_BLOCKED',
+        message: 'Terminal has active key slots',
+        dependentRecordCount: Number(deps.c),
+      });
+    }
+
+    const now = nowMs();
+    await pool.execute(
+      `UPDATE terminals
+       SET lifecycle_state = 'RECYCLE_BIN', deleted_at_epoch_ms = :now, deleted_by_user_id = :actor,
+           revision = revision + 1, updated_at_epoch_ms = :now
+       WHERE id = :id AND lifecycle_state = 'ACTIVE'`,
+      { id: req.params.id, now, actor: req.auth.sub },
+    );
+    await writeAudit({
+      eventType: 'RECORD_MOVED_TO_BIN',
+      actorUserId: req.auth.sub,
+      siteId: existing[0].site_id,
+      terminalId: req.params.id,
+      entityType: 'TERMINAL',
+      entityId: req.params.id,
     });
+    const [rows] = await pool.execute(`SELECT * FROM terminals WHERE id = :id`, { id: req.params.id });
+    return res.json(mapTerminal(rows[0]));
   }
 
-  const now = nowMs();
-  await pool.execute(
-    `UPDATE terminals
-     SET lifecycle_state = 'RECYCLE_BIN', deleted_at_epoch_ms = :now, deleted_by_user_id = :actor,
-         revision = revision + 1, updated_at_epoch_ms = :now
-     WHERE id = :id AND lifecycle_state = 'ACTIVE'`,
-    { id: req.params.id, now, actor: req.auth.sub },
-  );
-  await writeAudit({
-    eventType: 'RECORD_MOVED_TO_BIN',
-    actorUserId: req.auth.sub,
-    siteId: existing[0].site_id,
-    terminalId: req.params.id,
-    entityType: 'TERMINAL',
-    entityId: req.params.id,
-  });
-  const [rows] = await pool.execute(`SELECT * FROM terminals WHERE id = :id`, { id: req.params.id });
-  return res.json(mapTerminal(rows[0]));
+  const conn = await pool.getConnection();
+  try {
+    await conn.beginTransaction();
+    const counts = await cascadeSoftDeleteTerminal(conn, {
+      terminalId: req.params.id,
+      siteId: existing[0].site_id,
+      actorUserId: req.auth.sub,
+    });
+    await conn.commit();
+    const [rows] = await pool.execute(`SELECT * FROM terminals WHERE id = :id`, { id: req.params.id });
+    return res.json({
+      ...mapTerminal(rows[0]),
+      cascade: counts,
+    });
+  } catch (err) {
+    await conn.rollback();
+    throw err;
+  } finally {
+    conn.release();
+  }
 });
 
 export default router;

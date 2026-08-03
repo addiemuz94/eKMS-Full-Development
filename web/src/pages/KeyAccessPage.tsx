@@ -8,7 +8,16 @@ function formatEpoch(ms?: number | null) {
   return new Date(ms).toLocaleString()
 }
 
-export function KeyAccessPage() {
+type Props = {
+  /** When set, only requests for this location are shown. */
+  lockedSiteId?: string
+  /** Hide page chrome when embedded in Cabinet Management. */
+  embedded?: boolean
+  /** Optional cabinet name for embedded copy. */
+  cabinetName?: string
+}
+
+export function KeyAccessPage({ lockedSiteId, embedded = false, cabinetName }: Props) {
   const { confirmAction, dialog } = useConfirm()
   const [requests, setRequests] = useState<KeyAccessRequestDto[]>([])
   const [users, setUsers] = useState<UserDto[]>([])
@@ -46,12 +55,13 @@ export function KeyAccessPage() {
 
   useEffect(() => {
     void reload()
-  }, [])
+  }, [lockedSiteId])
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase()
     return requests
       .filter((r) => {
+        if (lockedSiteId && r.siteId !== lockedSiteId) return false
         if (statusFilter === 'active') {
           if (r.status !== 'PENDING' && r.status !== 'APPROVED') return false
         } else if (statusFilter !== 'ALL' && r.status !== statusFilter) {
@@ -76,7 +86,7 @@ export function KeyAccessPage() {
         )
       })
       .sort((a, b) => b.requestedAtEpochMillis - a.requestedAtEpochMillis)
-  }, [requests, users, keys, sites, statusFilter, query])
+  }, [requests, users, keys, sites, statusFilter, query, lockedSiteId])
 
   async function approve(id: string) {
     setBusyId(id)
@@ -137,22 +147,48 @@ export function KeyAccessPage() {
     }
   }
 
+  const locationName =
+    (lockedSiteId && sites.find((s) => s.id === lockedSiteId)?.name) ||
+    (lockedSiteId ? 'this location' : null)
+
   return (
-    <div className="page">
+    <div className={embedded ? undefined : 'page'}>
       {dialog}
-      <div className="page-header">
-        <div>
-          <h1>Key Access</h1>
-          <p className="muted">
-            Exception access (Only B): approve pending requests to issue a PIN, or revoke an active
-            PIN so it no longer works at the cabinet. Standing unit permissions stay under Permission
-            Settings.
-          </p>
+      {!embedded && (
+        <div className="page-header">
+          <div>
+            <h1>Key Access</h1>
+            <p className="muted">
+              Approve pending exception-access requests to issue a PIN, or revoke an active PIN so it
+              no longer works at the cabinet. Standing location permissions are configured under
+              Cabinet Management → Key Permission.
+            </p>
+          </div>
+          <Button type="button" variant="tonal" onClick={() => void reload()} disabled={busy}>
+            Refresh
+          </Button>
         </div>
-        <Button type="button" variant="tonal" onClick={() => void reload()} disabled={busy}>
-          Refresh
-        </Button>
-      </div>
+      )}
+
+      {embedded && (
+        <div className="toolbar-row" style={{ marginBottom: 12, justifyContent: 'space-between' }}>
+          <p className="muted" style={{ margin: 0 }}>
+            Exception access for{' '}
+            <strong>{cabinetName ?? 'this cabinet'}</strong>
+            {locationName ? (
+              <>
+                {' '}
+                at <strong>{locationName}</strong>
+              </>
+            ) : null}
+            . Approve pending requests to issue a PIN, or revoke an active PIN. Standing permissions
+            are configured under Key Permission.
+          </p>
+          <Button type="button" variant="tonal" onClick={() => void reload()} disabled={busy}>
+            Refresh
+          </Button>
+        </div>
+      )}
 
       {busy && <LinearProgress />}
       {error && <div className="error-banner">{error}</div>}
@@ -161,7 +197,11 @@ export function KeyAccessPage() {
       <div className="toolbar-row">
         <input
           type="search"
-          placeholder="Search requester, unit, cabinet, key, reason…"
+          placeholder={
+            embedded
+              ? 'Search requester, key, reason…'
+              : 'Search requester, location, cabinet, key, reason…'
+          }
           value={query}
           onChange={(e) => setQuery(e.target.value)}
         />
@@ -176,14 +216,19 @@ export function KeyAccessPage() {
       </div>
 
       {filtered.length === 0 ? (
-        <div className="empty-state">No key access requests match this filter.</div>
+        <div className="empty-state">
+          {lockedSiteId
+            ? 'No key access requests for this location match this filter.'
+            : 'No key access requests match this filter.'}
+        </div>
       ) : (
         <div className="table-wrap">
           <table className="data-table">
             <thead>
               <tr>
                 <th>Requester</th>
-                <th>Unit / Cabinet</th>
+                {!embedded && <th>Location / Cabinet</th>}
+                {embedded && <th>Cabinets</th>}
                 <th>Keys</th>
                 <th>Window</th>
                 <th>Status</th>
@@ -211,12 +256,15 @@ export function KeyAccessPage() {
                         {r.reason ? <span className="muted">{r.reason}</span> : null}
                       </div>
                     </td>
-                    <td>
-                      <div className="cell-stack">
-                        <strong>{site}</strong>
-                        <span className="muted">{cabinets}</span>
-                      </div>
-                    </td>
+                    {!embedded && (
+                      <td>
+                        <div className="cell-stack">
+                          <strong>{site}</strong>
+                          <span className="muted">{cabinets}</span>
+                        </div>
+                      </td>
+                    )}
+                    {embedded && <td>{cabinets}</td>}
                     <td>{keyLabel || `${r.keyIds?.length ?? 0} key(s)`}</td>
                     <td>
                       <div className="cell-stack">

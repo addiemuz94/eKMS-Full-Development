@@ -10,7 +10,7 @@ The terminal does **not** talk to the React UI. It talks to the same backend the
 
 1. Sign in locally if needed (first Super Admin bootstrap), open **Admin Menu**.
 2. **Set server address** → defaults to `https://kms-cvt.com` (no trailing slash). Only change for LAN / non-production.
-3. **Key Cabinet ID** → UUID of this cabinet's terminal row from portal **Terminal Settings** (same id used in sync paths).
+3. **Key Cabinet ID** → UUID of this cabinet's terminal row from portal **Cabinet Management** (same id used in sync paths).
 4. Sign out, then sign in with a **portal** Super Admin email/password so `TerminalApiClient` stores JWT access/refresh tokens.
 5. Use **Bootstrap** / **Download** / **Push** (Admin Menu) for snapshot sync. Personnel create still uses admin user APIs when server-linked. **Do not** call credential complete/revoke APIs for NFC/fingerprint/face (policy A — terminal-local only, see `CLAUDE_BACKEND.md`).
 
@@ -18,7 +18,7 @@ The terminal does **not** talk to the React UI. It talks to the same backend the
 
 ## Web Portal — Registration Workflow: terminalApp's side of pairing
 
-The full portal-side registration workflow (wizard steps, `/terminals` page, cabinet behavioral settings) lives in `CLAUDE_WEB.md`. This section covers what terminalApp itself must do for pairing to work end-to-end.
+The full portal-side registration workflow (wizard steps, Cabinet Management `/terminals`, cabinet behavioral settings) lives in `CLAUDE_WEB.md`. This section covers what terminalApp itself must do for pairing to work end-to-end.
 
 Already in `terminalApp` (verify after `git pull` + rebuild):
 
@@ -32,12 +32,23 @@ Already in `terminalApp` (verify after `git pull` + rebuild):
 
 Operator checklist after Super Admin registers a Johor (or any) cabinet:
 
-1. Complete registration wizard through **Cabinet Settings** (or set Settings on `/terminals`), then note the **6-digit code** from the final pairing step (shown once; regenerate if lost — regenerating revokes the old device session).
+1. Complete registration wizard through **Cabinet Settings** (or open **Cabinet Management** on `/terminals` and set the selected cabinet’s Timers & video / Unit tabs), then note the **6-digit code** from the final pairing step (shown once; regenerate if lost — regenerating revokes the old device session).
 2. On site: open terminal → enter code (and server URL only if not using production default).
 3. Confirm bootstrap/download succeeds; Personnel/Keys/grants **and** Take/Return warning timers match the portal for that cabinet.
 4. Enroll NFC / fingerprint / face **on the terminal only** — those enrollments are **not** uploaded to MySQL (policy A).
 
 Manual Admin Menu pairing (server address + Key Cabinet UUID + Super Admin login) remains a fallback if pairing is unavailable.
+
+## Activity Report contribution (take/return audits)
+
+terminalApp does **not** show a Super Admin report UI (hardware / kiosk boundary). It **produces** take/return audit events:
+
+1. `TerminalAdminStore.logEvent(...)` writes `AuditEvent` rows to the local event outbox, stamping `terminalId` / `siteId` from paired cabinet settings (`cabinetId` + `siteId` from bootstrap/download).
+2. `TerminalSyncCoordinator.pushPending` sends `auditEvents` with the sync push; accepted rows are cleared from the outbox.
+3. Backend `ingestAuditEvents` preserves each event's original `occurredAtEpochMillis` (not push-receive time) and prefers the terminal event `id`.
+4. Portal/mobile **Activity Report** (`GET /v1/reports/activity-logs`, PDF `ACTIVITY_LOGS`) reads the same MySQL `audit_events` store. Cabinet/personnel registration events are written by the API when Super Admin creates them — not by the terminal.
+
+**Note:** `siteId` on cabinet settings is empty until a successful bootstrap/download after pairing — events logged before that still get `siteId` backfilled from the terminal row at push time.
 
 ## Terminal App UX Baseline (Production — baseline + defined enhancements)
 

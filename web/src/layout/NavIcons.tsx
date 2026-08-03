@@ -166,6 +166,18 @@ export function IconTrash({ className }: IconProps) {
   )
 }
 
+export function IconFlush({ className }: IconProps) {
+  return (
+    <Svg className={className}>
+      <path d="M3 6h18" />
+      <path d="M8 6V4h8v2" />
+      <path d="M19 6l-1 14H6L5 6" />
+      <path d="M10 11v6M14 11v6" />
+      <path d="M4 21h16" />
+    </Svg>
+  )
+}
+
 export function IconFolder({ className }: IconProps) {
   return (
     <Svg className={className}>
@@ -210,6 +222,15 @@ export function IconAdmin({ className }: IconProps) {
   )
 }
 
+export function IconSettings({ className }: IconProps) {
+  return (
+    <Svg className={className}>
+      <circle cx="12" cy="12" r="3" />
+      <path d="M12 2.5v2.2M12 19.3v2.2M2.5 12h2.2M19.3 12h2.2M4.9 4.9l1.6 1.6M17.5 17.5l1.6 1.6M4.9 19.1l1.6-1.6M17.5 6.5l1.6-1.6" />
+    </Svg>
+  )
+}
+
 export const NAV_ICONS = {
   home: IconHome,
   units: IconBuilding,
@@ -232,6 +253,8 @@ export const NAV_ICONS = {
   systemLogs: IconLogs,
   equipmentLogs: IconTerminal,
   recycleBin: IconTrash,
+  flushData: IconFlush,
+  settings: IconSettings,
   groupHome: IconHome,
   groupSettings: IconFolder,
   groupSync: IconSync,

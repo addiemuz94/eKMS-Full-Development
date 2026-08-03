@@ -19,8 +19,8 @@ export class ErrorBoundary extends Component<Props, State> {
       return (
         <div className="login-wrap">
           <div className="login-card">
-            <h1>{this.props.fallbackTitle ?? 'Something went wrong'}</h1>
-            <p className="muted">{this.state.error.message || 'The page failed to render.'}</p>
+            <h1>{this.props.fallbackTitle ?? 'An error occurred'}</h1>
+            <p className="muted">{this.state.error.message || 'This page failed to render.'}</p>
             <button
               className="btn"
               type="button"
@@ -33,7 +33,7 @@ export class ErrorBoundary extends Component<Props, State> {
                 window.location.href = '/login'
               }}
             >
-              Clear session and go to login
+              Clear session and return to sign in
             </button>
           </div>
         </div>

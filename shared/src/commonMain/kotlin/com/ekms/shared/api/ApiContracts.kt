@@ -92,8 +92,13 @@ object ApiPaths {
     const val REPORTS_KEY_OPERATIONS = "/v1/reports/key-operations"
     const val REPORTS_SYSTEM_LOGS = "/v1/reports/system-operation-logs"
     const val REPORTS_EQUIPMENT_LOGS = "/v1/reports/equipment-operation-logs"
+    const val REPORTS_ACTIVITY_LOGS = "/v1/reports/activity-logs"
+    const val REPORTS_ACTIVITY_SUMMARY = "/v1/reports/activity-summary"
     const val REPORTS_EXPORTS = "/v1/reports/exports"
     const val RECYCLE_BIN = "/v1/admin/recycle-bin"
+    /** Super Admin only. Permanent data wipe preview + execute (not Recycle Bin). */
+    const val ADMIN_FLUSH_PREVIEW = "/v1/admin/flush/preview"
+    const val ADMIN_FLUSH = "/v1/admin/flush"
     const val SYNC_BOOTSTRAP = "/v1/terminal/sync/bootstrap"
     const val SYNC_PUSH = "/v1/terminal/sync/push"
     const val TERMINAL_DATA_READ = "/v1/terminal/sync/read"
@@ -669,6 +674,16 @@ enum class ReportExportKind {
     KEY_OPERATIONS,
     SYSTEM_OPERATION_LOGS,
     EQUIPMENT_OPERATION_LOGS,
+    ACTIVITY_LOGS,
+}
+
+/** Cross-platform Activity Report filter buckets (maps to audit event types server-side). */
+@Serializable
+enum class ReportCategory {
+    KEY_TAKE,
+    KEY_RETURN,
+    CABINET_REGISTRATION,
+    PERSONNEL_REGISTRATION,
 }
 
 @Serializable
@@ -835,6 +850,34 @@ data class ReportFilterRequest(
     val fromEpochMillis: Long? = null,
     val untilEpochMillis: Long? = null,
     val limit: Int = 100,
+    /** Activity Report category filters; empty/null means all four categories. */
+    val categories: List<ReportCategory>? = null,
+)
+
+@Serializable
+data class ActivityLogRow(
+    val id: String,
+    val occurredAtEpochMillis: Long,
+    val eventType: String,
+    val category: ReportCategory,
+    val terminalId: String? = null,
+    val siteId: String? = null,
+    val actorUserId: String? = null,
+    val entityType: String? = null,
+    val entityId: String? = null,
+    val detail: String? = null,
+    val siteName: String? = null,
+    val terminalName: String? = null,
+    val actorName: String? = null,
+)
+
+@Serializable
+data class ActivityLogListResponse(val items: List<ActivityLogRow> = emptyList())
+
+@Serializable
+data class ActivitySummaryResponse(
+    val total: Int = 0,
+    val byCategory: Map<ReportCategory, Int> = emptyMap(),
 )
 
 @Serializable

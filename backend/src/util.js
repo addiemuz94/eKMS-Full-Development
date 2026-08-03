@@ -27,9 +27,14 @@ export async function writeAudit({
   entityType = null,
   entityId = null,
   detail = null,
+  occurredAtEpochMillis = null,
   conn = pool,
   id = newId(),
 }) {
+  const when =
+    occurredAtEpochMillis != null && !Number.isNaN(Number(occurredAtEpochMillis))
+      ? Number(occurredAtEpochMillis)
+      : nowMs();
   await conn.execute(
     `INSERT INTO audit_events
       (id, event_type, actor_user_id, terminal_id, site_id, entity_type, entity_id, occurred_at_epoch_ms, detail)
@@ -42,7 +47,7 @@ export async function writeAudit({
       siteId,
       entityType,
       entityId,
-      now: nowMs(),
+      now: when,
       detail,
     },
   );
@@ -122,4 +127,34 @@ export function badRequest(res, message) {
 
 export function notFound(res, message = 'Not found') {
   return res.status(404).json({ error: 'NOT_FOUND', message });
+}
+
+/**
+ * Restrict audit/report queries by whether the cabinet is still active.
+ * ACTIVE — events with no cabinet, or an ACTIVE terminal.
+ * DELETED — events whose terminal is not ACTIVE (recycle bin or purged).
+ */
+export function appendCabinetScopeSql(sql, params, cabinetScope) {
+  if (cabinetScope === 'ACTIVE') {
+    return {
+      sql:
+        `${sql} AND (terminal_id IS NULL OR terminal_id IN (` +
+        `SELECT id FROM terminals WHERE lifecycle_state = 'ACTIVE'))`,
+      params,
+    };
+  }
+  if (cabinetScope === 'DELETED') {
+    return {
+      sql:
+        `${sql} AND terminal_id IS NOT NULL AND terminal_id NOT IN (` +
+        `SELECT id FROM terminals WHERE lifecycle_state = 'ACTIVE')`,
+      params,
+    };
+  }
+  return { sql, params };
+}
+
+export function parseCabinetScope(value, defaultScope = undefined) {
+  if (value === 'ACTIVE' || value === 'DELETED') return value;
+  return defaultScope;
 }

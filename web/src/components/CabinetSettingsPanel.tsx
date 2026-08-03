@@ -1,91 +1,151 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import type { SiteDto, TerminalDto } from '../api/types'
-import { SegmentedControl } from './ui'
+import { api } from '../api/client'
+import { CabinetIdentityForm } from './CabinetIdentityForm'
 import { CabinetSettingsForm } from './CabinetSettingsForm'
 import { UnitSettingsForm } from './UnitSettingsForm'
-import {
-  EventsPage,
-  KeyGroupsPage,
-  SchedulesPage,
-  UserGroupsPage,
-} from '../pages/SimpleResources'
-import { MultiAuthPage } from '../pages/MultiAuthPage'
+import { CabinetUnitPeoplePanel } from './CabinetUnitPeoplePanel'
+import { AccessGrantsPanel } from './AccessGrantsPanel'
+import { KeysPage } from '../pages/KeysPage'
+import { KeyAccessPage } from '../pages/KeyAccessPage'
 
 type SettingsTab =
+  | 'cabinet'
   | 'unit'
   | 'behavior'
-  | 'events'
-  | 'schedules'
-  | 'multi-auth'
-  | 'user-groups'
-  | 'key-groups'
+  | 'personnel'
+  | 'keys'
+  | 'permissions'
+  | 'key-access'
 
 type Props = {
   terminal: TerminalDto
   unitName?: string
   onUnitSaved?: (site: SiteDto) => void
+  onCabinetSaved?: (terminal: TerminalDto) => void
 }
 
 /**
- * Per-cabinet settings hub: unit details, behavioral timers, plus unit-scoped
- * Event / Schedule / Multi-auth / User Groups / Key Groups (formerly top-level nav).
+ * Per-cabinet settings hub shown only after Location → Cabinet selection.
  */
-export function CabinetSettingsPanel({ terminal, unitName, onUnitSaved }: Props) {
-  const [tab, setTab] = useState<SettingsTab>('unit')
+export function CabinetSettingsPanel({ terminal, unitName, onUnitSaved, onCabinetSaved }: Props) {
+  const [tab, setTab] = useState<SettingsTab>('cabinet')
   const [liveUnitName, setLiveUnitName] = useState(unitName)
+  const [preferredUserIds, setPreferredUserIds] = useState<string[]>([])
+  const [peopleTick, setPeopleTick] = useState(0)
   const siteId = terminal.siteId
 
   useEffect(() => {
     setLiveUnitName(unitName)
+    setTab('cabinet')
   }, [unitName, terminal.id])
+
+  useEffect(() => {
+    let cancelled = false
+    void (async () => {
+      try {
+        const users = await api.listUsers()
+        if (cancelled) return
+        setPreferredUserIds(
+          users
+            .filter((p) => p.role !== 'SUPER_ADMIN' && (p.assignedSiteIds ?? []).includes(siteId))
+            .map((p) => p.id),
+        )
+      } catch {
+        if (!cancelled) setPreferredUserIds([])
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [siteId, peopleTick])
+
+  const displayUnit = useMemo(() => liveUnitName ?? 'this location', [liveUnitName])
 
   return (
     <div className="cabinet-settings-panel">
       <p className="muted" style={{ marginTop: 0 }}>
-        Configure <strong>{terminal.name}</strong>
+        Settings for <strong>{terminal.name}</strong>
         {liveUnitName ? (
           <>
             {' '}
-            for unit <strong>{liveUnitName}</strong>
+            at <strong>{liveUnitName}</strong>
           </>
         ) : null}
-        . Unit details and events/schedules/groups apply to the unit; timers sync to this cabinet.
+        . Cabinet identity, location details, and assigned personnel apply here; keys, timers, and
+        access apply to this cabinet’s context.
       </p>
 
-      <div className="cabinet-settings-tabs">
-        <SegmentedControl<SettingsTab>
-          ariaLabel="Cabinet settings section"
-          value={tab}
-          onChange={setTab}
-          options={[
-            { value: 'unit', label: 'Unit' },
+      <div className="cabinet-settings-tabs" role="tablist" aria-label="Cabinet settings section">
+        {(
+          [
+            { value: 'cabinet', label: 'Cabinet' },
+            { value: 'unit', label: 'Location' },
             { value: 'behavior', label: 'Timers & video' },
-            { value: 'events', label: 'Events' },
-            { value: 'schedules', label: 'Schedules' },
-            { value: 'user-groups', label: 'User groups' },
-            { value: 'key-groups', label: 'Key groups' },
-            { value: 'multi-auth', label: 'Multi-auth' },
-          ]}
-        />
+            { value: 'personnel', label: 'Assign User' },
+            { value: 'keys', label: 'Keys' },
+            { value: 'permissions', label: 'Key Permission' },
+            { value: 'key-access', label: 'Key Access' },
+          ] as const
+        ).map((opt) => (
+          <button
+            key={opt.value}
+            type="button"
+            role="tab"
+            aria-selected={tab === opt.value}
+            className={`cabinet-settings-tab${tab === opt.value ? ' is-active' : ''}`}
+            onClick={() => setTab(opt.value)}
+          >
+            {opt.label}
+          </button>
+        ))}
       </div>
 
       <div className="cabinet-settings-body">
+        {tab === 'cabinet' && (
+          <CabinetIdentityForm
+            terminal={terminal}
+            embedded
+            onSaved={(updated) => onCabinetSaved?.(updated)}
+          />
+        )}
         {tab === 'unit' && (
           <UnitSettingsForm
             siteId={siteId}
+            terminal={terminal}
             embedded
             onSaved={(site) => {
               setLiveUnitName(site.name)
               onUnitSaved?.(site)
             }}
+            onCabinetSaved={(updated) => onCabinetSaved?.(updated)}
           />
         )}
         {tab === 'behavior' && <CabinetSettingsForm terminal={terminal} />}
-        {tab === 'events' && <EventsPage lockedSiteId={siteId} embedded />}
-        {tab === 'schedules' && <SchedulesPage lockedSiteId={siteId} embedded />}
-        {tab === 'user-groups' && <UserGroupsPage lockedSiteId={siteId} embedded />}
-        {tab === 'key-groups' && <KeyGroupsPage lockedSiteId={siteId} embedded />}
-        {tab === 'multi-auth' && <MultiAuthPage lockedSiteId={siteId} embedded />}
+        {tab === 'personnel' && (
+          <CabinetUnitPeoplePanel
+            terminal={terminal}
+            unitName={displayUnit}
+            onChanged={() => setPeopleTick((n) => n + 1)}
+          />
+        )}
+        {tab === 'keys' && (
+          <KeysPage
+            lockedSiteId={siteId}
+            lockedTerminalId={terminal.id}
+            embedded
+          />
+        )}
+        {tab === 'permissions' && (
+          <AccessGrantsPanel
+            lockedSiteId={siteId}
+            embedded
+            preferredUserIds={preferredUserIds}
+          />
+        )}
+        {tab === 'key-access' && (
+          <KeyAccessPage lockedSiteId={siteId} embedded cabinetName={terminal.name} />
+        )}
       </div>
     </div>
   )

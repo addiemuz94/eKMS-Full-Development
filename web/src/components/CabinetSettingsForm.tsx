@@ -88,7 +88,7 @@ export function CabinetSettingsForm({ terminal, title, onSaved }: Props) {
     <form onSubmit={onSave}>
       {title ? <h3 style={{ marginTop: 0 }}>{title}</h3> : null}
       <p className="muted" style={{ marginTop: 0 }}>
-        These values sync to the terminal on pairing / bootstrap (server wins).
+        These values sync to the cabinet on setup / bootstrap (server wins).
       </p>
       {notice && <div className="notice">{notice}</div>}
       {error && <div className="error-banner">{error}</div>}

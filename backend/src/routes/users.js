@@ -201,12 +201,17 @@ router.post('/', async (req, res) => {
     conn.release();
   }
 
+  const primarySiteId =
+    Array.isArray(parsed.data.assignedSiteIds) && parsed.data.assignedSiteIds.length
+      ? parsed.data.assignedSiteIds[0]
+      : null;
   await writeAudit({
-    eventType: 'USER_ACCOUNT_STATUS_CHANGED',
+    eventType: 'PERSONNEL_REGISTERED',
     actorUserId: actorUserIdFor(req),
+    siteId: primarySiteId,
     entityType: 'USER',
     entityId: id,
-    detail: 'USER_CREATED',
+    detail: parsed.data.displayName || 'USER_CREATED',
   });
   const [rows] = await pool.execute(`SELECT * FROM users WHERE id = :id`, { id });
   return res.status(201).json(mapUser(rows[0], await assignedSites(id), await assignedRegions(id)));

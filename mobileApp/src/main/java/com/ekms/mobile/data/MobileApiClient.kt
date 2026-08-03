@@ -4,6 +4,9 @@ import android.content.Context
 import android.content.SharedPreferences
 import com.ekms.shared.api.AccessGrantDto
 import com.ekms.shared.api.AccessGrantListResponse
+import com.ekms.shared.api.ActivityLogListResponse
+import com.ekms.shared.api.ActivityLogRow
+import com.ekms.shared.api.ActivitySummaryResponse
 import com.ekms.shared.api.ApiPaths
 import com.ekms.shared.api.ApproveKeyAccessRequestResponse
 import com.ekms.shared.api.AuthClientType
@@ -17,6 +20,12 @@ import com.ekms.shared.api.LoginRequest
 import com.ekms.shared.api.LoginResponse
 import com.ekms.shared.api.RefreshTokenRequest
 import com.ekms.shared.api.RegisterMobilePushTokenRequest
+import com.ekms.shared.api.ReportCategory
+import com.ekms.shared.api.ReportExportFormat
+import com.ekms.shared.api.ReportExportKind
+import com.ekms.shared.api.ReportExportRequest
+import com.ekms.shared.api.ReportExportResponse
+import com.ekms.shared.api.ReportFilterRequest
 import com.ekms.shared.api.SiteDto
 import com.ekms.shared.api.SiteKeyAccessPolicyDto
 import com.ekms.shared.api.SiteListResponse
@@ -30,6 +39,7 @@ import io.ktor.client.plugins.contentnegotiation.ContentNegotiation
 import io.ktor.client.request.header
 import io.ktor.client.request.request
 import io.ktor.client.request.setBody
+import io.ktor.client.statement.bodyAsBytes
 import io.ktor.client.statement.bodyAsText
 import io.ktor.http.ContentType
 import io.ktor.http.HttpHeaders
@@ -347,6 +357,106 @@ class MobileApiClient(context: Context) {
             body = json.encodeToString(RegisterMobilePushTokenRequest(fcmToken = fcmToken, platform = platform)),
             authenticated = true,
         )
+    }
+
+    suspend fun listActivityLogs(
+        siteId: String? = null,
+        terminalId: String? = null,
+        fromEpochMillis: Long? = null,
+        untilEpochMillis: Long? = null,
+        categories: List<ReportCategory>? = null,
+        limit: Int = 200,
+    ): List<ActivityLogRow> {
+        ensureBaseUrl()
+        val params = buildList {
+            if (!siteId.isNullOrBlank()) add("siteId=$siteId")
+            if (!terminalId.isNullOrBlank()) add("terminalId=$terminalId")
+            if (fromEpochMillis != null) add("fromEpochMillis=$fromEpochMillis")
+            if (untilEpochMillis != null) add("untilEpochMillis=$untilEpochMillis")
+            if (!categories.isNullOrEmpty()) {
+                add("categories=${categories.joinToString(",") { it.name }}")
+            }
+            add("limit=$limit")
+        }.joinToString("&")
+        return decode<ActivityLogListResponse>(
+            send(
+                method = HttpMethod.Get,
+                path = "${ApiPaths.REPORTS_ACTIVITY_LOGS}?$params",
+                body = null,
+                authenticated = true,
+            ),
+        ).items
+    }
+
+    suspend fun getActivitySummary(
+        siteId: String? = null,
+        terminalId: String? = null,
+        fromEpochMillis: Long? = null,
+        untilEpochMillis: Long? = null,
+        categories: List<ReportCategory>? = null,
+    ): ActivitySummaryResponse {
+        ensureBaseUrl()
+        val params = buildList {
+            if (!siteId.isNullOrBlank()) add("siteId=$siteId")
+            if (!terminalId.isNullOrBlank()) add("terminalId=$terminalId")
+            if (fromEpochMillis != null) add("fromEpochMillis=$fromEpochMillis")
+            if (untilEpochMillis != null) add("untilEpochMillis=$untilEpochMillis")
+            if (!categories.isNullOrEmpty()) {
+                add("categories=${categories.joinToString(",") { it.name }}")
+            }
+        }.joinToString("&")
+        val path = if (params.isBlank()) {
+            ApiPaths.REPORTS_ACTIVITY_SUMMARY
+        } else {
+            "${ApiPaths.REPORTS_ACTIVITY_SUMMARY}?$params"
+        }
+        return decode(
+            send(method = HttpMethod.Get, path = path, body = null, authenticated = true),
+        )
+    }
+
+    suspend fun createActivityLogsExport(
+        filter: ReportFilterRequest = ReportFilterRequest(),
+    ): ReportExportResponse {
+        ensureBaseUrl()
+        return decode(
+            send(
+                method = HttpMethod.Post,
+                path = ApiPaths.REPORTS_EXPORTS,
+                body = json.encodeToString(
+                    ReportExportRequest(
+                        kind = ReportExportKind.ACTIVITY_LOGS,
+                        format = ReportExportFormat.PDF,
+                        filter = filter,
+                    ),
+                ),
+                authenticated = true,
+            ),
+        )
+    }
+
+    /**
+     * Downloads an export PDF as bytes (authenticated). Caller may write to Downloads
+     * via [DownloadManager] or open with a view intent.
+     */
+    suspend fun downloadReportExportBytes(downloadPath: String): ByteArray {
+        ensureBaseUrl()
+        val path = if (downloadPath.startsWith("http")) {
+            // Absolute URL — strip base for send(); use full request below.
+            downloadPath.removePrefix(baseUrl)
+        } else {
+            downloadPath
+        }
+        val response = http.request("$baseUrl$path") {
+            method = HttpMethod.Get
+            val token = accessToken ?: throw MobileApiException(401, "Not signed in to the server")
+            header(HttpHeaders.Authorization, "Bearer $token")
+        }
+        if (!response.status.isSuccess()) {
+            val text = response.bodyAsText()
+            throw MobileApiException(response.status.value, text.ifBlank { "PDF download failed" })
+        }
+        return response.bodyAsBytes()
     }
 
     private fun ensureBaseUrl() {

@@ -198,16 +198,25 @@ async function ingestAuditEvents(terminalId, siteId, events) {
   let count = 0;
   for (const event of events) {
     if (!event?.eventType) continue;
-    await writeAudit({
-      eventType: String(event.eventType),
-      actorUserId: event.actorUserId || null,
-      terminalId: event.terminalId || terminalId,
-      siteId: event.siteId || siteId,
-      entityType: event.entityType || null,
-      entityId: event.entityId || null,
-      detail: event.detail || null,
-    });
-    count += 1;
+    try {
+      await writeAudit({
+        // Prefer the terminal's event id when present (idempotent re-push → ER_DUP_ENTRY skip).
+        ...(typeof event.id === 'string' && event.id.trim() ? { id: event.id.trim() } : {}),
+        eventType: String(event.eventType),
+        actorUserId: event.actorUserId || null,
+        terminalId: event.terminalId || terminalId,
+        siteId: event.siteId || siteId,
+        entityType: event.entityType || null,
+        entityId: event.entityId || null,
+        detail: event.detail || null,
+        // Keep the original take/return time — do not stamp with push-receive time.
+        occurredAtEpochMillis: event.occurredAtEpochMillis ?? null,
+      });
+      count += 1;
+    } catch (err) {
+      if (err?.code === 'ER_DUP_ENTRY') continue;
+      throw err;
+    }
   }
   return count;
 }

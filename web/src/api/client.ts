@@ -1,4 +1,6 @@
 import type {
+  ActivityLogRow,
+  ActivitySummaryResponse,
   CredentialStatusDto,
   KeyAccessRequestDto,
   KeyDto,
@@ -19,6 +21,7 @@ const SESSION_KEY = 'ekms_web_session'
 export type Session = {
   accessToken: string
   refreshToken: string
+  userId?: string
   displayName: string
   email: string
   role: string
@@ -45,6 +48,83 @@ export function setAccessToken(token: string | null) {
   accessToken = token
 }
 
+type SessionExpiredHandler = () => void
+type SessionRefreshedHandler = (session: Session) => void
+
+let onSessionExpired: SessionExpiredHandler | null = null
+let onSessionRefreshed: SessionRefreshedHandler | null = null
+let sessionExpiredHandled = false
+let refreshInFlight: Promise<boolean> | null = null
+
+/** Register from AuthProvider — clear React session + navigate to login. */
+export function setOnSessionExpired(handler: SessionExpiredHandler | null) {
+  onSessionExpired = handler
+}
+
+/** Keep AuthContext tokens in sync after a successful refresh. */
+export function setOnSessionRefreshed(handler: SessionRefreshedHandler | null) {
+  onSessionRefreshed = handler
+}
+
+function clearSessionExpiredFlag() {
+  sessionExpiredHandled = false
+}
+
+function notifySessionExpired() {
+  if (sessionExpiredHandled) return
+  sessionExpiredHandled = true
+  accessToken = null
+  saveSession(null)
+  onSessionExpired?.()
+}
+
+async function refreshAccessToken(): Promise<boolean> {
+  if (refreshInFlight) return refreshInFlight
+  refreshInFlight = (async () => {
+    const session = loadSession()
+    if (!session?.refreshToken) return false
+    try {
+      const res = await fetch('/v1/auth/refresh', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ refreshToken: session.refreshToken }),
+      })
+      if (!res.ok) return false
+      const json = (await res.json()) as {
+        accessToken?: string
+        refreshToken?: string
+      }
+      if (!json.accessToken) return false
+      const next: Session = {
+        ...session,
+        accessToken: json.accessToken,
+        refreshToken: json.refreshToken || session.refreshToken,
+      }
+      accessToken = next.accessToken
+      saveSession(next)
+      onSessionRefreshed?.(next)
+      return true
+    } catch {
+      return false
+    }
+  })().finally(() => {
+    refreshInFlight = null
+  })
+  return refreshInFlight
+}
+
+/** On 401 for an authenticated call: refresh once, else expire the session. */
+async function recoverFromUnauthorized(alreadyRetried: boolean): Promise<boolean> {
+  if (alreadyRetried) {
+    notifySessionExpired()
+    return false
+  }
+  const refreshed = await refreshAccessToken()
+  if (refreshed) return true
+  notifySessionExpired()
+  return false
+}
+
 export class ApiError extends Error {
   status: number
   constructor(status: number, message: string) {
@@ -57,13 +137,21 @@ async function request<T>(
   method: string,
   path: string,
   body?: unknown,
-  opts?: { auth?: boolean; idempotent?: boolean },
+  opts?: { auth?: boolean; idempotent?: boolean; _retried?: boolean },
 ): Promise<T> {
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
   }
   if (opts?.auth !== false) {
-    if (!accessToken) throw new ApiError(401, 'Not signed in')
+    if (!accessToken) {
+      const existing = loadSession()
+      if (existing?.accessToken) {
+        accessToken = existing.accessToken
+      } else {
+        if (existing) notifySessionExpired()
+        throw new ApiError(401, 'Sign in required')
+      }
+    }
     headers.Authorization = `Bearer ${accessToken}`
   }
   if (opts?.idempotent) {
@@ -90,6 +178,13 @@ async function request<T>(
   }
 
   if (!res.ok) {
+    if (res.status === 401 && opts?.auth !== false) {
+      const recovered = await recoverFromUnauthorized(Boolean(opts?._retried))
+      if (recovered) {
+        return request<T>(method, path, body, { ...opts, _retried: true })
+      }
+      throw new ApiError(401, 'Your session has expired. Sign in to continue.')
+    }
     const msg =
       (json as { message?: string; error?: string } | null)?.message ||
       (json as { error?: string } | null)?.error ||
@@ -112,10 +207,10 @@ function friendlyHttpError(
     /^\s*<(!DOCTYPE|html)\b/i.test(body)
   if (looksHtml) {
     if (status === 404) {
-      return 'Report download is not available on the server yet. Ask an admin to redeploy the API.'
+      return 'Report export is not available on the server. Contact an administrator to redeploy the API.'
     }
     if (status >= 500) {
-      return 'Server error while generating the PDF. Try again, or ask an admin to check the API logs.'
+      return 'Server error while generating the PDF. Retry the export, or contact an administrator to review API logs.'
     }
     return fallback || `Request failed (HTTP ${status}). The server returned a web page instead of API data.`
   }
@@ -154,6 +249,29 @@ export type RecycleBinEntry = {
   restorePayloadVersion: number
 }
 
+export type FlushScope =
+  | 'TERMINALS'
+  | 'KEYS'
+  | 'USERS'
+  | 'SITES'
+  | 'ACCESS_GRANTS'
+  | 'ALL'
+
+export type FlushPreviewResponse = {
+  scope: FlushScope
+  counts: Record<string, number>
+  previewToken: string
+  confirmTokenRequired: string
+  note?: string
+}
+
+export type FlushResultResponse = {
+  ok: boolean
+  scope: FlushScope
+  deleted: Record<string, number>
+  serverTimeEpochMillis: number
+}
+
 export type AuditEvent = {
   id?: string
   eventType?: string
@@ -179,10 +297,12 @@ export const api = {
       },
       { auth: false },
     )
+    clearSessionExpiredFlag()
     setAccessToken(login.accessToken)
     saveSession({
       accessToken: login.accessToken,
       refreshToken: login.refreshToken,
+      userId: login.profile.id,
       displayName: login.profile.displayName,
       email: login.profile.email,
       role: login.profile.role || login.role || '',
@@ -211,15 +331,22 @@ export const api = {
     request<SiteDto>('DELETE', `/v1/admin/sites/${id}`, undefined, { idempotent: true }),
 
   listTerminals: () =>
-    request<ListResponse<TerminalDto>>('GET', '/v1/admin/terminals').then((r) => r.items),
+    request<ListResponse<TerminalDto>>('GET', '/v1/admin/terminals').then((r) =>
+      (r.items ?? []).filter((t) => !t.lifecycle?.state || t.lifecycle.state === 'ACTIVE'),
+    ),
   createTerminal: (payload: Record<string, unknown>) =>
     request<TerminalRegistrationResponse>('POST', '/v1/admin/terminals', payload, {
       idempotent: true,
     }),
   updateTerminal: (id: string, payload: Record<string, unknown>) =>
     request<TerminalDto>('PATCH', `/v1/admin/terminals/${id}`, payload, { idempotent: true }),
-  deleteTerminal: (id: string) =>
-    request<TerminalDto>('DELETE', `/v1/admin/terminals/${id}`, undefined, { idempotent: true }),
+  deleteTerminal: (id: string, opts?: { cascade?: boolean }) =>
+    request<TerminalDto & { cascade?: { slotCount: number; keyCount: number; grantCount: number } }>(
+      'DELETE',
+      `/v1/admin/terminals/${id}`,
+      opts?.cascade ? { cascade: true } : undefined,
+      { idempotent: true },
+    ),
   regenerateTerminalPairingCode: (id: string) =>
     request<RegeneratePairingCodeResponse>(
       'POST',
@@ -236,6 +363,11 @@ export const api = {
       payload,
       { idempotent: true },
     ),
+
+  previewFlush: (scope: FlushScope) =>
+    request<FlushPreviewResponse>('GET', `/v1/admin/flush/preview?scope=${encodeURIComponent(scope)}`),
+  flushData: (payload: { scope: FlushScope; confirmToken: string; previewToken: string }) =>
+    request<FlushResultResponse>('POST', '/v1/admin/flush', payload, { idempotent: true }),
 
   listUsers: () =>
     request<ListResponse<UserDto>>('GET', '/v1/admin/users').then((r) => r.items),
@@ -296,6 +428,8 @@ export const api = {
       expectedRevision: number
     },
   ) => request<KeySlotDto>('PATCH', `/v1/admin/key-slots/${id}`, payload, { idempotent: true }),
+  deleteKeySlot: (id: string) =>
+    request<KeySlotDto>('DELETE', `/v1/admin/key-slots/${id}`, undefined, { idempotent: true }),
 
   listAccessGrants: listPath('/v1/admin/access-grants'),
   createAccessGrant: createPath('/v1/admin/access-grants'),
@@ -394,8 +528,54 @@ export const api = {
     ).then((r) => r.items ?? [])
   },
 
+  listActivityLogs: (filter?: {
+    siteId?: string
+    terminalId?: string
+    fromEpochMillis?: number
+    untilEpochMillis?: number
+    categories?: string[]
+    limit?: number
+    cabinetScope?: 'ACTIVE' | 'DELETED'
+  }) => {
+    const params = new URLSearchParams()
+    if (filter?.siteId) params.set('siteId', filter.siteId)
+    if (filter?.terminalId) params.set('terminalId', filter.terminalId)
+    if (filter?.fromEpochMillis != null) params.set('fromEpochMillis', String(filter.fromEpochMillis))
+    if (filter?.untilEpochMillis != null) params.set('untilEpochMillis', String(filter.untilEpochMillis))
+    if (filter?.categories?.length) params.set('categories', filter.categories.join(','))
+    if (filter?.limit) params.set('limit', String(filter.limit))
+    if (filter?.cabinetScope) params.set('cabinetScope', filter.cabinetScope)
+    const qs = params.toString()
+    return request<{ items: ActivityLogRow[] }>(
+      'GET',
+      `/v1/reports/activity-logs${qs ? `?${qs}` : ''}`,
+    ).then((r) => r.items ?? [])
+  },
+
+  getActivitySummary: (filter?: {
+    siteId?: string
+    terminalId?: string
+    fromEpochMillis?: number
+    untilEpochMillis?: number
+    categories?: string[]
+    cabinetScope?: 'ACTIVE' | 'DELETED'
+  }) => {
+    const params = new URLSearchParams()
+    if (filter?.siteId) params.set('siteId', filter.siteId)
+    if (filter?.terminalId) params.set('terminalId', filter.terminalId)
+    if (filter?.fromEpochMillis != null) params.set('fromEpochMillis', String(filter.fromEpochMillis))
+    if (filter?.untilEpochMillis != null) params.set('untilEpochMillis', String(filter.untilEpochMillis))
+    if (filter?.categories?.length) params.set('categories', filter.categories.join(','))
+    if (filter?.cabinetScope) params.set('cabinetScope', filter.cabinetScope)
+    const qs = params.toString()
+    return request<ActivitySummaryResponse>(
+      'GET',
+      `/v1/reports/activity-summary${qs ? `?${qs}` : ''}`,
+    )
+  },
+
   createReportExport: (payload: {
-    kind: 'KEY_OPERATIONS' | 'SYSTEM_OPERATION_LOGS' | 'EQUIPMENT_OPERATION_LOGS'
+    kind: 'KEY_OPERATIONS' | 'SYSTEM_OPERATION_LOGS' | 'EQUIPMENT_OPERATION_LOGS' | 'ACTIVITY_LOGS'
     format: 'PDF' | 'EXCEL'
     filter?: {
       siteId?: string
@@ -403,6 +583,8 @@ export const api = {
       fromEpochMillis?: number
       untilEpochMillis?: number
       limit?: number
+      categories?: string[]
+      cabinetScope?: 'ACTIVE' | 'DELETED'
     }
   }) =>
     request<{
@@ -411,13 +593,29 @@ export const api = {
       rowCount: number
     }>('POST', '/v1/reports/exports', payload, { idempotent: true }),
 
-  async downloadReportExport(downloadPath: string, filename: string) {
-    if (!accessToken) throw new ApiError(401, 'Not signed in')
+  async downloadReportExport(
+    downloadPath: string,
+    filename: string,
+    retried = false,
+  ): Promise<void> {
+    if (!accessToken) {
+      const existing = loadSession()
+      if (existing?.accessToken) accessToken = existing.accessToken
+      else {
+        if (existing) notifySessionExpired()
+        throw new ApiError(401, 'Sign in required')
+      }
+    }
     const res = await fetch(downloadPath, {
       headers: { Authorization: `Bearer ${accessToken}` },
     })
     const contentType = res.headers.get('content-type') || ''
     if (!res.ok) {
+      if (res.status === 401) {
+        const recovered = await recoverFromUnauthorized(retried)
+        if (recovered) return api.downloadReportExport(downloadPath, filename, true)
+        throw new ApiError(401, 'Your session has expired. Sign in to continue.')
+      }
       const text = await res.text()
       throw new ApiError(res.status, friendlyHttpError(res.status, text, contentType))
     }

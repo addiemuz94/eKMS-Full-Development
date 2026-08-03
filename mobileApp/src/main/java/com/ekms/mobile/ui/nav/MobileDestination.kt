@@ -10,4 +10,5 @@ enum class MobileDestination(val route: String, val label: String) {
     TERMINALS("terminals", "Terminals"),
     ACCESS("access", "Access"),
     ALERTS("alerts", "Alerts"),
+    LOGS("logs", "Logs"),
 }

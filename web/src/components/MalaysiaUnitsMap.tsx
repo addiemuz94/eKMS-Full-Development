@@ -166,8 +166,8 @@ export function MalaysiaUnitsMap({ sites }: Props) {
     <div className="map-card">
       <div className="map-card-header">
         <div>
-          <h2>Units in Malaysia</h2>
-          <p className="muted">Map of Malaysia with unit markers by state and city.</p>
+          <h2>Locations in Malaysia</h2>
+          <p className="muted">Map of Malaysia with location markers by state and city.</p>
         </div>
         <SegmentedControl
           ariaLabel="Map basemap"
@@ -184,7 +184,7 @@ export function MalaysiaUnitsMap({ sites }: Props) {
         <div className="map-canvas-wrap">
           {mapError ? (
             <div className="empty-state" style={{ margin: 16 }}>
-              Map unavailable: {mapError}. Unit list still works.
+              Map unavailable: {mapError}. Location list still works.
             </div>
           ) : (
             <div className="map-canvas" ref={mapEl} />
@@ -202,7 +202,7 @@ export function MalaysiaUnitsMap({ sites }: Props) {
         </div>
 
         <div className="map-side-list">
-          <div className="map-side-title">Unit list</div>
+          <div className="map-side-title">Location list</div>
           {points.length ? (
             <ul className="map-unit-list">
               {points.map((point) => (

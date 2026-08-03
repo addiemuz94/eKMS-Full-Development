@@ -11,7 +11,9 @@
 
 The eKMS Website now follows the supplier Web manual's functional workflow while retaining the eKMS blue/teal visual theme and the project security rules.
 
-The current Website source is an interactive **local workflow preview**. Its sample records prove navigation, screen behaviour, and data needed by each workflow; they are not a production database. The backend must replace these lists with authenticated, revision-aware API calls.
+**Current production UI** is the React portal in `web/` (served at `https://kms-cvt.com`). Treat `webApp/` (Kotlin/Wasm) as frozen reference only. Nav IA (Aug 2026): Home → Dashboard; Cabinets & Settings → Registration, Cabinet Management, Key Settings, Permission Settings, Key Access; Admin → Personnel Management, Recycle Bin. Full-height left nav column (brand + scrollable links). Cabinet unit/settings tabs live under **Cabinet Management** (`/terminals`) after selecting a cabinet — not a separate Terminals → Settings dialog.
+
+Older paragraphs below that describe an interactive “local workflow preview” / `webApp` sample records are historical; the live portal talks to the real `/v1` API.
 
 ## Non-negotiable boundaries
 
@@ -29,24 +31,28 @@ The current Website source is an interactive **local workflow preview**. Its sam
 | Supplier workflow | eKMS Website page | Required server behaviour |
 |---|---|---|
 | Login | Login | `POST /v1/auth/login`; resolve company/account/password server-side; return role, site scope, session and `mustChangePassword` where required. |
-| Home Page | Dashboard | Summary: available/taken keys, online terminal count, pending approvals, terminal sync/status. No direct hardware action. |
-| Unit Settings | Terminals → Settings → **Unit** tab (also Registration wizard step 1 for create) | CRUD `/v1/admin/sites`; support name, province/state, city, superior unit, revision and lifecycle. Standalone `/units` nav removed — edit the cabinet’s unit from Settings. |
-| Terminal Settings | Terminals | CRUD `/v1/admin/terminals`; terminal name, site/unit, Android device UID, node layout A/B/C, node count, return-authentication flag, status/sync metadata. **Settings** hub also holds unit + events/schedules/groups/multi-auth. |
-| Personnel Management | Personnel Management | CRUD `/v1/admin/users`; filter by unit/person; support employee ID, personnel group, schedule, credentials status and export. Password is write-only. |
-| Key Setting | Key Settings | CRUD `/v1/admin/keys`; unit, terminal, name, physical location/node, time limit and key group. Never return raw UID. |
-| Permission Settings | Permission Settings | CRUD `/v1/admin/access-grants`; bind exact key IDs to a user and validity window. Site-wide permission alone is invalid. |
-| Event Setup | Terminals → Settings → **Events** | CRUD `/v1/admin/event-definitions`; unit, name, code/number and type/requirement. Scoped to the selected cabinet’s unit. |
-| Schedule Settings | Terminals → Settings → **Schedules** | CRUD `/v1/admin/schedules`; daily/weekly/monthly frequency and validated time window. |
-| Multi-authentication Rules | Terminals → Settings → **Multi-auth** | CRUD `/v1/admin/multi-authentication-rules`; primary personnel group, assistant groups and key group. |
-| User Group / Key Group | Terminals → Settings → **User groups** / **Key groups** | CRUD `/v1/admin/personnel-groups` and `/v1/admin/key-groups`; name, group number and unit. |
-| Data Synchronization | Data Synchronization | Select terminal and issue `READ_FROM_TERMINAL` or `DOWNLOAD_TO_TERMINAL` request. Backend coordinates terminal sync, revision validation, audit and conflict creation. |
-| Report Data: pickup/return | Pickup & Return Records | Query `/v1/reports/key-operations` by date, terminal, key and person. Mark take/return only after Terminal physical proof. |
+| Home Page | Home (Dashboard) | Summary: available/taken keys, online terminal count, pending approvals, terminal sync/status. No direct hardware action. |
+| Unit Settings | Cabinet Management → **Unit** tab (also Registration wizard step 1 for create — UI **Region**) | CRUD `/v1/admin/sites`; support name, province/state, city, revision and lifecycle. Registration wizard no longer collects superior unit. Standalone `/units` nav removed — edit the cabinet’s unit from Cabinet Management. |
+| Terminal Settings | Cabinet Management (`/terminals`) | CRUD `/v1/admin/terminals`; cabinet list with State/province + Region + pairing filters (sticky) and independent list scroll; detail hub: Edit, pairing code, data sync, recycle; tabs for unit, timers, personnel, permissions, events/schedules/groups/multi-auth. Create/edit: Cabinet Address; no serial / node-rows fields. |
+| Personnel Management | Admin → Personnel Management (`/personnel`); also Cabinet Management → **Personnel** tab for unit assign | CRUD `/v1/admin/users`; filter by unit/person; support employee ID, personnel group, schedule, credentials status and export. Password is write-only. Unit assign also via Cabinet Management. |
+| Key Setting | Key Settings | CRUD `/v1/admin/keys`; unit, terminal, name, physical location/node, time limit and key group. Never return raw UID. Layout + List views. |
+| Permission Settings | Permission Settings (global); also Cabinet Management → **Permissions** tab | CRUD `/v1/admin/access-grants`; bind exact key IDs to a user and validity window. Site-wide permission alone is invalid. |
+| Event Setup | Cabinet Management → **Events** | CRUD `/v1/admin/event-definitions`; unit, name, code/number and type/requirement. Scoped to the selected cabinet’s unit. |
+| Schedule Settings | Cabinet Management → **Schedules** | CRUD `/v1/admin/schedules`; daily/weekly/monthly frequency and validated time window. |
+| Multi-authentication Rules | Cabinet Management → **Multi-auth** | CRUD `/v1/admin/multi-authentication-rules`; primary personnel group, assistant groups and key group. |
+| User Group / Key Group | Cabinet Management → **User groups** / **Key groups** | CRUD `/v1/admin/personnel-groups` and `/v1/admin/key-groups`; name, group number and unit. |
+| Data Synchronization | Data Synchronization (linked from Cabinet Management) | Select terminal and issue `READ_FROM_TERMINAL` or `DOWNLOAD_TO_TERMINAL` request. Backend coordinates terminal sync, revision validation, audit and conflict creation. |
+| Report Data: activity | Activity Report | Primary hub: `GET /v1/reports/activity-logs` + `activity-summary`; categories KEY_TAKE / KEY_RETURN / CABINET_REGISTRATION / PERSONNEL_REGISTRATION; PDF via `POST /v1/reports/exports` kind `ACTIVITY_LOGS`. Terminal take/return sync into `audit_events`; cabinet/personnel registration written by API. |
+| Report Data: pickup/return | Pickup & Return Records | Query `/v1/reports/key-operations` by date, terminal, key and person (legacy subset). Mark take/return only after Terminal physical proof. |
 | Report Data: operation log | Operation Log | Query safe, append-only system and equipment logs. Export through authenticated backend-generated PDF/Excel jobs. |
-| Appointment Authorization | Appointment Authorization | Create appointment for exact unit, terminal, key(s), person, date/time and reason. Reviewer approves/rejects with audit. |
-| Appointment Reason Setting | Appointment Reason Settings | CRUD `/v1/admin/appointment-reasons`; only active reasons appear in appointment creation. |
-| Appointment Permission Settings | Appointment Permission Settings | Manage exact key IDs allowed by the selected appointment. Backend derives time-bounded authorization after approval. |
+| Appointment Authorization | _(removed from portal)_ | Not mounted in production nav/API; do not rebuild unless product restores appointments. |
+| Appointment Reason Setting | _(removed)_ | Same as above. |
+| Appointment Permission Settings | _(removed)_ | Same as above. |
 | System Operation Log | System Operation Log | `/v1/reports/system-operation-logs`, filtered by unit/actor/time. |
 | Equipment Operation Log | Equipment Operation Log | `/v1/reports/equipment-operation-logs`, filtered by terminal/node/time; safe outcomes only, never raw serial frames. |
+| Registration (eKMS) | Registration (Cabinets & Settings) | Continuous site-scoped wizard; UI label **Region** (not Key Access Region): Region → Key Cabinet → Keys → Permissions → Pairing Code. No Superior unit / serial / node-rows on forms; Cabinet Address = `boxAddress`. Keys step = Key Settings Layout/List. Cabinet timers under Cabinet Management. Login splash 5s. |
+| Key Access (eKMS) | Key Access | Digital / remote key-access request review (approve/reject/revoke). |
+| Recycle Bin (eKMS) | Admin → Recycle Bin | Soft-delete restore/purge within retention window. |
 
 ## Terminal configuration requirements
 
@@ -134,13 +140,26 @@ Approval must validate all of the following before creating an authorization dec
 ### Reports and logs
 
 ```text
+GET /v1/reports/activity-logs
+GET /v1/reports/activity-summary
 GET /v1/reports/key-operations
 GET /v1/reports/system-operation-logs
 GET /v1/reports/equipment-operation-logs
 POST /v1/reports/exports
 ```
 
-Report filters support `siteId`, `terminalId`, `userId`, `keyId`, `fromEpochMillis`, and `untilEpochMillis` through `ReportFilterRequest`.
+Report filters support `siteId`, `terminalId`, `userId`, `keyId`, `fromEpochMillis`, `untilEpochMillis`, and (Activity Report) `categories` through `ReportFilterRequest`. Export kind `ACTIVITY_LOGS` generates the cross-platform Activity Report PDF.
+
+**Activity Report categories (single `audit_events` store):**
+
+| Category | Event types | Writer |
+|---|---|---|
+| KEY_TAKE | `KEY_TAKEN`, `KEY_TAKE_FAILED`, `KEY_TAKE_ABANDONED`, `KEY_TAKE_DOOR_LEFT_OPEN` | Terminal sync push |
+| KEY_RETURN | `KEY_RETURNED`, `KEY_RETURN_*` failures | Terminal sync push |
+| CABINET_REGISTRATION | `TERMINAL_CREATED`, `TERMINAL_PAIRED` | Portal/API |
+| PERSONNEL_REGISTRATION | `PERSONNEL_REGISTERED` | Portal/API on user create |
+
+Sync ingest preserves terminal `occurredAtEpochMillis` on pushed audits (not overwritten by push-receive time). Excel export remains unsupported at download.
 
 ## Data and privacy rules
 
