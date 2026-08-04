@@ -97,6 +97,21 @@ class TerminalApiClient(context: Context) {
                     .apply()
             }
         }
+        // "Server: Reconnecting…" root-cause fix, one-time backfill: a cabinet already paired
+        // before this fix shipped has no isDeviceScopedToken preference at all yet, and this is
+        // the one moment its value can still be inferred reliably — accessToken == pairingAccessToken
+        // means the currently-active token has never been through a refresh since pairing (a
+        // successful device-token refresh under the old bug was never possible at all, so this
+        // equality still holds for exactly the devices that hit this bug). Every session-establishing
+        // call site (login/pairWithCode/clearSession) sets this explicitly going forward; this
+        // only covers whatever token an existing install already had sitting in preferences.
+        if (!preferences.contains(KEY_IS_DEVICE_SCOPED_TOKEN)) {
+            val currentAccess = preferences.getString(KEY_ACCESS_TOKEN, null)
+            val currentPairingAccess = preferences.getString(KEY_PAIRING_ACCESS_TOKEN, null)
+            if (!currentAccess.isNullOrBlank() && currentAccess == currentPairingAccess) {
+                preferences.edit().putBoolean(KEY_IS_DEVICE_SCOPED_TOKEN, true).apply()
+            }
+        }
     }
 
     /**
@@ -145,6 +160,25 @@ class TerminalApiClient(context: Context) {
             preferences.edit().putString(KEY_PAIRING_REFRESH_TOKEN, value).apply()
         }
 
+    /**
+     * "Server: Reconnecting…" root-cause fix: [accessToken]/[refreshToken] is one shared slot
+     * holding either a real signed-in user's JWT ([login]) or this terminal's own
+     * TERMINAL_DEVICE-scoped pairing JWT ([pairWithCode]/[clearSession]'s restore) — the client
+     * never previously tracked which one is currently active, so [refreshAccessToken] always
+     * decoded the response as [com.ekms.shared.api.LoginResponse] regardless. The backend's
+     * `/v1/auth/refresh` returns a genuinely different, `profile`/`role`-less shape
+     * ([com.ekms.shared.api.TerminalPairingResponse]) for a TERMINAL_DEVICE token
+     * (`backend/src/routes/auth.js`'s `refreshTerminalToken`), so every such refresh threw
+     * `MissingFieldException` and silently never updated the tokens. No JWT-claim parsing
+     * needed to know which is active — every call site that assigns [accessToken] already
+     * knows with certainty which kind it just set, so this is just recorded there.
+     */
+    private var isDeviceScopedToken: Boolean
+        get() = preferences.getBoolean(KEY_IS_DEVICE_SCOPED_TOKEN, false)
+        set(value) {
+            preferences.edit().putBoolean(KEY_IS_DEVICE_SCOPED_TOKEN, value).apply()
+        }
+
     val isConfigured: Boolean
         get() = baseUrl.isNotBlank()
 
@@ -165,6 +199,7 @@ class TerminalApiClient(context: Context) {
         if (!deviceAccess.isNullOrBlank()) {
             accessToken = deviceAccess
             refreshToken = deviceRefresh
+            isDeviceScopedToken = true
         }
     }
 
@@ -192,24 +227,42 @@ class TerminalApiClient(context: Context) {
         )
         accessToken = response.accessToken
         refreshToken = response.refreshToken
+        isDeviceScopedToken = false
         return response
     }
 
-    suspend fun refreshAccessToken(): LoginResponse {
+    /**
+     * "Server: Reconnecting…" root-cause fix: decodes `/v1/auth/refresh`'s response as whichever
+     * shape the backend actually sends for the currently-active token — [TerminalPairingResponse]
+     * (`accessToken`/`refreshToken`/`expiresAtEpochMillis`/`terminal`, no `profile`/`role`) for a
+     * TERMINAL_DEVICE token, [LoginResponse] otherwise — instead of always assuming [LoginResponse]
+     * and throwing `MissingFieldException` on every TERMINAL_DEVICE refresh. Returns `Unit`, not
+     * either response type: the sole caller (`TerminalAdminApp`'s live-sync loop) only ever calls
+     * this for the token-refreshing side effect and already discards the return value, and
+     * `TerminalPairingResponse` has no `profile`/`role` to hand back in the first place — nothing
+     * client-side ever cached or re-derived a "refreshed profile" from this call, confirmed via
+     * grep (this function's only prior effect, besides its return value, was updating
+     * [accessToken]/[refreshToken]), so there is no such downstream assumption to break.
+     */
+    suspend fun refreshAccessToken() {
         ensureBaseUrl()
         val token = refreshToken ?: throw TerminalApiException(401, "Not signed in to the server")
-        val response = decode<LoginResponse>(
-            send(
-                method = HttpMethod.Post,
-                path = ApiPaths.AUTH_REFRESH,
-                body = json.encodeToString(RefreshTokenRequest(refreshToken = token)),
-                authenticated = false,
-                idempotent = false,
-            ),
+        val text = send(
+            method = HttpMethod.Post,
+            path = ApiPaths.AUTH_REFRESH,
+            body = json.encodeToString(RefreshTokenRequest(refreshToken = token)),
+            authenticated = false,
+            idempotent = false,
         )
-        accessToken = response.accessToken
-        refreshToken = response.refreshToken
-        return response
+        if (isDeviceScopedToken) {
+            val response = decode<TerminalPairingResponse>(text)
+            accessToken = response.accessToken
+            refreshToken = response.refreshToken
+        } else {
+            val response = decode<LoginResponse>(text)
+            accessToken = response.accessToken
+            refreshToken = response.refreshToken
+        }
     }
 
     /**
@@ -236,6 +289,7 @@ class TerminalApiClient(context: Context) {
         refreshToken = response.refreshToken
         pairingAccessToken = response.accessToken
         pairingRefreshToken = response.refreshToken
+        isDeviceScopedToken = true
         return response
     }
 
@@ -708,6 +762,7 @@ class TerminalApiClient(context: Context) {
         private const val KEY_REFRESH_TOKEN = "refresh_token"
         private const val KEY_PAIRING_ACCESS_TOKEN = "pairing_access_token"
         private const val KEY_PAIRING_REFRESH_TOKEN = "pairing_refresh_token"
+        private const val KEY_IS_DEVICE_SCOPED_TOKEN = "is_device_scoped_token"
         const val DEFAULT_BASE_URL = "https://kms-cvt.com"
         /** How often the app pulls portal snapshot changes while online. */
         const val LIVE_SYNC_INTERVAL_MILLIS = 30_000L

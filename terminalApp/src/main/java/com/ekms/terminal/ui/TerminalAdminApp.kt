@@ -83,7 +83,6 @@ import com.ekms.shared.domain.UserRole
 import com.ekms.shared.protocol.KeyCabinetLink.Companion.MAX_KEY_NODE_ADDRESS
 import com.ekms.terminal.data.AuthOutcome
 import com.ekms.terminal.data.CheckoutDeadlineChoice
-import com.ekms.terminal.data.CheckoutDeadlinePolicy
 import com.ekms.terminal.data.StoreResult
 import com.ekms.terminal.data.TerminalAccessGrant
 import com.ekms.terminal.data.TerminalAdminSnapshot
@@ -125,6 +124,10 @@ import com.ekms.terminal.hardware.VoiceLine
 import com.ekms.terminal.ui.theme.EkmsTerminalTheme
 import com.ekms.terminal.ui.theme.StatusTone
 import com.ekms.terminal.ui.theme.readout
+import java.net.ConnectException
+import java.net.SocketTimeoutException
+import java.net.UnknownHostException
+import javax.net.ssl.SSLException
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
@@ -339,14 +342,13 @@ fun TerminalAdminApp() {
     var takeFlow by remember { mutableStateOf<TakeFlow?>(null) }
     var multiKeyQueue by remember { mutableStateOf<MultiKeyTakeQueue?>(null) }
     var multiKeyQueuePending by remember { mutableStateOf(false) }
-    // Phase 5: the once-per-session close-to-deadline decision. checkoutDeadlineResolving covers
-    // the brief office-hours fetch at the very start of takeKey()/beginMultiKeyTake() (before
-    // either single-key or multi-key hardware sequences begin); pendingCheckoutDecision covers the
-    // blocking manual-entry/Emergency screen when that fetch determines Auto isn't safe. Both are
-    // cross-cutting the same way ReturnFlow's AwaitingCertification/DoorOpen/SessionIdle states
-    // are — rendered ahead of `route` in the outer `when` below, regardless of which route
-    // (KEY_RETRIEVAL or KEY_MENU) triggered them.
-    var checkoutDeadlineResolving by remember { mutableStateOf(false) }
+    // Phase 5, mandatory-manual-return-time rework: every take session (single-key or multi-key,
+    // except Only B passkey) now unconditionally requires a return-time decision (the analog clock
+    // or Emergency) before its hardware sequence begins — no more office-hours fetch/Auto fast
+    // path, so there is no more "resolving" wait state, only the decision itself.
+    // pendingCheckoutDecision is cross-cutting the same way ReturnFlow's
+    // AwaitingCertification/NodeActive/Waiting states are — rendered ahead of `route` in the outer
+    // `when` below, regardless of which route (KEY_RETRIEVAL or KEY_MENU) triggered it.
     var pendingCheckoutDecision by remember { mutableStateOf<PendingCheckoutDecision?>(null) }
     var returnFlow by remember { mutableStateOf<ReturnFlow?>(null) }
     // Default is the same post-login landing point postLoginRoute() sends any other admin-tier
@@ -396,45 +398,25 @@ fun TerminalAdminApp() {
         }
     }
 
-    // Phase 5: office-hours fetch + CheckoutDeadlinePolicy, run once at the start of a take
-    // session (single or multi-key), never per key. A failed fetch (offline, server error) is
-    // deliberately treated the same as "already past close" — CheckoutDeadlinePolicy.computeDeadline
-    // already does this for a null officeHours — rather than blocking the take entirely, so an
-    // operator can still proceed via manual entry or Emergency even with no backend reachable.
-    suspend fun resolveCheckoutDeadline(): Pair<CheckoutDeadlinePolicy.DeadlineDecision, String> {
-        val officeHours = runCatching { apiClient.getOfficeHours(retrievalTerminal.siteId) }.getOrNull()
-        val decision = CheckoutDeadlinePolicy.computeDeadline(officeHours, System.currentTimeMillis())
-        return decision to (officeHours?.timezone ?: "Asia/Kuala_Lumpur")
-    }
-
     // Key Take Flow (CLAUDE.md "Terminal App UX Baseline (Production)" §1):
     // the availability check below (no slot -> not selectable) is the same
     // one the grid already enforces before ever calling this; entering
     // takeFlow hands off to a dedicated full-screen takeover, same pattern
     // as Section 3's return flow, so the grid is not shown again until it
     // completes, fails, or is abandoned.
+    //
+    // Mandatory-manual-return-time rework: unconditionally requires the return-time decision
+    // (analog clock or Emergency) — no office-hours fetch, no Auto fast path, so this sets
+    // pendingCheckoutDecision directly and synchronously, no scope.launch needed.
     fun takeKey(key: ManagedKey) {
         val slot = retrievalSlots.firstOrNull { it.managedKeyId == key.id }
         if (slot == null) {
             notice = "${key.displayName} is not assigned to a cabinet slot."
             return
         }
-        checkoutDeadlineResolving = true
-        scope.launch {
-            val (decision, timezone) = resolveCheckoutDeadline()
-            checkoutDeadlineResolving = false
-            when (decision) {
-                is CheckoutDeadlinePolicy.DeadlineDecision.Auto ->
-                    takeFlow = TakeFlow(key, slot, CheckoutDeadlineChoice.auto(decision.dueAtEpochMillis))
-
-                is CheckoutDeadlinePolicy.DeadlineDecision.NeedsDecision ->
-                    pendingCheckoutDecision = PendingCheckoutDecision(
-                        closeAtEpochMillis = decision.closeAtEpochMillis,
-                        timezone = timezone,
-                        resume = { choice -> takeFlow = TakeFlow(key, slot, choice) },
-                    )
-            }
-        }
+        pendingCheckoutDecision = PendingCheckoutDecision(
+            resume = { choice -> takeFlow = TakeFlow(key, slot, choice) },
+        )
     }
 
     // Key Menu multi-key sequential Take Flow: confirming a selection first lights every
@@ -470,22 +452,9 @@ fun TerminalAdminApp() {
             return
         }
 
-        checkoutDeadlineResolving = true
-        scope.launch {
-            val (decision, timezone) = resolveCheckoutDeadline()
-            checkoutDeadlineResolving = false
-            when (decision) {
-                is CheckoutDeadlinePolicy.DeadlineDecision.Auto ->
-                    startMultiKeyQueue(pairs, CheckoutDeadlineChoice.auto(decision.dueAtEpochMillis))
-
-                is CheckoutDeadlinePolicy.DeadlineDecision.NeedsDecision ->
-                    pendingCheckoutDecision = PendingCheckoutDecision(
-                        closeAtEpochMillis = decision.closeAtEpochMillis,
-                        timezone = timezone,
-                        resume = { choice -> startMultiKeyQueue(pairs, choice) },
-                    )
-            }
-        }
+        pendingCheckoutDecision = PendingCheckoutDecision(
+            resume = { choice -> startMultiKeyQueue(pairs, choice) },
+        )
     }
 
     // TerminalKey (terminal-local, embeds box/node address) has no shared-
@@ -544,8 +513,7 @@ fun TerminalAdminApp() {
     /**
      * Migration 009 follow-up: entry point for a passkey-authenticated take, reached from
      * [runPasskeyLogin] on a successful `POST /v1/terminal/passkey-login`. Deliberately does
-     * NOT go through [resolveCheckoutDeadline]/[CheckoutDeadlinePolicy] or
-     * `pendingCheckoutDecision` (`TerminalCloseToDeadlineScreen`) at all — the due time was
+     * NOT go through `pendingCheckoutDecision` (`TerminalCloseToDeadlineScreen`) at all — the due time was
      * already fixed at request-approval time (`passkeyExpiresAtEpochMillis`), so there is no
      * decision left to make here, only [CheckoutDeadlineChoice.passkeyRequest] to construct from
      * it. Reuses [startMultiKeyQueue] (same hardware sequence Key Menu's own multi-select path
@@ -772,6 +740,15 @@ fun TerminalAdminApp() {
     // `returnFlow == null` at scan time, not a separate flag.
     var returnSessionReturnedKeyNames by remember { mutableStateOf<List<String>>(emptyList()) }
 
+    // Multi-key Return hard-block (found via ad hoc hardware testing, this rework): orthogonal
+    // session state, not part of the ReturnFlow sealed interface — a concurrently-active
+    // NodeActive cycle at an unrelated node must keep rendering/functioning normally while this
+    // is non-empty, which a mutually-exclusive sealed state couldn't express. Added to on each
+    // per-node onWrongSlotDetected, removed on each per-node onWrongSlotCleared (see
+    // beginReturnNodeCycle below); gates startKeyCardReturn from starting a new node cycle while
+    // non-empty; rendered on ReturnSessionScreen as a blocking variant.
+    var returnSessionWrongSlotBlockedNodes by remember { mutableStateOf<Set<Int>>(emptySet()) }
+
     // Return Flow rework: [attemptId] (System.nanoTime(), effectively unique per call) is the
     // one stable identity for this whole attempt, from swipe through however many login
     // retries the operator needs. It's what the abandonment race below keys on instead of the
@@ -785,6 +762,17 @@ fun TerminalAdminApp() {
     // flag) is what distinguishes "fresh session, clear the running names list" from
     // "continuing session, keep it."
     fun startKeyCardReturn(matchedKey: ManagedKey? = null, matchedSlot: KeySlot? = null) {
+        // Multi-key Return hard-block: a dedicated gate, deliberately NOT part of
+        // canStartOperatorCommand's shared check (that gate serves ~6 unrelated Take
+        // Flow/attachment call sites — reusing it for a Return-only concern is exactly the class
+        // of mistake the returnSessionMonitoring-vs-reentry bug already taught this session not
+        // to repeat). Checked first, independent of returnMonitoring/returnSessionMonitoring.
+        if (returnSessionWrongSlotBlockedNodes.isNotEmpty()) {
+            val nodeList = returnSessionWrongSlotBlockedNodes.sorted().joinToString(", ")
+            Log.d(LOG_TAG, "ReturnFlowDiag: block gate rejected scan, blockedNodes=$nodeList")
+            notice = "Remove the wrong key from node $nodeList before scanning another key."
+            return
+        }
         val isFreshSession = returnFlow == null
         if (isFreshSession) {
             returnSessionReturnedKeyNames = emptyList()
@@ -819,6 +807,7 @@ fun TerminalAdminApp() {
         hardwareController.beginReturnNodeCycle(
             nodeAddress = nodeAddress,
             onNodeUnlocked = {
+                Log.d(LOG_TAG, "ReturnFlowDiag: node=$nodeAddress unlock confirmed, node cycle active")
                 hardwareController.beginReturnSessionDoorMonitor(
                     doorCloseWarningSeconds = snapshot.cabinetSettings.doorCloseWarningTimeSeconds,
                     onWarningExpired = {
@@ -836,6 +825,39 @@ fun TerminalAdminApp() {
                         Log.d(LOG_TAG, "ReturnFlowDiag: return session ended, door closed")
                         returnFlow = null
                         returnSessionReturnedKeyNames = emptyList()
+                        returnSessionWrongSlotBlockedNodes = emptySet()
+                    },
+                    onFailure = onFailure,
+                )
+                // Multi-key Return hard-block: idempotent start, same shape as
+                // beginReturnSessionDoorMonitor above — every subsequent node in the session
+                // calling this again is harmless. candidateNodeAddresses/activeNodeAddress are
+                // live suppliers (not frozen here), read fresh on every sweep tick from the
+                // worker thread — the candidate set genuinely shrinks as keys get returned, and
+                // the active node changes every cycle, so a snapshot taken once here would go
+                // stale after the very first node.
+                hardwareController.beginReturnSessionWrongSlotSweep(
+                    candidateNodeAddresses = {
+                        retrievalSlots.mapNotNull { slot ->
+                            slot.nodeAddress.takeIf { slot.managedKeyId != null && slot.managedKeyId in takenKeyIds }
+                        }
+                    },
+                    activeNodeAddress = { (returnFlow as? ReturnFlow.NodeActive)?.matchedSlot?.nodeAddress },
+                    resolveKeyFobUid = ::resolveKeyFobUid,
+                    onWrongSlotDetected = { wrongNodeAddress, confirmedKey ->
+                        Log.d(LOG_TAG, "ReturnFlowDiag: block gate — node=$wrongNodeAddress confirmedKey=$confirmedKey now blocked")
+                        val wasEmpty = returnSessionWrongSlotBlockedNodes.isEmpty()
+                        returnSessionWrongSlotBlockedNodes = returnSessionWrongSlotBlockedNodes + wrongNodeAddress
+                        // Door-Close Warning Time reset exactly once, at block onset (empty ->
+                        // non-empty) — not repeated on every sweep tick while already blocked, and
+                        // not on a second, third, etc. node joining an already-active block. Gives
+                        // the operator a full fresh window to resolve the mistake without the
+                        // "please close the door" voice line firing mid-resolution.
+                        if (wasEmpty) hardwareController.resetReturnSessionDoorCloseWarning()
+                    },
+                    onWrongSlotCleared = { clearedNodeAddress ->
+                        Log.d(LOG_TAG, "ReturnFlowDiag: block gate — node=$clearedNodeAddress cleared")
+                        returnSessionWrongSlotBlockedNodes = returnSessionWrongSlotBlockedNodes - clearedNodeAddress
                     },
                     onFailure = onFailure,
                 )
@@ -849,10 +871,10 @@ fun TerminalAdminApp() {
     // (inserted or abandoned) ends here by returning to Waiting, NOT to a session-ending state.
     // The door stays open and the session keeps listening; only beginReturnNodeCycle's
     // onSessionDoorClosed callback above ever sets returnFlow back to null.
-    fun onNodeCycleComplete() {
+    fun onNodeCycleComplete(outcome: String) {
         Log.d(
             LOG_TAG,
-            "ReturnFlowDiag: onNodeCycleComplete -> Waiting, returnedCount=${returnSessionReturnedKeyNames.size}, " +
+            "ReturnFlowDiag: onNodeCycleComplete outcome=$outcome -> Waiting, returnedCount=${returnSessionReturnedKeyNames.size}, " +
                 "priorReturnFlow=${returnFlow?.javaClass?.simpleName}",
         )
         returnFlow = ReturnFlow.Waiting
@@ -1055,7 +1077,7 @@ fun TerminalAdminApp() {
                 // session-ending state — same as every other node-cycle outcome, a
                 // certification timeout on one scan shouldn't end an already-in-progress
                 // session (door stays open, session keeps listening for the next scan).
-                onNodeCycleComplete()
+                onNodeCycleComplete("ABANDONED")
             }
         }
     }
@@ -1312,6 +1334,21 @@ fun TerminalAdminApp() {
     val returnFlowLive by rememberUpdatedState(returnFlow)
     val routeLive by rememberUpdatedState(route)
     val serverLinkedLive by rememberUpdatedState(serverLinked)
+    // Diagnostic only (added to diagnose "Server: Reconnecting…" reports, not yet root-caused) —
+    // classifies a live-sync failure into a coarse bucket without changing which branch runs:
+    // TerminalApiException already carries a real HTTP status (send() throws it on any non-2xx
+    // response), so that's a genuine server-side rejection (e.g. 401 = the refresh itself also
+    // failed) — distinct from the network-level exception types OkHttp/Ktor throw when a
+    // response never came back at all.
+    fun classifySyncFailure(error: Throwable?): String = when (error) {
+        null -> "no exception captured"
+        is TerminalApiException -> "HTTP ${error.status}: ${error.message}"
+        is SocketTimeoutException -> "TIMEOUT: ${error.message}"
+        is ConnectException -> "CONNECTION_REFUSED: ${error.message}"
+        is UnknownHostException -> "DNS_FAILURE: ${error.message}"
+        is SSLException -> "TLS_ERROR: ${error.message}"
+        else -> "${error::class.simpleName}: ${error.message}"
+    }
     LaunchedEffect(networkStatus.hasInternet) {
         while (true) {
             val hardwareBusy = takeFlowLive != null ||
@@ -1327,17 +1364,25 @@ fun TerminalAdminApp() {
                 !hardwareBusy
             if (canPull) {
                 liveSyncInProgress = true
-                val ok = runCatching {
+                val firstAttempt = runCatching {
                     syncCoordinator.downloadFromServer()
                     refreshSnapshot()
                     if (serverLinkedLive) refreshServerPersonnel(quiet = true)
-                }.isSuccess
-                if (!ok) {
-                    runCatching { apiClient.refreshAccessToken() }
-                    liveServerConnected = runCatching {
+                }
+                if (firstAttempt.isFailure) {
+                    Log.d(LOG_TAG, "ServerSyncDiag: initial sync failed — ${classifySyncFailure(firstAttempt.exceptionOrNull())}")
+                    val refreshResult = runCatching { apiClient.refreshAccessToken() }
+                    if (refreshResult.isFailure) {
+                        Log.d(LOG_TAG, "ServerSyncDiag: token refresh failed — ${classifySyncFailure(refreshResult.exceptionOrNull())}")
+                    }
+                    val retryResult = runCatching {
                         syncCoordinator.downloadFromServer()
                         refreshSnapshot()
-                    }.isSuccess
+                    }
+                    if (retryResult.isFailure) {
+                        Log.d(LOG_TAG, "ServerSyncDiag: retry after refresh failed — ${classifySyncFailure(retryResult.exceptionOrNull())}")
+                    }
+                    liveServerConnected = retryResult.isSuccess
                 } else {
                     liveServerConnected = true
                 }
@@ -1414,19 +1459,43 @@ fun TerminalAdminApp() {
                         )
                     },
                     actions = {
-                        val chipText = when {
+                        val serverChipText = when {
                             liveSyncInProgress -> "Syncing…"
                             !networkStatus.hasInternet -> "Offline"
                             liveServerConnected && apiClient.isAuthenticated -> "Connected"
                             apiClient.isAuthenticated -> "Reconnecting…"
                             else -> "Not linked"
                         }
-                        SoftAssistChip(
-                            text = chipText,
-                            success = liveServerConnected && networkStatus.hasInternet,
-                            attention = !networkStatus.hasInternet ||
-                                (apiClient.isAuthenticated && !liveServerConnected),
-                        )
+                        // Two labeled status chips, global (every route reaches this same
+                        // TopAppBar, not just the dashboard) — "Server" is unchanged
+                        // network+backend-sync logic; "Cabinet" is hardwareState.connected,
+                        // relocated here from the now-removed SuperAdminDashboardScreen-only
+                        // badge, so there is exactly one place an operator looks for either.
+                        // Label is baked into each chip's own text ("Server: ...", "Cabinet:
+                        // ...") rather than a separate label composable, matching this app's only
+                        // existing labeled-chip-pair precedent (StartupDiagnosticsScreen's
+                        // "Hardware: OK"/"Network: Online (...)" chips).
+                        // Stacked (Column), not side-by-side (Row), deliberately: the title to
+                        // the left is unbounded-length (session displayName is user data), so a
+                        // horizontal two-chip group risks overflowing next to a long title on
+                        // this kiosk tablet's TopAppBar — stacking bounds this group's width to
+                        // whichever single chip is currently widest, not the sum of both.
+                        Column(
+                            horizontalAlignment = Alignment.End,
+                            verticalArrangement = Arrangement.spacedBy(4.dp),
+                        ) {
+                            SoftAssistChip(
+                                text = "Server: $serverChipText",
+                                success = liveServerConnected && networkStatus.hasInternet,
+                                attention = !networkStatus.hasInternet ||
+                                    (apiClient.isAuthenticated && !liveServerConnected),
+                            )
+                            SoftAssistChip(
+                                text = if (hardwareState.connected) "Cabinet: Connected" else "Cabinet: Disconnected",
+                                success = hardwareState.connected,
+                                attention = !hardwareState.connected,
+                            )
+                        }
                         Spacer(modifier = Modifier.width(12.dp))
                     },
                 )
@@ -1467,58 +1536,39 @@ fun TerminalAdminApp() {
                     key = activeReturnFlow.matchedKey,
                     slot = activeReturnFlow.matchedSlot,
                     abandonAtEpochMillis = activeReturnFlow.abandonAtEpochMillis,
-                    // Every other node whose key is CURRENTLY CHECKED OUT (a genuinely empty,
-                    // landable slot right now) — the expected node itself is excluded inside
-                    // pollForKeyInsertion. NOT every assigned node in the cabinet: a key that's
-                    // still attached/resting in its own (locked or unlocked) slot reads its own
-                    // UID just fine via testMicroSwitchAndCard (0x17 needs no unlock — confirmed
-                    // by the door-closed probe) and was previously swept as a false "wrong slot"
-                    // hit every single cycle, forever, since it never leaves. Bug found (Jul
-                    // 2026, from ad hoc hardware testing): with only 2 assigned nodes, this made
-                    // Return Flow via NFC scan always flag "the other" node, regardless of which
-                    // key was actually scanned — confirmed via hardware that both nodes were
-                    // physically correct throughout. Restricting to takenKeyIds (populated only
-                    // on a confirmed physical fob removal during Take Flow, cleared only on a
-                    // successful return — see handleReturnFlowOutcome) means a node is only ever
-                    // a wrong-slot candidate while its own key is genuinely out of the cabinet.
-                    // Bounded to assigned slots, not the full 1..127 address space and NOT every
-                    // KeySlot row: an ACTIVE KeySlot with managedKeyId == null is a normal,
-                    // persistent state (e.g. a deleted key's node, left unlinked-not-deleted so
-                    // it can be reused — see web/src/api/keySlotAssignment.ts) and must never
-                    // alarm on physical presence, since it has no key to be "wrong" relative to.
-                    wrongSlotCandidateNodeAddresses = retrievalSlots.mapNotNull { slot ->
-                        slot.nodeAddress.takeIf { slot.managedKeyId != null && slot.managedKeyId in takenKeyIds }
-                    },
+                    attemptId = activeReturnFlow.attemptId,
+                    // Cross-node wrong-slot candidate computation moved to
+                    // beginReturnNodeCycle's beginReturnSessionWrongSlotSweep call above — this
+                    // screen no longer takes wrong-slot params at all (Multi-key Return
+                    // hard-block rework), since that concern is now session-scoped, not tied to
+                    // whichever node this screen happens to be showing.
                     checkoutSummary = activeReturnFlow.checkoutSummary,
                     videoRecordingEnabled = snapshot.cabinetSettings.returnKeyVideoEnabled,
                     onBeginNodeCycle = ::beginReturnNodeCycle,
                     onPollInsertion = hardwareController::pollForKeyInsertion,
-                    resolveKeyFobUid = ::resolveKeyFobUid,
+                    // Active-node identity gap fix: the raw UID->enrolled-key-id lookup, reused
+                    // as-is from the sweep's own resolveKeyFobUid pattern — the screen itself
+                    // builds isExpectedKey (comparing against its own `key` param) and passes this
+                    // straight through for wrong-key reporting.
+                    resolveKeyIdForUid = keyCardStore::recordIdFor,
+                    resolveKeyDisplayName = { keyId -> retrievalKeys.firstOrNull { it.id == keyId }?.displayName },
                     onEvent = ::handleReturnFlowOutcome,
-                    onNodeCycleComplete = { onNodeCycleComplete() },
+                    onNodeCycleComplete = { outcome -> onNodeCycleComplete(outcome) },
                 )
 
                 activeReturnFlow is ReturnFlow.Waiting -> ReturnSessionScreen(
                     padding = padding,
                     returnedKeyNames = returnSessionReturnedKeyNames,
+                    blockedWrongSlotNodes = returnSessionWrongSlotBlockedNodes,
                 )
 
-                // Phase 5: the once-per-session checkout deadline decision. Cross-cutting for the
-                // same reason the ReturnFlow branches above are — takeKey() fires from
-                // KEY_RETRIEVAL, beginMultiKeyTake() fires from KEY_MENU, and this must intercept
-                // either regardless of `route`, before that route's own takeFlow/multiKeyQueue
-                // rendering ever runs.
-                checkoutDeadlineResolving -> TerminalPage(padding) {
-                    HeaderCard(
-                        title = "Preparing checkout",
-                        description = "Checking today's office hours…",
-                    )
-                }
-
+                // Mandatory-manual-return-time rework: the once-per-session return-time decision.
+                // Cross-cutting for the same reason the ReturnFlow branches above are — takeKey()
+                // fires from KEY_RETRIEVAL, beginMultiKeyTake() fires from KEY_MENU, and this must
+                // intercept either regardless of `route`, before that route's own
+                // takeFlow/multiKeyQueue rendering ever runs.
                 activePendingCheckoutDecision != null -> TerminalCloseToDeadlineScreen(
                     padding = padding,
-                    closeAtEpochMillis = activePendingCheckoutDecision.closeAtEpochMillis,
-                    timezone = activePendingCheckoutDecision.timezone,
                     nowEpochMillis = { System.currentTimeMillis() },
                     onResolved = { choice ->
                         pendingCheckoutDecision = null
@@ -1663,7 +1713,6 @@ fun TerminalAdminApp() {
                         SuperAdminDashboardScreen(
                             padding = padding,
                             snapshot = snapshot,
-                            hardwareState = hardwareState,
                             notice = notice,
                             onOpenPersonnel = { openAdmin(SuperAdminRoute.PERSONNEL_LIST) },
                             onOpenKeyAttachment = { openAdmin(SuperAdminRoute.KEY_ATTACHMENT) },
@@ -2703,7 +2752,6 @@ private fun ChangePasswordScreen(
 private fun SuperAdminDashboardScreen(
     padding: PaddingValues,
     snapshot: TerminalAdminSnapshot,
-    hardwareState: CabinetHardwareState,
     notice: String?,
     onOpenPersonnel: () -> Unit,
     onOpenKeyAttachment: () -> Unit,
@@ -2716,28 +2764,20 @@ private fun SuperAdminDashboardScreen(
     onSignOut: () -> Unit,
 ) {
     TerminalPage(padding) {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    text = "Super Admin",
-                    style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.primary,
-                    fontWeight = FontWeight.Medium,
-                )
-                Text(
-                    text = "What do you need?",
-                    style = MaterialTheme.typography.headlineSmall,
-                    fontWeight = FontWeight.SemiBold,
-                )
-            }
-            SoftAssistChip(
-                text = if (hardwareState.connected) "Connected" else "Disconnected",
-                success = hardwareState.connected,
-                attention = !hardwareState.connected,
+        // Cabinet-connection badge relocated to the global TopAppBar (see Scaffold's topBar
+        // above, alongside the "Server" chip) — this screen no longer renders its own,
+        // dashboard-only copy of it.
+        Column {
+            Text(
+                text = "Super Admin",
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.primary,
+                fontWeight = FontWeight.Medium,
+            )
+            Text(
+                text = "What do you need?",
+                style = MaterialTheme.typography.headlineSmall,
+                fontWeight = FontWeight.SemiBold,
             )
         }
         notice?.let { message -> SuperAdminNoticeCard(message) }
@@ -3794,15 +3834,13 @@ private const val LOG_TAG = "TerminalAdminApp"
 private data class TakeFlow(val key: ManagedKey, val slot: KeySlot, val checkoutDeadline: CheckoutDeadlineChoice)
 
 /**
- * Phase 5. The single/multi-key take session is paused here when [CheckoutDeadlinePolicy]
- * determines Auto isn't safe (comfortably-before-close doesn't hold, or the office-hours fetch
- * itself failed). `resume` is whichever continuation closure applies (single-key take vs. the
- * multi-key red-light sequence) — carries the already-resolved key/slot(s) so
- * `TerminalCloseToDeadlineScreen` doesn't need to know which mode triggered it.
+ * Mandatory-manual-return-time rework: every single/multi-key take session is unconditionally
+ * paused here for the operator's return-time decision (the analog clock or Emergency). `resume`
+ * is whichever continuation closure applies (single-key take vs. the multi-key red-light
+ * sequence) — carries the already-resolved key/slot(s) so `TerminalCloseToDeadlineScreen` doesn't
+ * need to know which mode triggered it.
  */
 private data class PendingCheckoutDecision(
-    val closeAtEpochMillis: Long,
-    val timezone: String,
     val resume: (CheckoutDeadlineChoice) -> Unit,
 )
 

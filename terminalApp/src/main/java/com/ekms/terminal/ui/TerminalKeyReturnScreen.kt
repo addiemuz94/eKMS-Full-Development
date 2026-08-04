@@ -6,15 +6,10 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
-import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.widthIn
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.HelpOutline
-import androidx.compose.material.icons.filled.VpnKey
-import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -50,19 +45,34 @@ import kotlinx.coroutines.delay
  * 1. [onBeginNodeCycle]: Blue Light On -> Engage electromagnet -> idempotent door check/eject.
  *    A failure here ends this node's cycle with the door never opened (a fresh session) or,
  *    for a continuing session, leaves the already-open door and the rest of the session alone.
- * 2. [onPollInsertion]: polls bolt presence. Two independent clocks — 5 s
+ * 2. [onPollInsertion]: polls *this node's own* bolt presence only. Two independent clocks — 5 s
  *    from unlock only raises beep volume; [abandonAtEpochMillis] is an
  *    absolute deadline the caller computed at the *original card swipe*
  *    (not from unlock, and not paused for however long an optional
  *    Key Return Certification login took) — the hard no-insert ceiling for *this node's own
  *    cycle only* (Return Flow session rebuild, Jul 2026 — an abandonment here no longer ends
  *    the whole session; the door stays open and the session keeps listening for the next scan).
- *    Return Flow rework: also sweeps [wrongSlotCandidateNodeAddresses] for
- *    an unexpected insertion — see [onWrongSlotDetected]/[onWrongSlotCleared]. Follow-up
- *    revision: the sweep identifies the fob via [resolveKeyFobUid] (the caller's
- *    `CardUidResolver` lookup) rather than inferring "wrong key" from bare presence alone;
- *    `onWrongSlotDetected`'s `confirmedKey` flag says whether a genuinely enrolled key fob
- *    was identified or only unresolved presence (still flagged — see this screen's doc for why).
+ *
+ * **Multi-key Return hard-block rework: cross-node wrong-slot detection is no longer this
+ * screen's concern at all.** It used to sweep other nodes from inside this same poll cycle;
+ * that sweep is now session-scoped (`CabinetHardwareController.beginReturnSessionWrongSlotSweep`,
+ * owned by `TerminalAdminApp`) — it runs independently of whichever node (if any) this screen
+ * is currently showing, including during `ReturnSessionScreen`'s idle state between cycles, and
+ * surfaces as a hard block (no new scan can start a node cycle) rendered on `ReturnSessionScreen`
+ * itself, not here. This screen's own cycle — unlock, poll *its own* insertion, abandon — runs
+ * completely unaffected by a wrong-slot condition elsewhere in the session.
+ *
+ * **Active-node identity gap rework (found via ad hoc hardware testing, a distinct gap from the
+ * hard-block above — this one is in `onPollInsertion`'s own success check, not the sweep):**
+ * the active node's own insertion check now verifies identity (0x17, not bare 0x16) via
+ * [resolveKeyIdForUid] before ever locking. A mismatch — [onWrongKeyInserted]'s payload is the
+ * wrong key's resolved id, or `null` if unresolved (no card, or an unenrolled UID) — never locks
+ * the electromagnet and, per explicit product decision, **suspends this node's own 20s
+ * abandonment ceiling entirely** for as long as the wrong key remains (not merely pausing it):
+ * [onWrongKeyRemoved] fires when it's taken back out, at which point a genuinely fresh 20s
+ * window starts, not whatever remained of the original one. This screen resolves the wrong key's
+ * *display name* itself via [resolveKeyDisplayName] (the hardware layer only ever hands up a
+ * resolved id, never a raw UID or a domain object) for the alarm card's message.
  *
  * **Return Flow session rebuild (Jul 2026, full scrap-and-rebuild — supersedes the old
  * per-key door-close-wait entirely, not layered on top of it):** there is no longer a
@@ -84,40 +94,19 @@ import kotlinx.coroutines.delay
  *
  * The continuous beep runs from unlock confirmation through this node's own
  * insertion-or-abandonment on every path except an unlock hardware fault, which
- * never starts it; it also forces full volume for as long as a wrong-slot
- * warning is active, on top of the normal 5s-from-unlock escalation.
- * [onEvent] fires once per terminal or notable outcome for *this node's own cycle*
- * (success / failed / abandoned) — three genuinely different outcomes, logged distinctly,
+ * never starts it. [onEvent] fires once per terminal or notable outcome for *this node's own
+ * cycle* (success / failed / abandoned) — three genuinely different outcomes, logged distinctly,
  * never collapsed into one case. Door-left-open is no longer one of them — it's now a
  * session-level warning owned by the caller, not a per-node outcome of this screen.
  *
- * Phase 9F (visual/theme only — a stricter pass than Take Flow's, given the attemptId-keyed
- * abandonment-race fix and wrong-slot sweep here are both still only "believed correct by code
- * review, not hardware-reverified"; no `LaunchedEffect` key, `attemptId` comparison, polling
- * logic, `CardUidResolver` call, or timing constant was touched — see `git diff` for proof, not
- * just this claim):
- * - The wrong-slot card now has a `2.dp` `colorScheme.error`-bordered, `4.dp`-elevated treatment
- *   (same escalation recipe as Take Flow's `strongAttention`, reusing the already-established
- *   alarm/danger tone this card's `errorContainer` fill already used — not a new tone tier) plus
- *   a distinguishing icon: [Icons.Filled.VpnKey] for a confirmed wrong key, [Icons.Filled.HelpOutline]
- *   for unresolved presence — wording already distinguished the two ("Wrong key" vs "Unrecognized
- *   item"); the icon is additive, same underlying alarm tone and text for both, per the
- *   established "equally anomalous" design intent (`connectionHints`' doc, `CardUidResolver`'s
- *   permanent NFC UID rule).
- * - **No dedicated Success render state exists** — matching Key Take Flow's identical shape,
- *   a successful return calls `onNodeCycleComplete()` immediately with no intermediate success
- *   screen to reskin.
- * - `checkoutSummary`'s card ("Checked out by X · Ym ago", built in `TerminalAdminApp.kt` from
- *   `TerminalCheckoutStore`) gets the same light `1.dp` `outlineVariant` border used elsewhere in
- *   this sweep for visibility in light mode — it was a bare, borderless `SoftCard` before.
- * - `resolveReturningKey` itself has no presentation to reskin — it's a pure `ManagedKey?`
- *   lookup, no UI. Its actual on-screen control (the "Simulate key-card return" button) lives in
- *   `TerminalNfcCardLoginScreen.kt`, a different, unnamed screen — left untouched this pass
- *   (out of this task's named scope), though it already renders via already-theme-clean
- *   `SoftWaitPanel`/`SoftTextButton` and so incidentally still benefits from this same pass's
- *   `SoftWaitPanel` default-visibility fix (see that composable's own doc).
- * - `ReturnSessionScreen.kt` (the "waiting for the next scan or door-close" view) is a separate
- *   file, not part of this file's `ReturnStage` — see that file's own doc.
+ * Phase 9F (visual/theme only): `checkoutSummary`'s card ("Checked out by X · Ym ago", built in
+ * `TerminalAdminApp.kt` from `TerminalCheckoutStore`) gets a light `1.dp` `outlineVariant` border
+ * used elsewhere in that pass for visibility in light mode — it was a bare, borderless `SoftCard`
+ * before. `resolveReturningKey` itself has no presentation to reskin — it's a pure `ManagedKey?`
+ * lookup, no UI. Its actual on-screen control (the "Simulate key-card return" button) lives in
+ * `TerminalNfcCardLoginScreen.kt`, a different, unnamed screen. `ReturnSessionScreen.kt` (the
+ * "waiting for the next scan or door-close" view, and now also the wrong-slot hard-block view) is
+ * a separate file, not part of this file's `ReturnStage` — see that file's own doc.
  */
 @Composable
 fun TerminalKeyReturnScreen(
@@ -125,25 +114,30 @@ fun TerminalKeyReturnScreen(
     key: ManagedKey?,
     slot: KeySlot?,
     abandonAtEpochMillis: Long?,
-    wrongSlotCandidateNodeAddresses: List<Int>,
+    attemptId: Long,
     checkoutSummary: String?,
     videoRecordingEnabled: Boolean,
     onBeginNodeCycle: (nodeAddress: Int, onNodeUnlocked: () -> Unit, onFailure: (String) -> Unit) -> Unit,
     onPollInsertion: (
         nodeAddress: Int,
         abandonAtEpochMillis: Long,
-        wrongSlotCandidateNodeAddresses: List<Int>,
-        resolveKeyFobUid: (rawUid: String) -> Boolean,
+        isExpectedKey: (rawUid: String) -> Boolean,
+        resolveKeyIdForUid: (rawUid: String) -> String?,
         onInserted: () -> Unit,
-        onWrongSlotDetected: (wrongNodeAddress: Int, confirmedKey: Boolean) -> Unit,
-        onWrongSlotCleared: () -> Unit,
+        onWrongKeyInserted: (resolvedKeyId: String?) -> Unit,
+        onWrongKeyRemoved: () -> Unit,
         onLouderBeepThreshold: () -> Unit,
         onAbandoned: () -> Unit,
         onFailure: (String) -> Unit,
     ) -> Unit,
-    resolveKeyFobUid: (rawUid: String) -> Boolean,
+    /** Raw UID -> enrolled key id, e.g. `keyCardStore::recordIdFor`. Used both to build
+     * [onPollInsertion]'s `isExpectedKey` (compared against [key]'s own id) and passed straight
+     * through as its `resolveKeyIdForUid` (for reporting *which* wrong key was read). */
+    resolveKeyIdForUid: (rawUid: String) -> String?,
+    /** Resolved key id -> display name, for the wrong-key alarm card's message only. */
+    resolveKeyDisplayName: (keyId: String) -> String?,
     onEvent: (ReturnFlowOutcome) -> Unit,
-    onNodeCycleComplete: () -> Unit,
+    onNodeCycleComplete: (outcome: String) -> Unit,
 ) {
     val context = LocalContext.current
     val videoRecorder = remember { VideoRecordingController() }
@@ -151,8 +145,8 @@ fun TerminalKeyReturnScreen(
     var stage by remember { mutableStateOf<ReturnStage>(ReturnStage.OpeningDoor) }
     var beeping by remember { mutableStateOf(false) }
     var beepLoud by remember { mutableStateOf(false) }
-    var wrongSlotNodeAddress by remember { mutableStateOf<Int?>(null) }
-    var wrongSlotConfirmedKey by remember { mutableStateOf(false) }
+    var wrongKeyPresent by remember { mutableStateOf(false) }
+    var wrongKeyName by remember { mutableStateOf<String?>(null) }
 
     DisposableEffect(videoRecordingEnabled) {
         if (videoRecordingEnabled) videoRecorder.start("key_return")
@@ -169,7 +163,7 @@ fun TerminalKeyReturnScreen(
         if (nodeAddress == null || deadline == null) {
             // Hardware-free testing convenience only — see the class doc.
             delay(NO_NODE_AUTO_COMPLETE_MILLIS)
-            onNodeCycleComplete()
+            onNodeCycleComplete("NO_NODE_TEST")
             return@LaunchedEffect
         }
         onBeginNodeCycle(
@@ -180,8 +174,8 @@ fun TerminalKeyReturnScreen(
                 onPollInsertion(
                     nodeAddress,
                     deadline,
-                    wrongSlotCandidateNodeAddresses,
-                    resolveKeyFobUid,
+                    { uid -> resolveKeyIdForUid(uid) == key?.id },
+                    resolveKeyIdForUid,
                     {
                         // Return Flow session rebuild (Jul 2026): insertion confirmed IS this
                         // node's cycle ending now — no more per-node door-close wait. The
@@ -189,19 +183,19 @@ fun TerminalKeyReturnScreen(
                         // CabinetHardwareController.pollForKeyInsertion's own insertion branch).
                         beeping = false
                         beepLoud = false
-                        wrongSlotNodeAddress = null
-                        wrongSlotConfirmedKey = false
                         Log.d("ReturnFlowDiag", "TerminalKeyReturnScreen: inserted, Success -> onEvent then onNodeCycleComplete")
                         onEvent(ReturnFlowOutcome.Success(key, slot))
-                        onNodeCycleComplete()
+                        onNodeCycleComplete("SUCCESS")
                     },
-                    { wrongNodeAddress, confirmedKey ->
-                        wrongSlotNodeAddress = wrongNodeAddress
-                        wrongSlotConfirmedKey = confirmedKey
+                    { resolvedKeyId ->
+                        wrongKeyPresent = true
+                        wrongKeyName = resolvedKeyId?.let(resolveKeyDisplayName)
+                        Log.d("ReturnFlowDiag", "TerminalKeyReturnScreen: node=$nodeAddress attemptId=$attemptId WRONG KEY inserted, resolvedKeyId=${resolvedKeyId ?: "unresolved"}")
                     },
                     {
-                        wrongSlotNodeAddress = null
-                        wrongSlotConfirmedKey = false
+                        wrongKeyPresent = false
+                        wrongKeyName = null
+                        Log.d("ReturnFlowDiag", "TerminalKeyReturnScreen: node=$nodeAddress attemptId=$attemptId wrong key removed, abandonment window reset")
                     },
                     {
                         beepLoud = true
@@ -209,15 +203,12 @@ fun TerminalKeyReturnScreen(
                     },
                     {
                         beeping = false
-                        wrongSlotNodeAddress = null
-                        wrongSlotConfirmedKey = false
                         stage = ReturnStage.Abandoned
+                        Log.d("ReturnFlowDiag", "TerminalKeyReturnScreen: node=$nodeAddress attemptId=$attemptId NODE ABANDONED (20s ceiling)")
                         onEvent(ReturnFlowOutcome.Abandoned(key, slot))
                     },
                     { message ->
                         beeping = false
-                        wrongSlotNodeAddress = null
-                        wrongSlotConfirmedKey = false
                         stage = ReturnStage.Failed(message)
                         onEvent(ReturnFlowOutcome.Failed(key, slot, message))
                     },
@@ -230,19 +221,18 @@ fun TerminalKeyReturnScreen(
         )
     }
 
-    // Keyed on `beeping` alone — neither `beepLoud` nor `wrongSlotNodeAddress` may restart
-    // this loop. Same bug as the Take Flow screen: changing beepLoud used to be a
-    // LaunchedEffect key, so the 5s-escalation callback (which flips beepLoud and fires the
-    // voice line together) cancelled and relaunched this coroutine right at that moment.
-    // rememberUpdatedState lets each iteration read the live values without that
-    // cancel/relaunch; wrong-slot detection still forces full-volume beep on top of the
-    // normal 5s-from-door-open escalation, restoring to whatever beepLoud already was once
-    // the wrong-slot clears.
+    // Keyed on `beeping` alone — neither `beepLoud` nor `wrongKeyPresent` may restart this loop.
+    // Same bug as the Take Flow screen: changing beepLoud used to be a LaunchedEffect key, so the
+    // 5s-escalation callback (which flips beepLoud and fires the voice line together) cancelled
+    // and relaunched this coroutine right at that moment. rememberUpdatedState lets each
+    // iteration read the live values without that cancel/relaunch; a wrong-key alarm forces full
+    // volume on top of the normal 5s-from-unlock escalation, same shape the old cross-node
+    // wrong-slot alarm used before Part B moved that concern to session scope.
     val currentBeepLoud by rememberUpdatedState(beepLoud)
-    val currentWrongSlotNodeAddress by rememberUpdatedState(wrongSlotNodeAddress)
+    val currentWrongKeyPresent by rememberUpdatedState(wrongKeyPresent)
     LaunchedEffect(beeping) {
         while (beeping) {
-            audio.beep(loud = currentBeepLoud || currentWrongSlotNodeAddress != null)
+            audio.beep(loud = currentBeepLoud || currentWrongKeyPresent)
             delay(BEEP_INTERVAL_MILLIS)
         }
     }
@@ -254,7 +244,7 @@ fun TerminalKeyReturnScreen(
         val currentStage = stage
         if (currentStage is ReturnStage.Failed || currentStage is ReturnStage.Abandoned) {
             delay(EXIT_AUTO_RETURN_MILLIS)
-            onNodeCycleComplete()
+            onNodeCycleComplete(if (currentStage is ReturnStage.Abandoned) "ABANDONED" else "FAILED")
         }
     }
 
@@ -287,48 +277,29 @@ fun TerminalKeyReturnScreen(
                 }
             }
 
-            wrongSlotNodeAddress?.let { wrongNodeAddress ->
-                // Phase 9F: the most urgent card on the screen, matching the hardware's own
-                // red-light/full-volume-beep intensity — a `2.dp` `colorScheme.error` border +
-                // `4.dp` elevation, the same escalation weight Take Flow's `strongAttention`
-                // uses, reusing the alarm/danger tone this card's `errorContainer` fill already
-                // used (not a new tone tier). The icon is the only new visual distinguishing
-                // "Wrong key" from "Unrecognized item" — wording already did; both keep the
-                // identical alarm tone and card treatment, per the established "equally
-                // anomalous" design intent.
+            if (wrongKeyPresent) {
+                // Same alarm-tone recipe the old cross-node wrong-slot card used (and
+                // ReturnSessionScreen's new hard-block card still uses) — 2.dp colorScheme.error
+                // border, 4.dp elevation, errorContainer fill. This is a different gap (this
+                // node's own identity check, not the cross-node sweep), but the visual language
+                // for "a wrong key needs to be removed" should read the same everywhere it fires.
                 SoftCard(
                     containerColor = MaterialTheme.colorScheme.errorContainer,
                     contentPadding = 16.dp,
                     elevation = 4.dp,
                     border = BorderStroke(2.dp, MaterialTheme.colorScheme.error),
                 ) {
-                    Row(
-                        horizontalArrangement = Arrangement.spacedBy(10.dp, Alignment.CenterHorizontally),
-                        verticalAlignment = Alignment.CenterVertically,
-                        modifier = Modifier.fillMaxWidth(),
-                    ) {
-                        Icon(
-                            imageVector = if (wrongSlotConfirmedKey) Icons.Filled.VpnKey else Icons.AutoMirrored.Filled.HelpOutline,
-                            contentDescription = null,
-                            tint = MaterialTheme.colorScheme.onErrorContainer,
-                        )
-                        Text(
-                            text = if (wrongSlotConfirmedKey) {
-                                "Wrong key — node $wrongNodeAddress"
-                            } else {
-                                "Unrecognized item — node $wrongNodeAddress"
-                            },
-                            style = MaterialTheme.typography.titleMedium,
-                            fontWeight = FontWeight.SemiBold,
-                            color = MaterialTheme.colorScheme.onErrorContainer,
-                        )
-                    }
                     Text(
-                        text = if (wrongSlotConfirmedKey) {
-                            "That is not the key this scan asked for. Remove it and insert the correct key."
-                        } else {
-                            "Something is in that slot that isn't the expected key. Remove it and insert the correct key."
-                        },
+                        text = "Wrong key inserted",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.SemiBold,
+                        color = MaterialTheme.colorScheme.onErrorContainer,
+                        textAlign = TextAlign.Center,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    Text(
+                        text = "This is ${wrongKeyName ?: "an unrecognized key"} — remove it and insert " +
+                            "${key?.displayName ?: "the correct key"}.",
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onErrorContainer,
                         textAlign = TextAlign.Center,
@@ -339,11 +310,10 @@ fun TerminalKeyReturnScreen(
 
             // Status-ring tone follows the stage 1:1 — Failed/Abandoned are the
             // Danger (alarm) tone, everything else mid-flow is Warning
-            // (attention/door-open), matching the design spec's color meaning
-            // rather than a bespoke per-screen color choice. An active wrong-slot
-            // warning also escalates an otherwise-normal waiting stage to alarm.
+            // (attention/door-open), matching the design spec's color meaning. An active
+            // wrong-key alarm also escalates an otherwise-normal waiting stage to alarm.
             val tone = when {
-                wrongSlotNodeAddress != null -> StatusTone.ALARM
+                wrongKeyPresent -> StatusTone.ALARM
                 stage is ReturnStage.Failed || stage is ReturnStage.Abandoned -> StatusTone.ALARM
                 else -> StatusTone.ATTENTION
             }

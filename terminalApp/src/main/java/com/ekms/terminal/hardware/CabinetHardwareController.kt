@@ -6,6 +6,7 @@ import android.util.Log
 import com.ekms.shared.protocol.KeyCabinetLink
 import java.security.MessageDigest
 import java.util.Locale
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
@@ -84,8 +85,33 @@ class CabinetHardwareController(
      * session — [beginReturnSessionDoorMonitor] compares against this, not session-start time,
      * so any new scan gives the warning a fresh full window. */
     private val returnSessionLastScanAtEpochMillis = AtomicLong(0L)
+    /** Multi-key Return hard-block (session-scoped wrong-slot sweep): guards
+     * [beginReturnSessionWrongSlotSweep], the whole open session's own cross-node sweep —
+     * independent of [returnMonitoring] (one node's own cycle) and started/stopped alongside
+     * [returnSessionMonitoring], not tied to any one node's [pollForKeyInsertion] call. */
+    private val returnSessionWrongSlotMonitoring = AtomicBoolean(false)
+    /** Every node address currently reading as wrong-slot-present, mapped to whether it resolved
+     * to a confirmed enrolled key (Multi-key Return hard-block). Replaces the old single nullable
+     * `wrongSlotNode` — tracks every simultaneously-wrong node independently, closing the known
+     * gap where the old sweep only cleared when the *entire* candidate set went quiet. Only ever
+     * touched from [worker]'s single thread, same as [activeReturnNodeAddress]. */
+    private val wrongSlotSweepNodes: MutableMap<Int, Boolean> = mutableMapOf()
     /** Key Take Flow (CLAUDE.md "Terminal App UX Baseline (Production)" §1): guards the whole take, door-open through door-close. */
     private val takeMonitoring = AtomicBoolean(false)
+    /** Node addresses with a currently in-flight [waitForDoorCloseAfterTake] poll (Jul 2026,
+     * session-end-guard-race fix). Tracks real in-flight completion, not queue position — a
+     * queued session's queue-last node can finish its own door-close-wait before an earlier,
+     * still-pending node's poll gets its next tick; [takeMonitoring] must not be released while
+     * any node remains in this set, or that still-pending node's next tick sees the guard
+     * already false and silently exits without ever calling blueLightOff. Added at the start of
+     * [waitForDoorCloseAfterTake], removed on every one of its exit paths. */
+    private val activeTakeDoorCloseWaits: MutableSet<Int> = ConcurrentHashMap.newKeySet()
+    /** Set by [endTakeSession] — "no more nodes will ever be added to
+     * [activeTakeDoorCloseWaits]." [takeMonitoring] is only actually released once this is true
+     * AND [activeTakeDoorCloseWaits] is empty (see [maybeReleaseTakeMonitoring]), reset back to
+     * false whenever a genuinely new take session begins ([beginKeyTakeInternal]'s fresh-acquire
+     * branch). */
+    private val takeSessionEndRequested = AtomicBoolean(false)
     /** Key Attachment (Part 4): guards the guided attach-a-new-key flow, unlock through secure. */
     private val attachmentMonitoring = AtomicBoolean(false)
     /** Key Attachment missing-fob blink (Part 3) — main-thread-owned, only ever touched from
@@ -264,6 +290,13 @@ class CabinetHardwareController(
         if (acquireGuard && !takeMonitoring.compareAndSet(false, true)) {
             notifyCommandFailure("A key take is already in progress.", onFailure)
             return
+        }
+        if (acquireGuard) {
+            // Genuinely new session starting (single-key, or the first node of a queue) —
+            // reset the session-end-guard-race tracking from any (already-finished) prior
+            // session so it starts clean.
+            takeSessionEndRequested.set(false)
+            activeTakeDoorCloseWaits.clear()
         }
         publish(currentState.copy(busy = true, message = "Unlocking and ejecting the door for node $nodeAddress…"))
         worker.execute {
@@ -828,6 +861,9 @@ class CabinetHardwareController(
         val startedAtMillis = System.currentTimeMillis()
         val warningMillis = warningSeconds * 1_000L
         var warningFired = false
+        val invocationId = System.nanoTime()
+        Log.d(LOG_TAG, "TakeFlowDiag: node=$nodeAddress invocationId=$invocationId waitForDoorCloseAfterTake started")
+        activeTakeDoorCloseWaits.add(nodeAddress)
 
         lateinit var pollStep: () -> Unit
         pollStep = {
@@ -836,6 +872,8 @@ class CabinetHardwareController(
                     try {
                         if (!takeMonitoring.get()) {
                             // Stopped externally — exit silently, same as before this fix.
+                            Log.d(LOG_TAG, "TakeFlowDiag: node=$nodeAddress invocationId=$invocationId stopped externally (takeMonitoring=false), blueLightOff NOT called on this path")
+                            activeTakeDoorCloseWaits.remove(nodeAddress)
                             return@execute
                         }
                         if (!transport.isOpen) {
@@ -846,12 +884,19 @@ class CabinetHardwareController(
                         val status = activeLink.checkDoorStatus().data
                         if (!isDoorOpen(status)) {
                             activeLink.blueLightOff(nodeAddress)
-                            // takeMonitoring is deliberately NOT reset here (Jul 2026, door-stays-
-                            // open-across-the-queue fix) — a queued session can have more than one
-                            // node's door-close-wait concurrently pending, and this node closing
-                            // must never clear the flag out from under a still-pending sibling.
-                            // The caller releases the guard exactly once, via endTakeSession(),
-                            // only once it knows the whole session is done.
+                            Log.d(LOG_TAG, "TakeFlowDiag: node=$nodeAddress invocationId=$invocationId door closed, blueLightOff called")
+                            // takeMonitoring is NOT unconditionally reset here (Jul 2026, door-
+                            // stays-open-across-the-queue fix) — a queued session can have more
+                            // than one node's door-close-wait concurrently pending, and this node
+                            // closing must never clear the flag out from under a still-pending
+                            // sibling. Session-end-guard-race fix (Jul 2026): removing this node
+                            // from activeTakeDoorCloseWaits and delegating to
+                            // maybeReleaseTakeMonitoring() means the flag is only actually
+                            // released once every in-flight node has finished AND the caller has
+                            // signaled the queue itself is exhausted (endTakeSession()) — not
+                            // whichever node happens to finish first.
+                            activeTakeDoorCloseWaits.remove(nodeAddress)
+                            maybeReleaseTakeMonitoring()
                             publish(
                                 currentState.copy(
                                     busy = false,
@@ -871,28 +916,61 @@ class CabinetHardwareController(
 
                         mainHandler.postDelayed({ pollStep() }, DOOR_CLOSE_POLL_INTERVAL_MILLIS)
                     } catch (error: Exception) {
+                        // Genuine failure (e.g. connection lost) — still unconditionally ends the
+                        // whole session, not just this node, same as before the session-end-guard-
+                        // race fix; that fix only targets the race where a sibling's premature
+                        // last-by-position completion clears the flag, not a real abort.
                         takeMonitoring.set(false)
+                        Log.d(LOG_TAG, "TakeFlowDiag: node=$nodeAddress invocationId=$invocationId exception path, blueLightOff NOT called on this path: ${error.message}")
+                        activeTakeDoorCloseWaits.remove(nodeAddress)
                         reportCommandFailure("Unable to confirm the door closed for node $nodeAddress", error, onFailure)
                     }
                 }
+            }.onFailure { error ->
+                // Rejected submission means worker was already shut down between scheduling and
+                // firing this step — nothing left to report to; drop silently rather than crash.
+                Log.d(LOG_TAG, "TakeFlowDiag: node=$nodeAddress invocationId=$invocationId worker submission rejected, blueLightOff NOT called on this path: ${error.message}")
+                activeTakeDoorCloseWaits.remove(nodeAddress)
             }
-            // Rejected submission means worker was already shut down between scheduling and
-            // firing this step — nothing left to report to; drop silently rather than crash.
         }
         pollStep()
     }
 
     /**
-     * Explicit "the whole take session is now finished" signal (Jul 2026, door-stays-open-
-     * across-the-queue fix) — releases [takeMonitoring]. The caller (`TerminalAdminApp.kt`)
-     * calls this exactly once per session: from the single-key Take Flow's own completion, or
-     * from a multi-key queue's genuinely last node's completion — never per node, since
-     * [waitForDoorCloseAfterTake] no longer releases the guard itself (a queued session can have
-     * more than one node's door-close-wait concurrently pending, and none of them can safely
-     * assume it's the last).
+     * Explicit "the queue itself is exhausted, no more nodes will ever be added" signal (Jul
+     * 2026, door-stays-open-across-the-queue fix) — the caller (`TerminalAdminApp.kt`) calls
+     * this exactly once per session: from the single-key Take Flow's own completion, or from a
+     * multi-key queue's genuinely-last-by-position node's completion.
+     *
+     * Session-end-guard-race fix (Jul 2026, found via ad hoc hardware testing — a 3-node queue
+     * where the queue-last node's door-close-wait happened to resolve before an earlier,
+     * still-pending node's own poll got its next tick): this used to release [takeMonitoring]
+     * unconditionally, on the assumption that "queue-last by position" always means "last to
+     * actually finish in real time." It doesn't — [waitForDoorCloseAfterTake] polls resolve in
+     * whatever order their independent timers tick, not queue order, so a still-pending non-last
+     * node's poll could see the guard already released and silently exit via its "stopped
+     * externally" branch without ever calling `blueLightOff`. Now only records that the queue is
+     * exhausted; [maybeReleaseTakeMonitoring] is the single place that actually releases the
+     * guard, and only once every node in [activeTakeDoorCloseWaits] has also finished.
      */
     fun endTakeSession() {
-        takeMonitoring.set(false)
+        takeSessionEndRequested.set(true)
+        maybeReleaseTakeMonitoring()
+    }
+
+    /**
+     * Single owner for the "is it actually safe to release [takeMonitoring]" decision (Jul 2026,
+     * session-end-guard-race fix) — both conditions must hold: the queue itself is exhausted
+     * ([takeSessionEndRequested], set by [endTakeSession]) AND no node still has an in-flight
+     * [waitForDoorCloseAfterTake] poll ([activeTakeDoorCloseWaits] empty). Called from
+     * [endTakeSession] itself (covers the no-race case, including single-key takes) and from
+     * every node's door-closed exit path in [waitForDoorCloseAfterTake] (covers the race case,
+     * where the queue-exhausted signal already arrived before this node's own poll finished).
+     */
+    private fun maybeReleaseTakeMonitoring() {
+        if (takeSessionEndRequested.get() && activeTakeDoorCloseWaits.isEmpty()) {
+            takeMonitoring.set(false)
+        }
     }
 
     /**
@@ -918,7 +996,7 @@ class CabinetHardwareController(
         onNodeUnlocked: () -> Unit,
         onFailure: (String) -> Unit,
     ) {
-        if (!canStartOperatorCommand(onFailure)) return
+        if (!canStartOperatorCommand(onFailure, allowReturnSessionReentry = true)) return
         if (!returnMonitoring.compareAndSet(false, true)) {
             notifyCommandFailure("A key return is already in progress at another node.", onFailure)
             return
@@ -993,35 +1071,57 @@ class CabinetHardwareController(
      * duration. This was flagged as a latent risk, not yet live, in a prior audit note — this
      * rebuild is the redesign that note warned would make it live, so the fix ships with it.**
      *
-     * Return Flow rework — wrong-slot detection (unchanged by this rebuild, per instruction):
-     * once the door is open, every physical key hook inside is reachable, not just
-     * [nodeAddress]'s — the protocol has no single command that reports "which node changed,"
-     * so each poll cycle also sweeps [wrongSlotCandidateNodeAddresses] (every *other* node this
-     * cabinet actually has a KeySlot for — not the full 1..127 address space) for an unexpected
-     * bolt-present transition via Test Micro Switch *and Card* (0x17): a readable 4-byte value
-     * is a card UID, all-`0x00` is bolt-present-no-card, all-`0xFF` is nothing present.
-     * [onWrongSlotDetected]/[onWrongSlotCleared] fire only on a state change. A readable UID is
-     * resolved via [resolveKeyFobUid] (the caller's `CardUidResolver` lookup — this class holds
-     * no UID store itself, boundary #2) to confirm a genuinely enrolled key; unresolved presence
-     * still alarms, per the established "equally anomalous" design intent.
+     * Multi-key Return hard-block (found via ad hoc hardware testing, this rework): wrong-slot
+     * detection used to be swept from *inside* this same poll cycle — extracted out to
+     * [beginReturnSessionWrongSlotSweep], a session-scoped sweep independent of whichever node (if
+     * any) is currently active here, so a wrong fob placed between node cycles is still caught,
+     * and so it can close the known "only clears when the whole candidate set goes quiet" gap
+     * (tracks every simultaneously-wrong node independently, not one nullable var). This function's
+     * own job — detecting *this* [nodeAddress]'s own insertion for a successful cycle completion —
+     * is orthogonal to that sweep (the sweep excludes this node entirely, by design).
+     *
+     * **Active-node identity gap (found via ad hoc hardware testing, distinct from the sweep
+     * above): this node's own success check used to accept ANY key.** Switched from bare
+     * [testMicroSwitch] (0x16, presence only) to [testMicroSwitchAndCard] (0x17, presence *and*
+     * card UID per protocol §5.4) so [isExpectedKey] can verify identity before ever locking —
+     * the lock ([releaseElectromagnet]) is a software-issued command timed by this exact poll
+     * tick, not an automatic hardware auto-retain, so there is a real window to check first.
+     * [resolveKeyIdForUid] is a second, separate callback purely for *reporting* which key was
+     * actually read (used for [onWrongKeyInserted]'s payload and this function's own log line) —
+     * kept apart from [isExpectedKey]'s match decision so the raw UID itself never crosses this
+     * boundary or reaches a log line, only the resolved (non-credential) key id, matching this
+     * codebase's existing convention (`resolveKeyFobUid`/the sweep's `confirmedKey` never log or
+     * pass the raw UID either).
+     *
+     * On a mismatch (a different enrolled key's UID, or bolt-present-no-card at all — both
+     * "not verified as the expected key," treated identically per the same "equally anomalous"
+     * intent [resolveKeyFobUid]/the sweep already established): the electromagnet is
+     * deliberately **not** released, so the wrong key stays freely removable with no
+     * re-command needed, [onWrongKeyInserted] fires once (not re-fired every tick while the
+     * same wrong key remains), and — per explicit product decision — the existing
+     * [RETURN_FLOW_ABANDONMENT_TIMEOUT_MILLIS] ceiling is suspended entirely for as long as
+     * this state holds, not merely paused-and-resumed: removing the wrong key
+     * ([onWrongKeyRemoved]) starts a genuinely fresh full window from that moment, not
+     * whatever remained of the original one, since the interruption was never the operator's
+     * own delay to begin with.
      */
     fun pollForKeyInsertion(
         nodeAddress: Int,
         abandonAtEpochMillis: Long,
-        wrongSlotCandidateNodeAddresses: List<Int> = emptyList(),
-        /** Called from this method's own worker thread, not the main thread — must be a fast, side-effect-free lookup. */
-        resolveKeyFobUid: (rawUid: String) -> Boolean = { false },
+        isExpectedKey: (rawUid: String) -> Boolean,
+        /** Called from this method's own worker thread, not the main thread — must be a fast, side-effect-free lookup. Reporting-only, see class doc. */
+        resolveKeyIdForUid: (rawUid: String) -> String? = { null },
         onInserted: () -> Unit,
-        onWrongSlotDetected: (wrongNodeAddress: Int, confirmedKey: Boolean) -> Unit = { _, _ -> },
-        onWrongSlotCleared: () -> Unit = {},
+        onWrongKeyInserted: (resolvedKeyId: String?) -> Unit,
+        onWrongKeyRemoved: () -> Unit,
         onLouderBeepThreshold: () -> Unit,
         onAbandoned: () -> Unit,
         onFailure: (String) -> Unit,
     ) {
         val startedAtMillis = System.currentTimeMillis()
-        val sweepCandidates = wrongSlotCandidateNodeAddresses.filter { it != nodeAddress }
         var louderBeepFired = false
-        var wrongSlotNode: Int? = null
+        var currentAbandonAtEpochMillis = abandonAtEpochMillis
+        var wrongKeyPresent = false
 
         lateinit var pollStep: () -> Unit
         pollStep = {
@@ -1035,46 +1135,45 @@ class CabinetHardwareController(
                         }
                         val activeLink = requireNotNull(link) { "Cabinet protocol is unavailable." }
                         val elapsedSinceUnlockMillis = System.currentTimeMillis() - startedAtMillis
-                        val status = activeLink.testMicroSwitch(nodeAddress).data
-                        if (status.isFourBytesOf(0x00)) {
-                            if (wrongSlotNode != null) {
-                                runCatching { activeLink.redLightOff(wrongSlotNode!!) }
-                            }
-                            activeLink.releaseElectromagnet(nodeAddress)
-                            activeLink.blueLightOff(nodeAddress)
-                            activeReturnNodeAddress = null
-                            returnMonitoring.set(false)
-                            publish(
-                                currentState.copy(
-                                    busy = false,
-                                    nodeStatus = "Node $nodeAddress: key inserted and locked.",
-                                    message = "Key inserted and locked. Ready for the next scan.",
-                                ),
-                            )
-                            mainHandler.post(onInserted)
-                            return@execute
-                        }
+                        val data = activeLink.testMicroSwitchAndCard(nodeAddress).data
 
-                        val sweepHit = sweepCandidates.firstNotNullOfOrNull { candidate ->
-                            val data = activeLink.testMicroSwitchAndCard(candidate).data
-                            when {
-                                data.isFourBytesOf(0xFF) -> null
-                                isReadableFobData(data) -> candidate to resolveKeyFobUid(data.toCompactHex())
-                                else -> candidate to false
+                        if (data.isFourBytesOf(0xFF)) {
+                            if (wrongKeyPresent) {
+                                wrongKeyPresent = false
+                                currentAbandonAtEpochMillis = System.currentTimeMillis() + RETURN_FLOW_ABANDONMENT_TIMEOUT_MILLIS
+                                Log.d(LOG_TAG, "ReturnFlowDiag: node=$nodeAddress wrong key removed, abandonment window reset to a fresh ${RETURN_FLOW_ABANDONMENT_TIMEOUT_MILLIS}ms")
+                                mainHandler.post(onWrongKeyRemoved)
                             }
-                        }
-                        val detectedWrongNode = sweepHit?.first
-                        if (detectedWrongNode != wrongSlotNode) {
-                            if (detectedWrongNode != null) {
-                                activeLink.redLightOn(detectedWrongNode)
-                                wrongSlotNode = detectedWrongNode
-                                val confirmedKey = sweepHit.second
-                                mainHandler.post { onWrongSlotDetected(detectedWrongNode, confirmedKey) }
-                            } else {
-                                wrongSlotNode?.let { previous -> runCatching { activeLink.redLightOff(previous) } }
-                                wrongSlotNode = null
-                                mainHandler.post(onWrongSlotCleared)
+                            // Falls through to the shared louder-beep/abandonment/reschedule tail below.
+                        } else {
+                            val rawUid = if (isReadableFobData(data)) data.toCompactHex() else null
+                            val matched = rawUid != null && isExpectedKey(rawUid)
+                            if (matched) {
+                                activeLink.releaseElectromagnet(nodeAddress)
+                                activeLink.blueLightOff(nodeAddress)
+                                activeReturnNodeAddress = null
+                                returnMonitoring.set(false)
+                                Log.d(LOG_TAG, "ReturnFlowDiag: node=$nodeAddress correct key confirmed via 0x17, SUCCESS")
+                                publish(
+                                    currentState.copy(
+                                        busy = false,
+                                        nodeStatus = "Node $nodeAddress: key inserted and locked.",
+                                        message = "Key inserted and locked. Ready for the next scan.",
+                                    ),
+                                )
+                                mainHandler.post(onInserted)
+                                return@execute
                             }
+                            if (!wrongKeyPresent) {
+                                wrongKeyPresent = true
+                                val resolvedKeyId = rawUid?.let(resolveKeyIdForUid)
+                                Log.d(LOG_TAG, "ReturnFlowDiag: node=$nodeAddress WRONG KEY detected, resolvedKeyId=${resolvedKeyId ?: "unresolved"}")
+                                mainHandler.post { onWrongKeyInserted(resolvedKeyId) }
+                            }
+                            // Suspended: no lock, no abandonment evaluation, no louder-beep escalation
+                            // while a wrong key sits in the slot — reschedule and check again.
+                            mainHandler.postDelayed({ pollStep() }, KEY_INSERTION_POLL_INTERVAL_MILLIS)
+                            return@execute
                         }
 
                         if (!louderBeepFired && elapsedSinceUnlockMillis >= INSERTION_LOUDER_BEEP_THRESHOLD_MILLIS) {
@@ -1082,10 +1181,7 @@ class CabinetHardwareController(
                             mainHandler.post(onLouderBeepThreshold)
                         }
 
-                        if (System.currentTimeMillis() >= abandonAtEpochMillis) {
-                            if (wrongSlotNode != null) {
-                                runCatching { activeLink.redLightOff(wrongSlotNode!!) }
-                            }
+                        if (System.currentTimeMillis() >= currentAbandonAtEpochMillis) {
                             activeLink.releaseElectromagnet(nodeAddress)
                             activeLink.blueLightOff(nodeAddress)
                             activeReturnNodeAddress = null
@@ -1106,6 +1202,91 @@ class CabinetHardwareController(
                         activeReturnNodeAddress = null
                         returnMonitoring.set(false)
                         reportCommandFailure("Unable to monitor key insertion at node $nodeAddress", error, onFailure)
+                    }
+                }
+            }
+        }
+        pollStep()
+    }
+
+    /**
+     * Multi-key Return hard-block: session-scoped cross-node wrong-slot sweep, extracted out of
+     * [pollForKeyInsertion] (see that function's doc). Runs continuously for the whole open
+     * session — including during [ReturnFlow.Waiting], between node cycles, unlike the old
+     * per-node-cycle sweep this replaces — so a wrong fob placed while no node is currently active
+     * is still caught, not just one placed while some other node's cycle happens to be running.
+     *
+     * [candidateNodeAddresses] and [activeNodeAddress] are live suppliers, not frozen snapshots:
+     * the candidate set genuinely shrinks over the session as keys get returned (a node whose key
+     * was *just* returned must stop being a wrong-slot candidate immediately, not keep alarming on
+     * its own now-legitimate occupant), and the active node changes every cycle — a frozen
+     * snapshot taken once at this sweep's start (idempotent, only ever starts once per session)
+     * would go stale after the first node.
+     *
+     * Tracks every currently-wrong node independently in [wrongSlotSweepNodes] (nodeAddress ->
+     * confirmed-enrolled-key), diffing this tick's hits against the previous tick's — firing
+     * [onWrongSlotDetected]/[onWrongSlotCleared] only for nodes whose own presence state actually
+     * changed. This is the direct fix for the known gap the old single-nullable-var sweep had
+     * (only cleared when the *entire* candidate set went quiet, silently reassigning to a second
+     * simultaneously-wrong node without ever clearing the first).
+     *
+     * Idempotent start (no-op if already running), started alongside
+     * [beginReturnSessionDoorMonitor] on the first node's confirmed unlock. Stopped by
+     * [beginReturnSessionDoorMonitor]'s own door-closed branch — the whole session ending is what
+     * ends this sweep too, not a separate trigger.
+     */
+    fun beginReturnSessionWrongSlotSweep(
+        candidateNodeAddresses: () -> List<Int>,
+        activeNodeAddress: () -> Int?,
+        /** Called from this method's own worker thread, not the main thread — must be a fast, side-effect-free lookup. */
+        resolveKeyFobUid: (rawUid: String) -> Boolean,
+        onWrongSlotDetected: (nodeAddress: Int, confirmedKey: Boolean) -> Unit,
+        onWrongSlotCleared: (nodeAddress: Int) -> Unit,
+        onFailure: (String) -> Unit,
+    ) {
+        if (!returnSessionWrongSlotMonitoring.compareAndSet(false, true)) return
+
+        lateinit var pollStep: () -> Unit
+        pollStep = {
+            runCatching {
+                worker.execute {
+                    try {
+                        if (!returnSessionWrongSlotMonitoring.get()) return@execute
+                        if (!transport.isOpen) {
+                            returnSessionWrongSlotMonitoring.set(false)
+                            throw IllegalStateException("Cabinet connection closed while sweeping for wrong-slot fobs.")
+                        }
+                        val activeLink = requireNotNull(link) { "Cabinet protocol is unavailable." }
+                        val excluded = activeNodeAddress()
+                        val candidates = candidateNodeAddresses().filter { it != excluded }
+
+                        val currentHits = mutableMapOf<Int, Boolean>()
+                        for (candidate in candidates) {
+                            val data = activeLink.testMicroSwitchAndCard(candidate).data
+                            if (!data.isFourBytesOf(0xFF)) {
+                                currentHits[candidate] = isReadableFobData(data) && resolveKeyFobUid(data.toCompactHex())
+                            }
+                        }
+
+                        for ((node, confirmedKey) in currentHits) {
+                            if (!wrongSlotSweepNodes.containsKey(node)) {
+                                activeLink.redLightOn(node)
+                                Log.d(LOG_TAG, "ReturnFlowDiag: wrong-slot sweep detected node=$node confirmedKey=$confirmedKey")
+                                mainHandler.post { onWrongSlotDetected(node, confirmedKey) }
+                            }
+                        }
+                        for (node in wrongSlotSweepNodes.keys.filter { it !in currentHits }) {
+                            runCatching { activeLink.redLightOff(node) }
+                            Log.d(LOG_TAG, "ReturnFlowDiag: wrong-slot sweep cleared node=$node")
+                            mainHandler.post { onWrongSlotCleared(node) }
+                        }
+                        wrongSlotSweepNodes.clear()
+                        wrongSlotSweepNodes.putAll(currentHits)
+
+                        mainHandler.postDelayed({ pollStep() }, KEY_INSERTION_POLL_INTERVAL_MILLIS)
+                    } catch (error: Exception) {
+                        returnSessionWrongSlotMonitoring.set(false)
+                        reportCommandFailure("Unable to sweep for wrong-slot fobs", error, onFailure)
                     }
                 }
             }
@@ -1171,12 +1352,22 @@ class CabinetHardwareController(
                         val status = activeLink.checkDoorStatus().data
                         if (!isDoorOpen(status)) {
                             activeReturnNodeAddress?.let { staleNode ->
+                                Log.d(LOG_TAG, "ReturnFlowDiag: node=$staleNode FORCED CLEANUP (door closed mid-cycle)")
                                 runCatching { activeLink.releaseElectromagnet(staleNode) }
                                 runCatching { activeLink.blueLightOff(staleNode) }
                             }
                             activeReturnNodeAddress = null
                             returnMonitoring.set(false)
                             returnSessionMonitoring.set(false)
+                            // Multi-key Return hard-block: the whole session ending is what ends
+                            // beginReturnSessionWrongSlotSweep too — clear its tracked nodes'
+                            // lights here rather than waiting for that sweep's own next tick.
+                            if (returnSessionWrongSlotMonitoring.compareAndSet(true, false)) {
+                                wrongSlotSweepNodes.keys.forEach { node ->
+                                    runCatching { activeLink.redLightOff(node) }
+                                }
+                                wrongSlotSweepNodes.clear()
+                            }
                             publish(
                                 currentState.copy(
                                     busy = false,
@@ -1213,6 +1404,7 @@ class CabinetHardwareController(
      * countdown to a fresh window from now. No-op if no session is currently open.
      */
     fun resetReturnSessionDoorCloseWarning() {
+        Log.d(LOG_TAG, "ReturnFlowDiag: session Door-Close Warning Time reset")
         returnSessionLastScanAtEpochMillis.set(System.currentTimeMillis())
     }
 
@@ -1827,9 +2019,19 @@ class CabinetHardwareController(
      * return directly from login, with no admin "Connect" step first, so
      * [ensureConnectedOnWorker] opens it on demand instead.
      */
-    private fun canStartOperatorCommand(onFailure: (String) -> Unit, checkTakeMonitoring: Boolean = true): Boolean {
+    private fun canStartOperatorCommand(
+        onFailure: (String) -> Unit,
+        checkTakeMonitoring: Boolean = true,
+        allowReturnSessionReentry: Boolean = false,
+    ): Boolean {
         val problem = when {
-            returnMonitoring.get() || returnSessionMonitoring.get() -> "A key return session is active."
+            // allowReturnSessionReentry (beginReturnNodeCycle's own reentry on a session's 2nd+
+            // scan) skips the returnSessionMonitoring half — that flag stays true for the whole
+            // open session by design (beginReturnSessionDoorMonitor), so checking it here would
+            // reject the session's own next node cycle. returnMonitoring (a genuinely active
+            // node cycle) still blocks regardless, for every caller.
+            returnMonitoring.get() -> "A key return session is active."
+            !allowReturnSessionReentry && returnSessionMonitoring.get() -> "A key return session is active."
             // Skipped for a queued take's continuation nodes (see beginQueuedKeyTake's
             // isContinuingSession) — takeMonitoring is deliberately still true there, held for
             // the whole multi-key session, not per node; it isn't "someone else's take."

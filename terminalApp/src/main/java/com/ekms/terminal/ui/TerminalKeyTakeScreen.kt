@@ -1,5 +1,6 @@
 package com.ekms.terminal.ui
 
+import android.util.Log
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -151,6 +152,7 @@ fun TerminalKeyTakeScreen(
                         beepLoud = false
                         onKeyRemoved()
                         stage = TakeStage.WaitingForDoorClose(warningExpired = false)
+                        Log.d("TakeFlowDiag", "TerminalKeyTakeScreen: node=$nodeAddress invoking waitForDoorCloseAfterTake")
                         onWaitForDoorClose(
                             nodeAddress,
                             takeWarningTimeSeconds,
