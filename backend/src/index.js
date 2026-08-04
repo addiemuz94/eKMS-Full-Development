@@ -20,6 +20,8 @@ import keyAccessRequestsRouter, { passkeyLogin } from './routes/keyAccessRequest
 import mobilePushTokensRouter from './routes/mobilePushTokens.js';
 import auditRouter from './routes/audit.js';
 import { terminalSyncRouter, syncConflictsRouter } from './routes/sync.js';
+import notificationsStreamRouter from './routes/notificationsStream.js';
+import { startDeadlineMonitor } from './deadlineMonitor.js';
 import {
   eventDefinitionsRouter,
   schedulesRouter,
@@ -125,11 +127,27 @@ terminalSync.use(requireAuth, idempotency);
 terminalSync.use('/', terminalSyncRouter);
 app.use('/v1/terminal/sync', terminalSync);
 
+// Deliberately NOT behind a blanket requireAuth here (unlike every router above) — the ticket
+// route is normally Bearer-authenticated, the stream route is ticket-authenticated instead,
+// since EventSource cannot send an Authorization header. See notificationsStream.js's own doc.
+app.use('/v1/notifications', notificationsStreamRouter);
+
 app.use((err, _req, res, _next) => {
   console.error(err);
   res.status(500).json({ error: 'INTERNAL', message: 'Unexpected server error' });
 });
 
-app.listen(port, () => {
+startDeadlineMonitor();
+
+const server = app.listen(port, () => {
   console.log(`eKMS backend listening on http://localhost:${port}`);
 });
+// The Super Admin SSE stream (/v1/notifications/stream) is a genuinely long-lived GET response
+// — Node's http.Server-level requestTimeout (a slow-loris mitigation covering how long the
+// *request* may take to fully arrive, default 300s in current Node LTS) is a single setting on
+// this one shared server instance; Express/http offers no per-route way to scope it separately.
+// Disabled globally rather than left to silently risk cutting the stream off — acceptable here
+// specifically because this backend already sits behind Caddy as the actual internet-facing
+// edge (Caddyfile), which provides its own layer of protection against the slow-loris pattern
+// this setting exists to mitigate.
+server.requestTimeout = 0;

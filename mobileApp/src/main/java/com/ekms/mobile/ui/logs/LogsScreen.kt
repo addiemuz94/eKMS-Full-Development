@@ -331,7 +331,7 @@ fun LogsScreen(
 @Composable
 private fun SummaryChip(label: String, value: Int) {
     Card {
-        Column(Modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
+        Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
             Text(label, style = MaterialTheme.typography.labelSmall)
             Text("$value", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
         }

@@ -4,6 +4,7 @@ import { BrowserRouter } from 'react-router-dom'
 import App from './App'
 import { AuthProvider } from './auth/AuthContext'
 import { ErrorBoundary } from './components/ErrorBoundary'
+import { NotificationsProvider } from './notifications/NotificationsContext'
 import { ThemeProvider } from './theme/ThemeContext'
 import './styles.css'
 
@@ -17,7 +18,9 @@ if (!rootEl) {
         <ThemeProvider>
           <BrowserRouter>
             <AuthProvider>
-              <App />
+              <NotificationsProvider>
+                <App />
+              </NotificationsProvider>
             </AuthProvider>
           </BrowserRouter>
         </ThemeProvider>

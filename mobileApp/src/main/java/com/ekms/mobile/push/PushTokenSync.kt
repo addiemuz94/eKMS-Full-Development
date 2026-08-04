@@ -3,15 +3,18 @@ package com.ekms.mobile.push
 import android.content.Context
 import android.util.Log
 import com.ekms.mobile.data.MobileApiClient
+import com.google.firebase.messaging.FirebaseMessaging
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.tasks.await
 
 /**
- * Registers an FCM device token with the backend when available.
- * Without Firebase/`google-services.json`, this no-ops (Alerts polling remains the fallback).
- * Set prefs key `fcm_token_override` for staging tests, or wire FirebaseMessaging when ops adds
- * the real google-services.json (see CLAUDE_MOBILE.md).
+ * Registers an FCM device token with the backend. Reads the real token from
+ * [FirebaseMessaging]; if Play Services/Firebase init fails for any reason (no Play Services on
+ * the device, no network, misconfigured `google-services.json`), [tryReadFirebaseToken] catches
+ * it and returns null — Alerts polling remains the fallback.
+ * Set prefs key `fcm_token_override` for staging tests where a real device token isn't handy.
  */
 object PushTokenSync {
     private const val TAG = "PushTokenSync"
@@ -25,13 +28,13 @@ object PushTokenSync {
                 val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
                 val token = prefs.getString(KEY_OVERRIDE, null)
                     ?: prefs.getString(KEY_LAST, null)
-                    ?: tryReadFirebaseToken(context)
+                    ?: tryReadFirebaseToken()
                 if (token.isNullOrBlank()) {
                     Log.i(TAG, "No FCM token yet — push skipped (poll Alerts instead)")
                     return@launch
                 }
                 prefs.edit().putString(KEY_LAST, token).apply()
-                apiClient.registerPushToken(token)
+                apiClient.registerPushToken(fcmToken = token)
                 Log.i(TAG, "Push token registered with backend")
             } catch (e: Exception) {
                 Log.w(TAG, "Push token sync failed: ${e.message}")
@@ -46,21 +49,13 @@ object PushTokenSync {
             .apply()
     }
 
-    private fun tryReadFirebaseToken(context: Context): String? {
+    private suspend fun tryReadFirebaseToken(): String? {
         return try {
-            val firebaseApp = Class.forName("com.google.firebase.FirebaseApp")
-            val getInstance = firebaseApp.getMethod("getInstance")
-            getInstance.invoke(null) // ensure initialized
-            val messaging = Class.forName("com.google.firebase.messaging.FirebaseMessaging")
-            val getMessaging = messaging.getMethod("getInstance")
-            val instance = getMessaging.invoke(null)
-            val getToken = messaging.getMethod("getToken")
-            val task = getToken.invoke(instance)
-            // Avoid blocking Tasks API hard — reflection Tasks.await if present
-            val tasks = Class.forName("com.google.android.gms.tasks.Tasks")
-            val await = tasks.getMethod("await", Class.forName("com.google.android.gms.tasks.Task"))
-            await.invoke(null, task) as? String
-        } catch (_: Throwable) {
+            FirebaseMessaging.getInstance().token.await()
+        } catch (e: Throwable) {
+            // Play Services unavailable, no network, misconfigured google-services.json, etc. —
+            // fail safe rather than crash; Alerts polling remains the fallback.
+            Log.w(TAG, "FirebaseMessaging token fetch failed: ${e.message}")
             null
         }
     }

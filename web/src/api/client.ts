@@ -648,4 +648,10 @@ export const api = {
       'GET',
       '/v1/reports/equipment-operation-logs',
     ).then((r) => r.items ?? []),
+
+  // Single-use, 30s-lived ticket for the SSE stream below — EventSource cannot send an
+  // Authorization header, so this Bearer-authenticated mint is the actual auth check, and the
+  // stream connection itself must open immediately after. See notifications.js/notificationsStream.js.
+  mintNotificationStreamTicket: () =>
+    request<{ ticket: string }>('POST', '/v1/notifications/stream/ticket', {}),
 }

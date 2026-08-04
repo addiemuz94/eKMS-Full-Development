@@ -3,6 +3,7 @@ import { LogOut } from 'lucide-react'
 import { NavLink, Outlet, useLocation } from 'react-router-dom'
 import { useAuth } from '../auth/AuthContext'
 import { Button } from '../components/ui'
+import { NotificationBell } from '../notifications/NotificationBell'
 import { NAV_ICONS, type NavIconName } from './NavIcons'
 
 type NavItem = {
@@ -208,6 +209,7 @@ export function AppShell() {
         </nav>
 
         <div className="sidebar-footer">
+          <NotificationBell />
           <Button
             variant="outlined"
             className="sidebar-logout"
@@ -230,14 +232,17 @@ export function AppShell() {
           >
             {navOpen ? 'Close' : 'Menu'}
           </Button>
-          <Button
-            variant="outlined"
-            className="topbar-logout"
-            icon={LogOut}
-            onClick={logout}
-          >
-            Sign out
-          </Button>
+          <div className="topbar-actions">
+            <NotificationBell />
+            <Button
+              variant="outlined"
+              className="topbar-logout"
+              icon={LogOut}
+              onClick={logout}
+            >
+              Sign out
+            </Button>
+          </div>
         </div>
         <div className="content">
           <Outlet />

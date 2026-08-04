@@ -44,7 +44,9 @@ async function expireOverdueRequests() {
   );
 }
 
-async function notifyRegionalAdminsForSite(siteId, title, body, data = {}) {
+// Exported (Aug 2026, checkout-deadline notifications) — deadlineMonitor.js reuses this as-is
+// for the same "resolve site -> region -> covering Regional Admins" logic, not a reimplementation.
+export async function notifyRegionalAdminsForSite(siteId, title, body, data = {}) {
   const regionId = await regionIdForSite(siteId);
   if (!regionId) return;
   const [rows] = await pool.execute(

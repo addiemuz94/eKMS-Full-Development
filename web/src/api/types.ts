@@ -162,3 +162,13 @@ export type ActivitySummaryResponse = {
   total: number
   byCategory: Partial<Record<ReportCategory, number>>
 }
+
+// Checkout-deadline live SSE events — see backend/src/deadlineMonitor.js. The wire payload only
+// ever carries these three fields (no title/body text — that's rendered client-side).
+export type NotificationStreamEventType = 'CHECKOUT_WARNING_15MIN' | 'CHECKOUT_OVERDUE'
+
+export type NotificationStreamPayload = {
+  checkoutId: string
+  keyId: string
+  dueAtEpochMillis: number
+}

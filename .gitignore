@@ -17,3 +17,6 @@ backend/.env.production
 # React portal (also has web/.gitignore)
 web/node_modules/
 web/dist/
+
+# Firebase app config (per-project API keys) — never commit
+**/google-services.json

@@ -5,6 +5,7 @@ plugins {
     alias(libs.plugins.kotlin.android)
     alias(libs.plugins.compose.compiler)
     alias(libs.plugins.kotlin.serialization)
+    alias(libs.plugins.google.services)
 }
 
 android {
@@ -38,6 +39,7 @@ kotlin {
 
 dependencies {
     implementation(project(":shared"))
+    implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.activity.compose)
     implementation(libs.androidx.lifecycle.runtime.ktx)
     implementation(libs.androidx.compose.material3)
@@ -50,8 +52,13 @@ dependencies {
     // introducing e.g. Retrofit) keeps exactly one HTTP stack across the two Android apps.
     implementation(libs.kotlinx.serialization.json)
     implementation(libs.kotlinx.coroutines.android)
+    implementation(libs.kotlinx.coroutines.play.services)
     implementation(libs.ktor.client.core)
     implementation(libs.ktor.client.okhttp)
     implementation(libs.ktor.client.content.negotiation)
     implementation(libs.ktor.serialization.kotlinx.json)
+
+    // Real push notifications for checkout-deadline alerts (see CLAUDE_MOBILE.md).
+    implementation(platform(libs.firebase.bom))
+    implementation(libs.firebase.messaging)
 }

@@ -47,6 +47,7 @@ import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
+import com.ekms.mobile.MainActivity
 import com.ekms.mobile.data.MobileApiClient
 import com.ekms.mobile.data.rememberMobileNetworkStatus
 import com.ekms.mobile.ui.access.AccessScreen
@@ -73,7 +74,10 @@ private const val LIVE_REFRESH_INTERVAL_MILLIS = 30_000L
  * [refreshEpoch] bumps on resume and every 30s so tabs re-fetch portal changes while open.
  */
 @Composable
-fun SuperAdminCompanionApp() {
+fun SuperAdminCompanionApp(
+    openTabRequest: String? = null,
+    onOpenTabConsumed: () -> Unit = {},
+) {
     EkmsMobileTheme {
         val applicationContext = LocalContext.current.applicationContext
         val apiClient = remember(applicationContext) { MobileApiClient(applicationContext) }
@@ -127,6 +131,16 @@ fun SuperAdminCompanionApp() {
                 }
                 launchSingleTop = true
                 restoreState = true
+            }
+        }
+
+        // A tapped push notification requests a tab (currently only Alerts) via MainActivity's
+        // intent extra; wait for auth so a cold start (app not already running) lands on the
+        // tab only after login succeeds instead of being dropped.
+        LaunchedEffect(openTabRequest, authenticated) {
+            if (authenticated && openTabRequest == MainActivity.TAB_ALERTS) {
+                goToTab(MobileDestination.ALERTS.route)
+                onOpenTabConsumed()
             }
         }
 

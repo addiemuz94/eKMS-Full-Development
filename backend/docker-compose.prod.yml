@@ -55,6 +55,13 @@ services:
       SUPER_ADMIN_PASSWORD: ${SUPER_ADMIN_PASSWORD}
       SUPER_ADMIN_DISPLAY_NAME: ${SUPER_ADMIN_DISPLAY_NAME:-Super Admin}
       CORS_ORIGINS: ${CORS_ORIGINS:-https://kms-cvt.com,https://www.kms-cvt.com}
+      # Real FCM push (checkout-deadline notifications) — unset/missing file = fcm.js logs and
+      # no-ops gracefully, safe to deploy before Firebase signup is complete. Once the user
+      # provides the actual service-account JSON on the VPS, also uncomment the matching
+      # volume mount below to make it visible at this same path inside the container.
+      FCM_SERVICE_ACCOUNT_PATH: ${FCM_SERVICE_ACCOUNT_PATH:-}
+    # volumes:
+    #   - ${FCM_SERVICE_ACCOUNT_HOST_PATH}:/run/secrets/fcm-service-account.json:ro
     networks:
       - ekms
 
