@@ -17,6 +17,11 @@ CREATE TABLE IF NOT EXISTS key_access_request_documents (
   doc_kind VARCHAR(32) NOT NULL,
   file_name VARCHAR(255) NOT NULL,
   content_type VARCHAR(128) NOT NULL DEFAULT 'application/octet-stream',
+  -- MEDIUMBLOB's 16 MB is the column's technical ceiling, not the enforced limit. The real,
+  -- enforced ceiling is 5 MB, checked both client-side (KeyAccessRequestScreen.kt, UX-only) and
+  -- server-side (keyAccessRequests.js's POST /, the actual gate — a client check alone can be
+  -- bypassed). Do not treat MEDIUMBLOB's headroom as license to raise the enforced limit here
+  -- without also raising it in both of those places.
   content MEDIUMBLOB NOT NULL,
   created_at_epoch_ms BIGINT NOT NULL,
   KEY idx_kard_request (request_id),

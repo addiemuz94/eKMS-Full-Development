@@ -266,6 +266,15 @@ enum class AuditEventType {
     KEY_ACCESS_REQUEST_REQUESTED,
     KEY_ACCESS_REQUEST_APPROVED,
     KEY_ACCESS_REQUEST_REJECTED,
+    /** Pre-existing gap closed in passing: these two were already emitted by
+     * keyAccessRequests.js's `/pic-approve` and `/revoke` routes (Vendor Stage 1 approval and
+     * admin PIN revocation) but were never added to this enum. Not new behavior — just closing
+     * the contract gap while adding CANCELLED below, which follows the same naming pattern. */
+    KEY_ACCESS_REQUEST_PIC_APPROVED,
+    KEY_ACCESS_REQUEST_REVOKED,
+    /** Requester (Vendor/Technician) self-cancel — see `ApiPaths.ADMIN_KEY_ACCESS_REQUEST_CANCEL`
+     * in ApiContracts.kt. */
+    KEY_ACCESS_REQUEST_CANCELLED,
     /** A terminal-side passkey-login attempt (`POST /v1/terminal/passkey-login`) succeeded,
      * issuing a KEY_ACCESS_SESSION-scoped token — see signKeyAccessSessionToken in
      * backend/src/middleware/auth.js. */
@@ -273,4 +282,11 @@ enum class AuditEventType {
     /** A terminal-side passkey-login attempt was rejected: wrong/expired/wrong-site passkey, or
      * an unknown terminalId. */
     KEY_ACCESS_SESSION_LOGIN_FAILED,
+    /** An APPROVED request's PIN window lapsed without ever being used —
+     * backend/src/keyAccessAutoExtend.js's tick job pushed both `passkeyExpiresAtEpochMillis`
+     * and the return window forward by 1 hour rather than letting it go EXPIRED. No `actorUserId`
+     * (system-triggered, not a real user action). Repeats hourly until either a successful
+     * terminal passkey-login stamps `first_used_at_epoch_ms` (stops future extension, does not
+     * invalidate the PIN) or the requester cancels the request (see CANCELLED). */
+    KEY_ACCESS_REQUEST_AUTO_EXTENDED,
 }

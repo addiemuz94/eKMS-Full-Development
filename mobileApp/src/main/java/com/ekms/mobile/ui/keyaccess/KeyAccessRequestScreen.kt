@@ -88,6 +88,7 @@ fun KeyAccessRequestScreen(
     var selectedApprovedId by remember { mutableStateOf<String?>(null) }
     var approvedMenuExpanded by remember { mutableStateOf(false) }
     var busyPicId by remember { mutableStateOf<String?>(null) }
+    var busyCancelId by remember { mutableStateOf<String?>(null) }
     var hasData by remember { mutableStateOf(false) }
 
     val docPicker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
@@ -223,6 +224,22 @@ fun KeyAccessRequestScreen(
         }
     }
 
+    fun cancel(id: String) {
+        busyCancelId = id
+        scope.launch {
+            try {
+                apiClient.cancelKeyAccessRequest(id)
+                if (selectedApprovedId == id) selectedApprovedId = null
+                onNotice("Request cancelled. Submit a new request if you still need access.")
+                reload()
+            } catch (e: Exception) {
+                onNotice(e.message ?: "Couldn't cancel the request.")
+            } finally {
+                busyCancelId = null
+            }
+        }
+    }
+
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -252,6 +269,12 @@ fun KeyAccessRequestScreen(
                                 Text(request.siteName ?: request.siteId, fontWeight = FontWeight.SemiBold)
                                 Text(request.requesterDisplayName ?: request.requesterUserId)
                                 Text(request.reason ?: "", style = MaterialTheme.typography.bodySmall)
+                                KeyAccessDocumentsSection(
+                                    apiClient = apiClient,
+                                    requestId = request.id,
+                                    documents = request.documents,
+                                    onNotice = onNotice,
+                                )
                                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                                     Button(
                                         onClick = {
@@ -436,7 +459,17 @@ fun KeyAccessRequestScreen(
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 } else {
-                    myRequests.forEach { request -> KeyAccessRequestRow(request) }
+                    myRequests.forEach { request ->
+                        KeyAccessRequestRow(
+                            request = request,
+                            busy = busyCancelId == request.id,
+                            onCancel = if (isCancellableStatus(request.status)) {
+                                { cancel(request.id) }
+                            } else {
+                                null
+                            },
+                        )
+                    }
                 }
             }
         }
@@ -559,7 +592,11 @@ private fun cabinetSummary(request: KeyAccessRequestDto): String =
     }
 
 @Composable
-private fun KeyAccessRequestRow(request: KeyAccessRequestDto) {
+private fun KeyAccessRequestRow(
+    request: KeyAccessRequestDto,
+    busy: Boolean = false,
+    onCancel: (() -> Unit)? = null,
+) {
     Card(modifier = Modifier.fillMaxWidth()) {
         Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
             Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
@@ -576,6 +613,7 @@ private fun KeyAccessRequestRow(request: KeyAccessRequestDto) {
                         KeyAccessRequestStatus.REJECTED,
                         KeyAccessRequestStatus.REVOKED,
                         KeyAccessRequestStatus.EXPIRED,
+                        KeyAccessRequestStatus.CANCELLED,
                         -> MaterialTheme.colorScheme.error
                         KeyAccessRequestStatus.PENDING,
                         KeyAccessRequestStatus.PENDING_PIC,
@@ -603,15 +641,51 @@ private fun KeyAccessRequestRow(request: KeyAccessRequestDto) {
             if (window != null) {
                 Text(window, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
+            if (onCancel != null) {
+                OutlinedButton(
+                    onClick = onCancel,
+                    modifier = Modifier.fillMaxWidth(),
+                    enabled = !busy,
+                ) {
+                    Text(if (busy) "Cancelling…" else "Cancel request")
+                }
+            }
         }
     }
 }
 
+/** PENDING/PENDING_PIC/PENDING_RA/APPROVED only — matches the backend's own CANCELLABLE_STATUSES
+ * in keyAccessRequests.js's POST /:id/cancel; every other status is already terminal. */
+internal fun isCancellableStatus(status: KeyAccessRequestStatus): Boolean = when (status) {
+    KeyAccessRequestStatus.PENDING,
+    KeyAccessRequestStatus.PENDING_PIC,
+    KeyAccessRequestStatus.PENDING_RA,
+    KeyAccessRequestStatus.APPROVED,
+    -> true
+    KeyAccessRequestStatus.REJECTED,
+    KeyAccessRequestStatus.REVOKED,
+    KeyAccessRequestStatus.EXPIRED,
+    KeyAccessRequestStatus.CANCELLED,
+    -> false
+}
+
+/**
+ * [KeyAccessRequestDto.returnAtEpochMillis] no longer necessarily reflects only what was
+ * originally submitted — an APPROVED request left unused past its window is auto-extended by 1
+ * hour, repeating, by the backend's keyAccessAutoExtend.js, which bumps this field alongside the
+ * PIN's own expiry. Landed on: relabel "return" to "current return" whenever the request is
+ * still APPROVED (the only status auto-extend ever touches) — cheap, always-accurate (it never
+ * claims a specific extension happened, just that this is the live value, extended or not), and
+ * needs no new "was this extended" field on the DTO. Every other status keeps the original
+ * "return" wording, since a non-APPROVED request's return_at_epoch_ms is frozen (auto-extend's
+ * own query only ever matches status = 'APPROVED').
+ */
 internal fun windowLabel(request: KeyAccessRequestDto): String? {
     val pickup = request.pickupAtEpochMillis
     val ret = request.returnAtEpochMillis
+    val returnLabel = if (request.status == KeyAccessRequestStatus.APPROVED) "current return" else "return"
     return if (pickup != null && ret != null) {
-        "Pickup ${formatEpochMillis(pickup)} → return ${formatEpochMillis(ret)}"
+        "Pickup ${formatEpochMillis(pickup)} → $returnLabel ${formatEpochMillis(ret)}"
     } else {
         "Return within ${formatDuration(request.requestedDurationMinutes)}"
     }

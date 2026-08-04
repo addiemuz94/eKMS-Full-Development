@@ -318,6 +318,20 @@ class MobileApiClient(context: Context) {
         )
     }
 
+    /** Requester self-service only (their own request) — terminal, no-revive; server 404s for
+     * anyone else's request rather than confirming it exists. */
+    suspend fun cancelKeyAccessRequest(id: String): KeyAccessRequestDto {
+        ensureBaseUrl()
+        return decode(
+            send(
+                method = HttpMethod.Post,
+                path = ApiPaths.ADMIN_KEY_ACCESS_REQUEST_CANCEL.replace("{id}", id),
+                body = "{}",
+                authenticated = true,
+            ),
+        )
+    }
+
     suspend fun listPicInbox(): List<KeyAccessRequestDto> {
         ensureBaseUrl()
         return decode<KeyAccessRequestListResponse>(
@@ -347,6 +361,29 @@ class MobileApiClient(context: Context) {
                 authenticated = true,
             ),
         )
+    }
+
+    /**
+     * Downloads one attached document's raw bytes (authenticated) — same raw-request-with-Bearer
+     * pattern as [downloadReportExportBytes] (a binary body doesn't go through the JSON
+     * ContentNegotiation plugin). Caller opens the bytes via FileProvider, mirroring the existing
+     * PDF-export flow in `LogsScreen.kt`.
+     */
+    suspend fun downloadKeyAccessRequestDocument(requestId: String, documentId: String): ByteArray {
+        ensureBaseUrl()
+        val path = ApiPaths.ADMIN_KEY_ACCESS_REQUEST_DOCUMENT_DOWNLOAD
+            .replace("{id}", requestId)
+            .replace("{documentId}", documentId)
+        val response = http.request("$baseUrl$path") {
+            method = HttpMethod.Get
+            val token = accessToken ?: throw MobileApiException(401, "Not signed in to the server")
+            header(HttpHeaders.Authorization, "Bearer $token")
+        }
+        if (!response.status.isSuccess()) {
+            val text = response.bodyAsText()
+            throw MobileApiException(response.status.value, text.ifBlank { "Document download failed" })
+        }
+        return response.bodyAsBytes()
     }
 
     suspend fun registerPushToken(fcmToken: String, platform: String = "ANDROID") {

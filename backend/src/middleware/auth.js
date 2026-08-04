@@ -139,6 +139,10 @@ const REGIONAL_ADMIN_ALLOWED_ROUTES = [
   { method: 'POST', pattern: /^\/key-access-requests\/[^/]+\/reject$/ },
   { method: 'POST', pattern: /^\/key-access-requests\/[^/]+\/revoke$/ },
   { method: 'GET', pattern: /^\/key-access-requests\/site-pics\/[^/]+$/ },
+  // Document bytes (Vendor Work Permit/NIOSH/IC uploads) — row-level scoping is
+  // assertMayReadRequest in keyAccessRequests.js (same requester/PIC/region-site check as the
+  // GET /:id route above), not this allowlist; this only controls reachability.
+  { method: 'GET', pattern: /^\/key-access-requests\/[^/]+\/documents\/[^/]+$/ },
   { method: 'POST', pattern: /^\/mobile-push-tokens$/ },
   // Sites: read-only (list/get), added for the terminal's item-14 site-name display — NOT
   // create/update/delete. sites.js's own handlers additionally scope both of these to the
@@ -172,6 +176,15 @@ const TECHNICIAN_VENDOR_ALLOWED_ROUTES = [
   { method: 'POST', pattern: /^\/key-access-requests$/ },
   { method: 'POST', pattern: /^\/key-access-requests\/[^/]+\/pic-approve$/ },
   { method: 'POST', pattern: /^\/key-access-requests\/[^/]+\/reject$/ },
+  // Requester self-cancel (own request only) — row-level "must be requester_user_id" check is
+  // in keyAccessRequests.js's /cancel handler; this only controls reachability. Not on the
+  // Regional Admin allowlist — cancel is deliberately requester-only, admins use /revoke.
+  { method: 'POST', pattern: /^\/key-access-requests\/[^/]+\/cancel$/ },
+  // Document bytes (Vendor Work Permit/NIOSH/IC uploads) — a Vendor requester views their own
+  // upload back, a Technician PIC views what was attached to a request they're staged to
+  // approve. Row-level scoping is assertMayReadRequest in keyAccessRequests.js; this only
+  // controls reachability.
+  { method: 'GET', pattern: /^\/key-access-requests\/[^/]+\/documents\/[^/]+$/ },
   { method: 'POST', pattern: /^\/mobile-push-tokens$/ },
   { method: 'GET', pattern: /^\/keys$/ },
   { method: 'GET', pattern: /^\/access-grants$/ },
@@ -315,11 +328,22 @@ export function signTerminalRefreshToken(terminal) {
  * this role decodes successfully via `requireAuth` (same secret/algorithm as every other token)
  * but 403s under `requireSuperAdminOrAllowlistedRole` until a future pass defines what it may do.
  */
+// Matches keyAccessAutoExtend.js's own extension amount — not the same constant (different
+// file/domain), but deliberately the same value so a lapsed-but-forgiven session's granted
+// lifetime lines up with what a real extend would have given it.
+const LAPSED_SESSION_FLOOR_SECONDS = 60 * 60; // 1 hour
+
 export function signKeyAccessSessionToken(request, keyIds) {
-  const expiresInSeconds = Math.max(
-    1,
-    Math.floor((Number(request.passkey_expires_at_epoch_ms) - Date.now()) / 1000),
-  );
+  const rawExpiresInSeconds = Math.floor((Number(request.passkey_expires_at_epoch_ms) - Date.now()) / 1000);
+  // A normal (not-yet-lapsed) login uses its real remaining time, unaffected. The only way this
+  // function is reached with a non-positive rawExpiresInSeconds is passkeyLogin()'s own
+  // forgiving-lapse case (keyAccessRequests.js) — a lapsed-but-never-used APPROVED passkey that
+  // was deliberately let through rather than hard-failed, precisely because
+  // keyAccessAutoExtend.js's recurring extend means it isn't really "expired." Flooring the
+  // TOKEN's lifetime here (only) makes that granted session actually usable; it does NOT persist
+  // anything back to passkey_expires_at_epoch_ms/return_at_epoch_ms on the row — those stay
+  // exactly as Part B/D left them, no catch-up extend.
+  const expiresInSeconds = rawExpiresInSeconds > 0 ? rawExpiresInSeconds : LAPSED_SESSION_FLOOR_SECONDS;
   return jwt.sign(
     {
       sub: request.requester_user_id,

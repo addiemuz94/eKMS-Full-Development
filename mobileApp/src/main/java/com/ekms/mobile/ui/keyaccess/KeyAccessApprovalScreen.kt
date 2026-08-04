@@ -1,5 +1,7 @@
 package com.ekms.mobile.ui.keyaccess
 
+import android.content.Intent
+import android.os.Environment
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -19,12 +21,16 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.core.content.FileProvider
 import com.ekms.mobile.data.MobileApiClient
+import com.ekms.shared.api.KeyAccessRequestDocumentMeta
 import com.ekms.shared.api.KeyAccessRequestDto
 import com.ekms.shared.api.KeyAccessRequestStatus
 import kotlinx.coroutines.launch
+import java.io.File
 
 /**
  * Regional Admin / Super Admin key-access queue: approve/reject PENDING, revoke APPROVED
@@ -134,11 +140,13 @@ fun KeyAccessApprovalScreen(
                 } else {
                     pending.forEach { request ->
                         KeyAccessAdminCard(
+                            apiClient = apiClient,
                             request = request,
                             busy = busyRequestId == request.id,
                             onApprove = { approve(request.id) },
                             onReject = { reject(request.id) },
                             onRevoke = null,
+                            onNotice = onNotice,
                         )
                     }
                 }
@@ -153,11 +161,13 @@ fun KeyAccessApprovalScreen(
                 } else {
                     approved.forEach { request ->
                         KeyAccessAdminCard(
+                            apiClient = apiClient,
                             request = request,
                             busy = busyRequestId == request.id,
                             onApprove = null,
                             onReject = null,
                             onRevoke = { revoke(request.id) },
+                            onNotice = onNotice,
                         )
                     }
                 }
@@ -168,11 +178,13 @@ fun KeyAccessApprovalScreen(
 
 @Composable
 private fun KeyAccessAdminCard(
+    apiClient: MobileApiClient,
     request: KeyAccessRequestDto,
     busy: Boolean,
     onApprove: (() -> Unit)?,
     onReject: (() -> Unit)?,
     onRevoke: (() -> Unit)?,
+    onNotice: (String) -> Unit,
 ) {
     Card(modifier = Modifier.fillMaxWidth()) {
         Column(
@@ -211,6 +223,12 @@ private fun KeyAccessAdminCard(
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
+            KeyAccessDocumentsSection(
+                apiClient = apiClient,
+                requestId = request.id,
+                documents = request.documents,
+                onNotice = onNotice,
+            )
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(10.dp),
@@ -243,4 +261,86 @@ private fun KeyAccessAdminCard(
             }
         }
     }
+}
+
+/**
+ * Attached-document list (Vendor Work Permit/NIOSH/IC) for a PIC/Regional Admin to review before
+ * acting on a request — or for the requester to see their own upload back. Renders nothing for a
+ * Technician-only request (`documents` is always empty there, see [KeyAccessRequestDto.documents]).
+ * Shared between [KeyAccessApprovalScreen] (RA queue) and [KeyAccessRequestScreen] (PIC inbox) —
+ * both live in this package, so no export/import needed beyond `internal` visibility.
+ *
+ * Download-then-view mirrors `LogsScreen.kt`'s Activity Report PDF export exactly: fetch bytes
+ * (authenticated), write to the app's `Documents` external-files dir (already declared in
+ * `file_paths.xml` for the existing `${applicationId}.fileprovider` authority — no new manifest
+ * entry needed), then hand the whole viewer choice to the OS via `ACTION_VIEW` rather than
+ * building an in-app document/image/PDF renderer.
+ */
+@Composable
+internal fun KeyAccessDocumentsSection(
+    apiClient: MobileApiClient,
+    requestId: String,
+    documents: List<KeyAccessRequestDocumentMeta>,
+    onNotice: (String) -> Unit,
+) {
+    if (documents.isEmpty()) return
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    var openingDocId by remember { mutableStateOf<String?>(null) }
+
+    fun open(doc: KeyAccessRequestDocumentMeta) {
+        openingDocId = doc.id
+        scope.launch {
+            try {
+                val bytes = apiClient.downloadKeyAccessRequestDocument(requestId, doc.id)
+                val dir = context.getExternalFilesDir(Environment.DIRECTORY_DOCUMENTS) ?: context.filesDir
+                val safeName = doc.fileName.trim().ifBlank { "${doc.docKind.lowercase()}-${doc.id}" }
+                val file = File(dir, "kar-${doc.id}-$safeName")
+                file.writeBytes(bytes)
+                val uri = FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
+                val view = Intent(Intent.ACTION_VIEW).apply {
+                    setDataAndType(uri, doc.contentType.ifBlank { "application/octet-stream" })
+                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                }
+                context.startActivity(Intent.createChooser(view, "Open ${doc.docKind}"))
+            } catch (e: Exception) {
+                onNotice(e.message ?: "Couldn't open ${doc.docKind}.")
+            } finally {
+                openingDocId = null
+            }
+        }
+    }
+
+    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        Text(
+            "${documents.size} document(s) attached",
+            style = MaterialTheme.typography.labelLarge,
+            fontWeight = FontWeight.SemiBold,
+        )
+        documents.forEach { doc ->
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                Text(
+                    "${doc.docKind} · ${formatDocumentSize(doc.sizeBytes)}",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.weight(1f),
+                )
+                OutlinedButton(
+                    onClick = { open(doc) },
+                    enabled = openingDocId != doc.id,
+                ) {
+                    Text(if (openingDocId == doc.id) "Opening…" else "View")
+                }
+            }
+        }
+    }
+}
+
+private fun formatDocumentSize(bytes: Long): String = when {
+    bytes >= 1024 * 1024 -> "%.1f MB".format(bytes / (1024.0 * 1024.0))
+    bytes >= 1024 -> "%.0f KB".format(bytes / 1024.0)
+    else -> "$bytes B"
 }

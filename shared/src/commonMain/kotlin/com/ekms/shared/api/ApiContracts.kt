@@ -63,9 +63,22 @@ object ApiPaths {
     const val ADMIN_KEY_ACCESS_REQUEST_APPROVE = "/v1/admin/key-access-requests/{id}/approve"
     const val ADMIN_KEY_ACCESS_REQUEST_REJECT = "/v1/admin/key-access-requests/{id}/reject"
     const val ADMIN_KEY_ACCESS_REQUEST_REVOKE = "/v1/admin/key-access-requests/{id}/revoke"
+    /** Requester-facing self-cancel (Technician/Vendor only — the request's own requester, not
+     * an admin; admins use [ADMIN_KEY_ACCESS_REQUEST_REVOKE] instead). Terminal, no-revive state
+     * (see [KeyAccessRequestStatus.CANCELLED]) — reaching the cabinet again needs a brand-new
+     * request. Valid from PENDING/PENDING_PIC/PENDING_RA/APPROVED only. */
+    const val ADMIN_KEY_ACCESS_REQUEST_CANCEL = "/v1/admin/key-access-requests/{id}/cancel"
     const val ADMIN_KEY_ACCESS_REQUEST_PIC_APPROVE = "/v1/admin/key-access-requests/{id}/pic-approve"
     const val ADMIN_KEY_ACCESS_PIC_INBOX = "/v1/admin/key-access-requests/pic-inbox"
     const val ADMIN_KEY_ACCESS_SITE_PICS = "/v1/admin/key-access-requests/site-pics/{siteId}"
+    /** Fetches one attached document's raw bytes (response Content-Type is the stored
+     * contentType). Read access mirrors [ADMIN_KEY_ACCESS_REQUESTS]/{id} — see
+     * keyAccessRequests.js's assertMayReadRequest: the request's own requester, its assigned PIC
+     * (Technician, while PENDING_PIC/PENDING_RA/APPROVED), or a Regional/Super Admin scoped to
+     * the request's site. Metadata for the same documents is embedded on
+     * [KeyAccessRequestDto.documents] — this route is bytes-only. */
+    const val ADMIN_KEY_ACCESS_REQUEST_DOCUMENT_DOWNLOAD =
+        "/v1/admin/key-access-requests/{id}/documents/{documentId}"
     const val ADMIN_MOBILE_PUSH_TOKENS = "/v1/admin/mobile-push-tokens"
     /** Resolves a single site's Region-derived [SiteKeyAccessPolicyDto.maxKeyAccessDurationMinutes]
      * ceiling — a narrow, purpose-built read so a requester's mobile form can bound its duration
@@ -1146,8 +1159,20 @@ enum class KeyAccessRequestStatus {
     REJECTED,
     /** Admin cancelled an approved PIN — passkey cleared; terminal passkey-login must fail. */
     REVOKED,
-    /** Pickup/return window ended without use (or past return) — must resubmit a new request. */
+    /** Pickup/return window ended without use (or past return) — must resubmit a new request.
+     * An APPROVED request whose PIN window lapses without ever being used does NOT reach this
+     * state automatically anymore — the backend's `keyAccessAutoExtend.js` tick job auto-extends
+     * it by 1 hour, repeating, instead (tracked server-side only, via
+     * `key_access_requests.first_used_at_epoch_ms` — not surfaced on this DTO, since nothing in
+     * mobileApp needs to display "used" state for this feature to work). EXPIRED still applies to
+     * PENDING/PENDING_PIC/PENDING_RA rows whose return window passes before ever being approved,
+     * and to an APPROVED row after it has been used at least once (auto-extension stops there, so
+     * a subsequent lapse is terminal). */
     EXPIRED,
+    /** Requester (Vendor/Technician) self-cancelled — distinct from [REVOKED] (admin-initiated)
+     * purely for audit-trail clarity about who ended the request. Same terminal, no-revive
+     * treatment: reaching the cabinet again requires a brand-new request, not a resubmission. */
+    CANCELLED,
 }
 
 /** [passkeyExpiresAtEpochMillis] is present once approved; the plaintext code itself is never
@@ -1181,6 +1206,11 @@ data class KeyAccessRequestDto(
     /** Vendor Stage-1 PIC (Technician at site); null for Technician-only requests. */
     val picUserId: String? = null,
     val picApprovedAtEpochMillis: Long? = null,
+    /** Metadata only (Work Permit/NIOSH/IC uploads at create time) — never includes bytes, and
+     * always empty for Technician requests (documents are Vendor-only, see
+     * [CreateKeyAccessRequestRequest.documents]). Fetch a given document's actual bytes via
+     * [ApiPaths.ADMIN_KEY_ACCESS_REQUEST_DOCUMENT_DOWNLOAD]. */
+    val documents: List<KeyAccessRequestDocumentMeta> = emptyList(),
     val approvedByUserId: String? = null,
     val approvedAtEpochMillis: Long? = null,
     /** Non-null only when the caller viewing this DTO IS the request's own [requesterUserId] —
@@ -1216,6 +1246,20 @@ data class KeyAccessRequestDocumentUpload(
     val fileName: String,
     val contentType: String = "application/octet-stream",
     val contentBase64: String,
+)
+
+/** Read-only metadata for one document attached to a [KeyAccessRequestDto] — never carries the
+ * bytes themselves (see [ApiPaths.ADMIN_KEY_ACCESS_REQUEST_DOCUMENT_DOWNLOAD] for that). Embedded
+ * directly on [KeyAccessRequestDto.documents] so a PIC/Regional Admin's approval queue can show
+ * "N documents attached" without a separate list round-trip before deciding whether to view one. */
+@Serializable
+data class KeyAccessRequestDocumentMeta(
+    val id: String,
+    val docKind: String,
+    val fileName: String,
+    val contentType: String = "application/octet-stream",
+    val sizeBytes: Long,
+    val createdAtEpochMillis: Long,
 )
 
 @Serializable

@@ -27,19 +27,30 @@ const router = Router();
  * Past return/passkey window → EXPIRED (must resubmit; no revive).
  */
 
-/** Lazy expire: APPROVED past return/passkey expiry, or PENDING* past return window. */
+/**
+ * Lazy expire: PENDING/PENDING_PIC/PENDING_RA rows whose return window passes before ever being
+ * approved — those never had a PIN to extend, so a lapsed return window is unconditionally
+ * terminal for them.
+ *
+ * Deliberately does NOT touch APPROVED rows anymore (narrowed — used to also flip an APPROVED
+ * row to EXPIRED on either a lapsed return_at_epoch_ms OR a lapsed passkey_expires_at_epoch_ms).
+ * Both fields are now owned by keyAccessAutoExtend.js for an APPROVED-and-never-used row (it
+ * bumps both together by 1 hour, repeating, rather than letting either lapse count as terminal);
+ * leaving either branch scoped to APPROVED here would race the auto-extend tick — a live API call
+ * landing between two ticks could flip the row to EXPIRED before the job ever got to extend it.
+ * An APPROVED row's only remaining routes to EXPIRED are: passkeyLogin()'s own inline check
+ * (only for a row that has ALREADY been used at least once, per first_used_at_epoch_ms — a lapse
+ * after first use is genuinely terminal, auto-extend never touches a used row) — or explicit
+ * REVOKED (admin)/CANCELLED (requester) actions, which are unconditional regardless of expiry.
+ */
 async function expireOverdueRequests() {
   const now = nowMs();
   await pool.execute(
     `UPDATE key_access_requests SET
        status = 'EXPIRED',
        generated_passkey = NULL
-     WHERE status IN ('APPROVED', 'PENDING', 'PENDING_PIC', 'PENDING_RA')
-       AND (
-         (return_at_epoch_ms IS NOT NULL AND return_at_epoch_ms < :now)
-         OR (passkey_expires_at_epoch_ms IS NOT NULL AND passkey_expires_at_epoch_ms < :now
-             AND status = 'APPROVED')
-       )`,
+     WHERE status IN ('PENDING', 'PENDING_PIC', 'PENDING_RA')
+       AND return_at_epoch_ms IS NOT NULL AND return_at_epoch_ms < :now`,
     { now },
   );
 }
@@ -207,6 +218,26 @@ async function requestKeyIds(requestId) {
   return rows.map((r) => r.key_id);
 }
 
+/** Metadata only (id/kind/name/type/size/uploadedAt) — never selects `content`, so this never
+ * pulls document bytes into a list/get response. `LENGTH(content)` is computed server-side rather
+ * than fetched-then-measured, for the same reason: keep bytes out of every response but the
+ * dedicated download route below. */
+async function requestDocuments(requestId) {
+  const [rows] = await pool.execute(
+    `SELECT id, doc_kind, file_name, content_type, LENGTH(content) AS size_bytes, created_at_epoch_ms
+     FROM key_access_request_documents WHERE request_id = :requestId ORDER BY created_at_epoch_ms ASC`,
+    { requestId },
+  );
+  return rows.map((r) => ({
+    id: r.id,
+    docKind: r.doc_kind,
+    fileName: r.file_name,
+    contentType: r.content_type,
+    sizeBytes: Number(r.size_bytes),
+    createdAtEpochMillis: Number(r.created_at_epoch_ms),
+  }));
+}
+
 /**
  * `viewerUserId` controls `generatedPasskey` visibility on GET responses — corrected from an
  * earlier draft that omitted it from every GET response the same way the old
@@ -222,7 +253,15 @@ async function requestKeyIds(requestId) {
  * (`ApproveKeyAccessRequestResponse`) is unrelated and still returns it directly to whoever
  * calls approve, unchanged.
  */
-function mapRequest(row, keyIds, viewerUserId, siteName = null, cabinetNames = [], requesterDisplayName = null) {
+function mapRequest(
+  row,
+  keyIds,
+  viewerUserId,
+  siteName = null,
+  cabinetNames = [],
+  requesterDisplayName = null,
+  documents = [],
+) {
   return {
     id: row.id,
     requesterUserId: row.requester_user_id,
@@ -241,6 +280,7 @@ function mapRequest(row, keyIds, viewerUserId, siteName = null, cabinetNames = [
     picUserId: row.pic_user_id ?? null,
     picApprovedAtEpochMillis:
       row.pic_approved_at_epoch_ms == null ? null : Number(row.pic_approved_at_epoch_ms),
+    documents,
     approvedByUserId: row.approved_by_user_id,
     approvedAtEpochMillis: row.approved_at_epoch_ms == null ? null : Number(row.approved_at_epoch_ms),
     generatedPasskey: viewerUserId != null && viewerUserId === row.requester_user_id
@@ -265,6 +305,7 @@ async function mapRequestEnriched(row, keyIds, viewerUserId) {
     `SELECT display_name FROM users WHERE id = :id LIMIT 1`,
     { id: row.requester_user_id },
   );
+  const documents = await requestDocuments(row.id);
   return mapRequest(
     row,
     keyIds,
@@ -272,6 +313,7 @@ async function mapRequestEnriched(row, keyIds, viewerUserId) {
     sites[0]?.name ?? null,
     terminals.map((t) => t.name),
     requesters[0]?.display_name ?? null,
+    documents,
   );
 }
 
@@ -407,6 +449,41 @@ router.get('/:id', async (req, res) => {
     return notFound(res, 'Key access request not found');
   }
   return res.json(await mapRequestEnriched(rows[0], await requestKeyIds(rows[0].id), req.auth?.sub));
+});
+
+/**
+ * GET /:id/documents/:documentId — one attached document's raw bytes, for a PIC/Regional Admin
+ * (or the requester themselves) to view/download before acting on the request. Metadata for all
+ * of a request's documents is already embedded on the request DTO (`documents`, via
+ * mapRequestEnriched) — this route is bytes-only, deliberately not duplicated as a separate list
+ * endpoint. Same read-access model as GET /:id (assertMayReadRequest: requester, assigned PIC
+ * while PENDING_PIC/PENDING_RA/APPROVED, or Regional/Super Admin scoped to the request's site) —
+ * a PIC/RA cannot fetch a document belonging to a request they're not the approver on.
+ */
+router.get('/:id/documents/:documentId', async (req, res) => {
+  const [rows] = await pool.execute(`SELECT * FROM key_access_requests WHERE id = :id LIMIT 1`, {
+    id: req.params.id,
+  });
+  if (!rows[0]) return notFound(res, 'Key access request not found');
+  if (!(await assertMayReadRequest(req, rows[0]))) {
+    return notFound(res, 'Key access request not found');
+  }
+  const [docs] = await pool.execute(
+    `SELECT * FROM key_access_request_documents WHERE id = :documentId AND request_id = :id LIMIT 1`,
+    { documentId: req.params.documentId, id: req.params.id },
+  );
+  if (!docs[0]) return notFound(res, 'Document not found');
+
+  const doc = docs[0];
+  // Strip CR/LF before it reaches a response header — file_name is requester-controlled input
+  // (the original upload's filename) and an unsanitized value here is a header-injection vector.
+  const safeFileName = doc.file_name.replace(/[\r\n]/g, '_');
+  res.setHeader('Content-Type', doc.content_type || 'application/octet-stream');
+  res.setHeader(
+    'Content-Disposition',
+    `attachment; filename="${safeFileName.replace(/"/g, "'")}"; filename*=UTF-8''${encodeURIComponent(doc.file_name)}`,
+  );
+  return res.send(doc.content);
 });
 
 /**
@@ -558,7 +635,12 @@ router.post('/', async (req, res) => {
         } catch {
           throw new Error('INVALID_DOC');
         }
-        if (buf.length === 0 || buf.length > 8 * 1024 * 1024) {
+        // 5 MB is the real enforced ceiling (matches KeyAccessRequestScreen.kt's client-side
+        // check, the intended product limit — see "Only B decisions locked" in CLAUDE_MOBILE.md).
+        // The client check is UX-only (a client can be bypassed/modified); this server check is
+        // the actual gate. `content`'s column type is MEDIUMBLOB (up to 16 MB) — that's headroom
+        // for the column, not the enforced limit, and must not be confused with it.
+        if (buf.length === 0 || buf.length > 5 * 1024 * 1024) {
           throw new Error('INVALID_DOC_SIZE');
         }
         await conn.execute(
@@ -581,7 +663,7 @@ router.post('/', async (req, res) => {
   } catch (err) {
     await conn.rollback();
     if (err.message === 'INVALID_DOC' || err.message === 'INVALID_DOC_SIZE') {
-      return badRequest(res, 'Invalid document payload (base64, max 8MB each)');
+      return badRequest(res, 'Invalid document payload (base64, max 5MB each)');
     }
     throw err;
   } finally {
@@ -832,6 +914,53 @@ router.post('/:id/revoke', async (req, res) => {
   return res.json(await mapRequestEnriched(rows[0], await requestKeyIds(req.params.id), req.auth?.sub));
 });
 
+/** Requester-facing self-cancel — Technician/Vendor only, and only their OWN request (never an
+ * admin action; Super Admin/Regional Admin use /revoke instead, which stays admin-only). Ends
+ * the keyAccessAutoExtend.js auto-extend cycle immediately (that job's own query already
+ * excludes non-APPROVED rows, but clearing the passkey here — same as /revoke — means a
+ * concurrent passkey-login attempt fails immediately too, not just on the next tick). Terminal,
+ * no-revive: reaching the cabinet again requires a brand-new request, not a resubmission of
+ * this row. */
+const CANCELLABLE_STATUSES = ['PENDING', 'PENDING_PIC', 'PENDING_RA', 'APPROVED'];
+
+router.post('/:id/cancel', async (req, res) => {
+  const [existing] = await pool.execute(`SELECT * FROM key_access_requests WHERE id = :id LIMIT 1`, {
+    id: req.params.id,
+  });
+  if (!existing[0]) return notFound(res, 'Key access request not found');
+  // Self-service only — reads as "not found" for anyone but the request's own requester, same
+  // not-confirming-existence convention as every other route in this file.
+  if (existing[0].requester_user_id !== req.auth?.sub) {
+    return notFound(res, 'Key access request not found');
+  }
+  if (!CANCELLABLE_STATUSES.includes(existing[0].status)) {
+    return conflict(res, 'Request can no longer be cancelled');
+  }
+
+  const [result] = await pool.execute(
+    `UPDATE key_access_requests SET
+       status = 'CANCELLED',
+       generated_passkey = NULL,
+       passkey_expires_at_epoch_ms = NULL
+     WHERE id = :id AND status = :status`,
+    { id: req.params.id, status: existing[0].status },
+  );
+  if (result.affectedRows === 0) return conflict(res, 'Request can no longer be cancelled');
+
+  await writeAudit({
+    eventType: 'KEY_ACCESS_REQUEST_CANCELLED',
+    actorUserId: req.auth.sub,
+    siteId: existing[0].site_id,
+    entityType: 'KEY_ACCESS_REQUEST',
+    entityId: req.params.id,
+  });
+
+  const [rows] = await pool.execute(`SELECT * FROM key_access_requests WHERE id = :id`, {
+    id: req.params.id,
+  });
+  return res.json(await mapRequestEnriched(rows[0], await requestKeyIds(req.params.id), req.auth?.sub));
+});
+
 export default router;
 
 // --- Terminal-side passkey login (unauthenticated route, mounted directly in index.js) --------
@@ -914,7 +1043,18 @@ export async function passkeyLogin(req, res) {
   }
 
   const expiresAt = Number(request.passkey_expires_at_epoch_ms);
-  if (!Number.isFinite(expiresAt) || expiresAt <= now) {
+  const neverUsed = request.first_used_at_epoch_ms == null;
+  // A lapsed-but-never-used APPROVED passkey is deliberately NOT hard-failed here — the whole
+  // point of keyAccessAutoExtend.js's recurring extend is that the PIN never dies from tick lag
+  // (up to ~60s between ticks). Login proceeds exactly as if it hadn't lapsed; the unconditional
+  // first-use stamp below then stops any future auto-extend tick from touching this row — no
+  // separate "catch-up extend" of passkey_expires_at_epoch_ms/return_at_epoch_ms is needed for
+  // this path, per instruction. Once a row HAS been used at least once (first_used_at_epoch_ms
+  // set), auto-extension has permanently stopped for it, so a lapse after that point is
+  // genuinely terminal and still hard-fails below — same as an unparseable/missing expiry value,
+  // which is a data-integrity case, not a legitimate lapse, and always hard-fails regardless of
+  // first_used_at_epoch_ms.
+  if (!Number.isFinite(expiresAt) || (expiresAt <= now && !neverUsed)) {
     await pool.execute(
       `UPDATE key_access_requests SET status = 'EXPIRED', generated_passkey = NULL
        WHERE id = :id AND status = 'APPROVED'`,
@@ -967,6 +1107,16 @@ export async function passkeyLogin(req, res) {
   }
 
   await recordLoginAttempt(ipAddress, true);
+  // First successful login only — stops future keyAccessAutoExtend.js auto-extension without
+  // invalidating this session or the PIN's remaining validity. `first_used_at_epoch_ms IS NULL`
+  // in the WHERE guards against overwriting it on a second/third login within the same window.
+  if (request.first_used_at_epoch_ms == null) {
+    await pool.execute(
+      `UPDATE key_access_requests SET first_used_at_epoch_ms = :now
+       WHERE id = :id AND first_used_at_epoch_ms IS NULL`,
+      { id: request.id, now },
+    );
+  }
   await writeAudit({
     eventType: 'KEY_ACCESS_SESSION_STARTED',
     actorUserId: request.requester_user_id,

@@ -122,6 +122,7 @@ private fun AlertCard(request: KeyAccessRequestDto, onOpenAccess: () -> Unit) {
                     KeyAccessRequestStatus.REJECTED -> "Rejected"
                     KeyAccessRequestStatus.REVOKED -> "Revoked"
                     KeyAccessRequestStatus.EXPIRED -> "Expired — submit a new request"
+                    KeyAccessRequestStatus.CANCELLED -> "Cancelled"
                 },
                 style = MaterialTheme.typography.titleMedium,
                 fontWeight = FontWeight.SemiBold,

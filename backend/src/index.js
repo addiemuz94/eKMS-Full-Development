@@ -22,6 +22,7 @@ import auditRouter from './routes/audit.js';
 import { terminalSyncRouter, syncConflictsRouter } from './routes/sync.js';
 import notificationsStreamRouter from './routes/notificationsStream.js';
 import { startDeadlineMonitor } from './deadlineMonitor.js';
+import { startKeyAccessAutoExtend } from './keyAccessAutoExtend.js';
 import {
   eventDefinitionsRouter,
   schedulesRouter,
@@ -138,6 +139,7 @@ app.use((err, _req, res, _next) => {
 });
 
 startDeadlineMonitor();
+startKeyAccessAutoExtend();
 
 const server = app.listen(port, () => {
   console.log(`eKMS backend listening on http://localhost:${port}`);
