@@ -127,6 +127,18 @@ class MobileApiClient(context: Context) {
     val isAuthenticated: Boolean
         get() = !accessToken.isNullOrBlank()
 
+    /**
+     * Fired when [send]/[downloadBytes] give up on a 401 for good — either the refresh attempt
+     * itself failed (refresh token also expired/invalid past its 7-day TTL, or no refresh token
+     * at all), or the retried call 401'd again even with a freshly-refreshed access token. The
+     * session has already been cleared by the time this fires; the caller's job is purely UI —
+     * flip to the signed-out state and show a real message, not let the original call's own
+     * generic per-screen error be the only thing the user sees. Set once by
+     * `SuperAdminCompanionApp.kt`; `null` is a valid, harmless state (e.g. in a preview/test
+     * context) — a 401 just clears the session silently with no UI callback in that case.
+     */
+    var onSessionExpired: (() -> Unit)? = null
+
     fun clearSession() {
         preferences.edit()
             .remove(KEY_ACCESS_TOKEN)
@@ -374,16 +386,7 @@ class MobileApiClient(context: Context) {
         val path = ApiPaths.ADMIN_KEY_ACCESS_REQUEST_DOCUMENT_DOWNLOAD
             .replace("{id}", requestId)
             .replace("{documentId}", documentId)
-        val response = http.request("$baseUrl$path") {
-            method = HttpMethod.Get
-            val token = accessToken ?: throw MobileApiException(401, "Not signed in to the server")
-            header(HttpHeaders.Authorization, "Bearer $token")
-        }
-        if (!response.status.isSuccess()) {
-            val text = response.bodyAsText()
-            throw MobileApiException(response.status.value, text.ifBlank { "Document download failed" })
-        }
-        return response.bodyAsBytes()
+        return downloadBytes(path, "Document download failed")
     }
 
     suspend fun registerPushToken(fcmToken: String, platform: String = "ANDROID") {
@@ -484,16 +487,7 @@ class MobileApiClient(context: Context) {
         } else {
             downloadPath
         }
-        val response = http.request("$baseUrl$path") {
-            method = HttpMethod.Get
-            val token = accessToken ?: throw MobileApiException(401, "Not signed in to the server")
-            header(HttpHeaders.Authorization, "Bearer $token")
-        }
-        if (!response.status.isSuccess()) {
-            val text = response.bodyAsText()
-            throw MobileApiException(response.status.value, text.ifBlank { "PDF download failed" })
-        }
-        return response.bodyAsBytes()
+        return downloadBytes(path, "PDF download failed")
     }
 
     private fun ensureBaseUrl() {
@@ -504,7 +498,13 @@ class MobileApiClient(context: Context) {
 
     private inline fun <reified T> decode(text: String): T = json.decodeFromString(text)
 
-    private suspend fun send(
+    /**
+     * One-shot network call — no retry/refresh logic. [send] (below) is the one every real call
+     * site uses; this exists only so [send] and [downloadBytes] can both call the *same second
+     * attempt* after a successful refresh without recursing back into their own retry logic
+     * (which is exactly how "retry at most once" is enforced — see [send]'s doc).
+     */
+    private suspend fun sendOnce(
         method: HttpMethod,
         path: String,
         body: String?,
@@ -537,6 +537,93 @@ class MobileApiClient(context: Context) {
             throw MobileApiException(response.status.value, message)
         }
         return text
+    }
+
+    /**
+     * Closes the gap flagged in the Part 3 audit: [refreshAccessToken] existed but had zero
+     * callers anywhere in mobileApp, so an expired 1-hour access token previously just 401'd
+     * every call forever with no recovery and no forced sign-out — each screen showed its own
+     * generic error text instead. Now: any authenticated call that 401s tries
+     * [refreshAccessToken] exactly once, then retries the *original* call exactly once with the
+     * new access token — via [sendOnce] directly, not [send] again, so a second 401 (refresh
+     * itself failed, or the retried call somehow still 401s even with a fresh token) can never
+     * trigger a second refresh attempt or loop. Either failure path ends in [handleSessionExpired].
+     * A non-401 failure (network error, 403, 500, validation 400, etc.) is untouched — thrown
+     * straight through to the caller's own existing per-screen handling, same as before this fix.
+     */
+    private suspend fun send(
+        method: HttpMethod,
+        path: String,
+        body: String?,
+        authenticated: Boolean,
+    ): String {
+        val firstAttempt = runCatching { sendOnce(method, path, body, authenticated) }
+        val firstError = firstAttempt.exceptionOrNull()
+        if (authenticated && firstError is MobileApiException && firstError.status == 401) {
+            if (attemptSessionRefresh()) {
+                val retryAttempt = runCatching { sendOnce(method, path, body, authenticated) }
+                if ((retryAttempt.exceptionOrNull() as? MobileApiException)?.status == 401) {
+                    handleSessionExpired()
+                }
+                return retryAttempt.getOrThrow()
+            }
+            handleSessionExpired()
+        }
+        return firstAttempt.getOrThrow()
+    }
+
+    /** Same one-shot raw-bytes request [downloadKeyAccessRequestDocument]/[downloadReportExportBytes]
+     * used before this fix, extracted so both share the retry-and-refresh wrapper below it. */
+    private suspend fun downloadBytesOnce(path: String, fallbackErrorMessage: String): ByteArray {
+        val response = http.request("$baseUrl$path") {
+            method = HttpMethod.Get
+            val token = accessToken ?: throw MobileApiException(401, "Not signed in to the server")
+            header(HttpHeaders.Authorization, "Bearer $token")
+        }
+        if (!response.status.isSuccess()) {
+            val text = response.bodyAsText()
+            throw MobileApiException(response.status.value, text.ifBlank { fallbackErrorMessage })
+        }
+        return response.bodyAsBytes()
+    }
+
+    /** Same refresh-and-retry-exactly-once behavior as [send] (see its doc) — duplicated rather
+     * than unified with it, since this path returns raw bytes rather than decoded JSON text and
+     * both call sites here always authenticate, so there's no shared shape worth abstracting
+     * over for just these two methods. */
+    private suspend fun downloadBytes(path: String, fallbackErrorMessage: String): ByteArray {
+        val firstAttempt = runCatching { downloadBytesOnce(path, fallbackErrorMessage) }
+        val firstError = firstAttempt.exceptionOrNull()
+        if (firstError is MobileApiException && firstError.status == 401) {
+            if (attemptSessionRefresh()) {
+                val retryAttempt = runCatching { downloadBytesOnce(path, fallbackErrorMessage) }
+                if ((retryAttempt.exceptionOrNull() as? MobileApiException)?.status == 401) {
+                    handleSessionExpired()
+                }
+                return retryAttempt.getOrThrow()
+            }
+            handleSessionExpired()
+        }
+        return firstAttempt.getOrThrow()
+    }
+
+    /** `false` with no stored refresh token at all (never logged in / already signed out) —
+     * [refreshAccessToken] itself would throw the same case, this just avoids that pointless
+     * network round trip. Any exception from the refresh call itself (expired/invalid refresh
+     * token past its 7-day TTL, network failure mid-refresh) also just means "could not refresh". */
+    private suspend fun attemptSessionRefresh(): Boolean {
+        if (refreshToken.isNullOrBlank()) return false
+        return try {
+            refreshAccessToken()
+            true
+        } catch (_: Exception) {
+            false
+        }
+    }
+
+    private fun handleSessionExpired() {
+        clearSession()
+        onSessionExpired?.invoke()
     }
 
     companion object {

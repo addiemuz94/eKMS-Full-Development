@@ -1,3 +1,15 @@
 <resources>
     <style name="Theme.Ekms" parent="android:style/Theme.Material.Light.NoActionBar" />
+
+    <!-- mobileApp boot splash (see CLAUDE_MOBILE.md) — the platform-native icon-reveal step,
+         API 31+ only (core-splashscreen backports gracefully to minSdk 21+: below 31 this theme
+         simply behaves like a normal launch theme, no icon-reveal animation). windowSplashScreenAnimatedIcon
+         reuses drawable/ic_stat_notify (the existing plain-circle placeholder — mobileApp has no
+         real launcher icon asset today, a pre-existing gap this task doesn't fix). Falls through
+         to Theme.Ekms once the Activity's own content (the custom Compose splash) takes over. -->
+    <style name="Theme.Ekms.Splash" parent="Theme.SplashScreen">
+        <item name="windowSplashScreenBackground">@color/splash_background</item>
+        <item name="windowSplashScreenAnimatedIcon">@drawable/ic_stat_notify</item>
+        <item name="postSplashScreenTheme">@style/Theme.Ekms</item>
+    </style>
 </resources>

@@ -18,7 +18,7 @@ fun DigitalKeyComingSoonDialog(onDismiss: () -> Unit) {
         confirmButton = {
             TextButton(onClick = onDismiss) { Text("OK") }
         },
-        title = { Text("Digital Key is coming soon") },
-        text = { Text("We're working on letting your phone act as a key. Check back in a future update.") },
+        title = { Text("Digital Key — coming soon") },
+        text = { Text("Phone-as-key is not available yet. Check back in a future update.") },
     )
 }

@@ -67,7 +67,7 @@ fun AlertsScreen(
             hasData = true
             onLiveStatus(true, false)
         } catch (e: Exception) {
-            loadError = e.message ?: "Couldn't load alerts."
+            loadError = e.message ?: "Failed to load alerts."
             onLiveStatus(false, false)
             if (!hasData) onNotice(loadError!!)
         } finally {

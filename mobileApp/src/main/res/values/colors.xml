@@ -1,0 +1,11 @@
+<resources>
+    <!-- Boot splash background (see CLAUDE_MOBILE.md) — the OS-level windowSplashScreenBackground
+         must be a plain color resource, not theme-aware (it renders before Compose/MaterialTheme
+         exist at all) — matches CavotecBlue (#0055A5), the same brand-primary hex used by
+         ui/theme/Color.kt's light scheme, so the platform icon-reveal step and the custom Compose
+         splash that follows it don't have a jarring color mismatch. Deliberately not dark-mode-aware:
+         core-splashscreen's windowSplashScreenBackground has no light/dark variant mechanism tied to
+         app-level theme preference (only the OS's own day/night resource qualifiers, which don't
+         track this app's separate MobileThemeMode), so this stays one fixed color either way. -->
+    <color name="splash_background">#0055A5</color>
+</resources>

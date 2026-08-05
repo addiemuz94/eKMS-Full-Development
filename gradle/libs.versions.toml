@@ -14,6 +14,45 @@ coroutines = "1.10.2"
 ktor = "3.1.3"
 google-services-plugin = "4.5.0"
 firebase-bom = "34.17.0"
+# osmdroid: last release 6.1.20 (Aug 2024); upstream repo archived Nov 2024, no further
+# releases planned (see CLAUDE_MOBILE.md's Terminals-tab map bug entry for the risk
+# tradeoff discussion). Chosen anyway over WebView+Leaflet (compositor tile-memory bug,
+# see same entry) and over MapLibre (larger GL-based dependency, different API shape).
+osmdroid = "6.1.20"
+# mobileApp UX rework Phase M-D: swaps mobileApp off material-icons-extended onto Lucide, to
+# match web's lucide-react icon set. Android-only variant (XML vector drawables, not Compose
+# ImageVector) since mobileApp targets Android only — no multiplatform need. Verified
+# compatible with this project's pinned toolchain via a real :mobileApp:assembleDebug run, not
+# assumed: pulls in androidx.compose.foundation:foundation:1.9.3 (bumped up from the ~1.7.x this
+# project's material3 1.3.2 otherwise resolves to) and kotlin-stdlib:2.2.21 — both resolve and
+# compile clean against this project's Kotlin 2.2.20/AGP 8.11.1/compileSdk 36. terminalApp keeps
+# its own separate material-icons-extended choice — this swap is mobileApp-only.
+lucide-icons = "2.2.1"
+# mobileApp UX rework Phase M-E: glassmorphism on exactly two surfaces (overflow menu,
+# ConfirmDialog). Verified compatible with this project's pinned toolchain via a real
+# :mobileApp:assembleDebug run (see CLAUDE_MOBILE.md) — bumps androidx.compose.foundation to
+# 1.10.0 (up from Lucide's own 1.9.3 bump) and pulls in org.jetbrains.compose.foundation
+# (expected for a genuine KMP library consumed from a plain Android module), both resolved
+# and compiled clean, not assumed.
+haze = "1.7.2"
+# mobileApp boot splash (see CLAUDE_MOBILE.md) — platform-native icon-reveal step (API 31+
+# system splash) followed by a custom Compose splash. Verified compatible with this project's
+# pinned toolchain (minSdk 26/compileSdk 36) via a real :mobileApp:assembleDebug run, not
+# assumed, same discipline as the Lucide/Haze checks.
+core-splashscreen = "1.2.0"
+# mobileApp biometric login (see CLAUDE_MOBILE.md) — 1.1.0 is current stable, confirmed via
+# search Aug 2026 (no newer stable release; 1.2.0 only exists as a SNAPSHOT, biometric-ktx/
+# biometric-compose only as alphas). Real compatibility with this project's pinned toolchain
+# confirmed via an actual build during the audit pass that preceded this implementation, not
+# assumed, same discipline as the Lucide/Haze/core-splashscreen checks.
+biometric = "1.1.0"
+# Pulled in transitively by androidx.biometric 1.1.0 anyway (at a much older 1.2.5), but pinned
+# explicitly to a current release rather than relying on that old transitive version — MainActivity
+# itself now extends FragmentActivity (required: androidx.biometric.BiometricPrompt's real
+# constructor only accepts FragmentActivity/Fragment, confirmed via javap against the actual AAR,
+# not assumed — plain ComponentActivity has no FragmentManager to host BiometricPrompt's internal
+# fragment). 1.8.6 confirmed current stable via search, Aug 2026.
+fragment-ktx = "1.8.6"
 
 [libraries]
 androidx-core-ktx = { module = "androidx.core:core-ktx", version.ref = "core-ktx" }
@@ -29,6 +68,13 @@ kotlinx-coroutines-android = { module = "org.jetbrains.kotlinx:kotlinx-coroutine
 kotlinx-coroutines-play-services = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-play-services", version.ref = "coroutines" }
 firebase-bom = { module = "com.google.firebase:firebase-bom", version.ref = "firebase-bom" }
 firebase-messaging = { module = "com.google.firebase:firebase-messaging" }
+osmdroid-android = { module = "org.osmdroid:osmdroid-android", version.ref = "osmdroid" }
+lucide-icons-android = { module = "com.composables:icons-lucide-android", version.ref = "lucide-icons" }
+haze = { module = "dev.chrisbanes.haze:haze", version.ref = "haze" }
+haze-materials = { module = "dev.chrisbanes.haze:haze-materials", version.ref = "haze" }
+androidx-core-splashscreen = { module = "androidx.core:core-splashscreen", version.ref = "core-splashscreen" }
+androidx-biometric = { module = "androidx.biometric:biometric", version.ref = "biometric" }
+androidx-fragment-ktx = { module = "androidx.fragment:fragment-ktx", version.ref = "fragment-ktx" }
 ktor-client-core = { module = "io.ktor:ktor-client-core", version.ref = "ktor" }
 ktor-client-okhttp = { module = "io.ktor:ktor-client-okhttp", version.ref = "ktor" }
 ktor-client-js = { module = "io.ktor:ktor-client-js", version.ref = "ktor" }

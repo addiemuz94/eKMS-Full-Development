@@ -1,28 +1,33 @@
 package com.ekms.terminal.ui
 
 import android.content.Intent
+import android.os.Build
 import android.provider.Settings
-import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.CubicBezierEasing
 import androidx.compose.animation.core.RepeatMode
-import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
-import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
@@ -41,12 +46,16 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.scale
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.em
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import com.ekms.terminal.R
@@ -65,14 +74,19 @@ import kotlinx.coroutines.delay
 private const val MIN_SPLASH_DURATION_MILLIS = 3_000L
 
 /**
- * Logo width as a fraction of the available screen width (~60-70% target from the sizing pass;
- * `aspectRatio` below derives height from [CAVOTEC_LOGO_ASPECT_RATIO] so the logo never
- * stretches/distorts regardless of what fraction this is). A fraction rather than a fixed dp
- * value deliberately — it should stay proportionally correct on this project's confirmed-portrait
- * 600x1024dp panel (see CLAUDE_TERMINAL.md's boot-splash Known Issues) without needing a new
- * hardcoded number if that ever changes.
+ * Sizing model ported from web's login-page splash (`web/src/styles.css`'s `.login-splash*`
+ * rules — CSS `min(Xpx, Yvw)`, translated to `minOf(X.dp, maxWidth * Y)` via [BoxWithConstraints]
+ * below). Stays proportionally correct on this project's confirmed-portrait 600x1024dp panel
+ * (see CLAUDE_TERMINAL.md's boot-splash Known Issues) the same way the old fraction-only model
+ * did, but now capped so it doesn't keep growing on a hypothetically wider panel either, matching
+ * web's own cap.
  */
-private const val LOGO_WIDTH_FRACTION = 0.65f
+private const val GLOW_DIAMETER_FRACTION = 0.70f // web: min(420px, 70vw)
+private val GLOW_DIAMETER_MAX = 420.dp
+private const val RING_DIAMETER_FRACTION = 0.52f // web: min(280px, 52vw)
+private val RING_DIAMETER_MAX = 280.dp
+private const val LOGO_WIDTH_FRACTION = 0.72f // web: min(280px, 72vw)
+private val LOGO_WIDTH_MAX = 280.dp
 
 /** `cavotec_logo.png`'s real pixel dimensions (839x147) — used so [aspectRatio] never distorts it. */
 private const val CAVOTEC_LOGO_ASPECT_RATIO = 839f / 147f
@@ -170,72 +184,164 @@ fun TerminalBootSplashScreen(
 }
 
 /**
- * v1 design, flagged as an iterable placeholder (not a spec locked in stone): logo scales up
- * from ~0.7x with a fade-in on first appearance, then loops a subtle breathing pulse
- * (1.0x-1.05x) for as long as this composable stays on screen. Reuses the same
- * [rememberInfiniteTransition] + scale technique [SoftScanTile]'s `listening` pulse already
- * uses, rather than inventing a new animation approach. No background color is set here — the
- * surrounding Scaffold already supplies the theme's background, same as every other full-screen
- * composable in this app (e.g. [TerminalPairingScreen]).
+ * v2 design — ported from web's login-page splash (`web/src/styles.css`'s `.login-splash*`
+ * rules; see CLAUDE_TERMINAL.md's Completed entry for the full extracted reference: exact
+ * gradient stops, sizes, and cubic-bezier curves this pass carried over) rather than this app's
+ * own original v1 spring-bounce + breathing-pulse treatment. Two deliberate, documented
+ * departures from a literal 1:1 port — this is a *port*, not a shared component, since this
+ * project has no cross-app Compose UI module:
+ * 1. Colors read from this app's own [LocalEkmsColors]/[MaterialTheme] tokens (already the same
+ *    Cavotec-blue brand direction as web) rather than hardcoding web's literal hex values —
+ *    avoids two independently-driftable sources of "the same" brand color.
+ * 2. Web's CSS *ellipse*-shaped background gradients are approximated here as *circular*
+ *    `Brush.radialGradient`s (Compose has no ellipse-gradient primitive without a custom
+ *    `drawWithCache`/Canvas path — judged not worth the complexity for a boot splash), and the
+ *    ambient background gradient's off-center vertical position (CSS `at 50% 42%`) is not
+ *    reproduced (default-centered instead) for the same reason.
  *
- * Logo width targets [LOGO_WIDTH_FRACTION] (~65%) of the available width via `fillMaxWidth` +
- * `aspectRatio` (real asset ratio [CAVOTEC_LOGO_ASPECT_RATIO], `839x147` — a wide, short
- * wordmark, not a square/icon-shaped mark) rather than a fixed dp box, so the logo scales
- * correctly across the two different width numbers this project has floating around it: the
- * panel's native landscape pixels (1024 wide) vs. the confirmed-portrait 600dp width the app
- * actually renders content into on the F7G18P (see CLAUDE_TERMINAL.md's audit notes) — a fixed
- * dp guess risked being right for one and wrong for the other.
+ * Sequence (all times from first appearance): glow pulse loops immediately and continuously
+ * (2.2s cycle, never stops while this screen is shown); ring fades+scales in once over 1.8s;
+ * logo fades+scales+slides+blurs in once over 1.1s; tagline fades+slides in once over 0.9s,
+ * starting 0.45s after the others. No background color change from v1 beyond what's described
+ * here — the surrounding Scaffold still supplies the base theme background (same as every other
+ * full-screen composable in this app, e.g. [TerminalPairingScreen]); this adds a splash-scoped
+ * ambient gradient *on top* of that, not a replacement of it, and only for this composable — the
+ * sibling [BootWarningCard] (failure path) is untouched and keeps the plain background it always
+ * had, so there's no risk of the two states visually clashing.
+ *
+ * The logo entrance's CSS `filter: blur(4px→0)` step only runs on API 31+ (`Modifier.blur` has
+ * no software fallback below that on this Compose version) — omitted below 31, the same "accept
+ * a graceful fallback rather than crash or hack" approach this project already took for Haze's
+ * own blur effect (see CLAUDE_MOBILE.md's Phase M-E entry).
  */
 @Composable
 private fun BootSplashAnimation() {
     val colors = LocalEkmsColors.current
+    val primary = colors.primary
     var appeared by remember { mutableStateOf(false) }
     LaunchedEffect(Unit) { appeared = true }
 
-    val entranceScale by animateFloatAsState(
-        targetValue = if (appeared) 1f else 0.7f,
-        animationSpec = spring(
-            dampingRatio = Spring.DampingRatioMediumBouncy,
-            stiffness = Spring.StiffnessLow,
-        ),
-        label = "bootLogoEntranceScale",
-    )
-    val entranceAlpha by animateFloatAsState(
+    // Logo entrance — web: `login-splash-logo 1.1s cubic-bezier(0.22,1,0.36,1) both`.
+    val logoEasing = remember { CubicBezierEasing(0.22f, 1f, 0.36f, 1f) }
+    val logoEntrance by animateFloatAsState(
         targetValue = if (appeared) 1f else 0f,
-        animationSpec = tween(durationMillis = 500),
-        label = "bootLogoEntranceAlpha",
+        animationSpec = tween(1_100, easing = logoEasing),
+        label = "bootLogoEntrance",
     )
 
-    val breathTransition = rememberInfiniteTransition(label = "bootLogoBreath")
-    val breathScale by breathTransition.animateFloat(
-        initialValue = 1f,
-        targetValue = 1.05f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(1_400, easing = LinearEasing),
-            repeatMode = RepeatMode.Reverse,
-        ),
-        label = "bootLogoBreathScale",
+    // Ring — web: `login-splash-ring 1.8s ease-out both` (plays once, does not loop).
+    val easeOut = remember { CubicBezierEasing(0f, 0f, 0.58f, 1f) }
+    val ringEntrance by animateFloatAsState(
+        targetValue = if (appeared) 1f else 0f,
+        animationSpec = tween(1_800, easing = easeOut),
+        label = "bootRingEntrance",
     )
 
-    Column(
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.spacedBy(24.dp),
+    // Glow pulse — web: `login-splash-pulse 2.2s ease-in-out infinite` (0%/100% scale 0.92
+    // alpha 0.7, 50% scale 1.06 alpha 1.0). A symmetric ease-in-out curve applied to each 1.1s
+    // leg of a Reverse-mode infiniteRepeatable reproduces the same keyframe shape as one
+    // continuous 2.2s CSS animation, since ease-in-out already mirrors around its own midpoint.
+    val easeInOut = remember { CubicBezierEasing(0.42f, 0f, 0.58f, 1f) }
+    val glowTransition = rememberInfiniteTransition(label = "bootGlowPulse")
+    val glowPulse by glowTransition.animateFloat(
+        initialValue = 0f,
+        targetValue = 1f,
+        animationSpec = infiniteRepeatable(tween(1_100, easing = easeInOut), RepeatMode.Reverse),
+        label = "bootGlowPulse",
+    )
+
+    // Tagline — web: `login-splash-tag 0.9s ease 0.45s both` (450ms delay before it starts).
+    val ease = remember { CubicBezierEasing(0.25f, 0.1f, 0.25f, 1f) }
+    val tagEntrance by animateFloatAsState(
+        targetValue = if (appeared) 1f else 0f,
+        animationSpec = tween(900, delayMillis = 450, easing = ease),
+        label = "bootTagEntrance",
+    )
+
+    val glowScale = 0.92f + 0.14f * glowPulse
+    val glowAlpha = 0.7f + 0.3f * glowPulse
+    val ringScale = 0.7f + 0.3f * ringEntrance
+    val logoScale = 0.92f + 0.08f * logoEntrance
+
+    BoxWithConstraints(
+        modifier = Modifier
+            .fillMaxSize()
+            // Ambient splash-scoped background gradient — web: radial-gradient(ellipse 70% 50%
+            // at 50% 42%, rgba(primary,0.18), transparent 62%) layered over the base surface.
+            // Approximated as centered/circular (see class doc, departure #2).
+            .background(
+                Brush.radialGradient(0f to primary.copy(alpha = 0.18f), 0.62f to Color.Transparent),
+            ),
+        contentAlignment = Alignment.Center,
     ) {
-        Image(
-            painter = painterResource(R.drawable.cavotec_logo),
-            contentDescription = null,
+        val glowDiameter = minOf(GLOW_DIAMETER_MAX, maxWidth * GLOW_DIAMETER_FRACTION)
+        val ringDiameter = minOf(RING_DIAMETER_MAX, maxWidth * RING_DIAMETER_FRACTION)
+        val logoWidth = minOf(LOGO_WIDTH_MAX, maxWidth * LOGO_WIDTH_FRACTION)
+
+        // Glow — web: radial-gradient(circle, rgba(primary,0.22|0.16), transparent 68%); the
+        // dark-mode CSS override swaps to a lower 0.16 alpha, since it's the same theme-resolved
+        // [primary] token used either way (departure #1), not a second hardcoded color.
+        Box(
             modifier = Modifier
-                .fillMaxWidth(LOGO_WIDTH_FRACTION)
-                .aspectRatio(CAVOTEC_LOGO_ASPECT_RATIO)
-                .scale(entranceScale * breathScale)
-                .alpha(entranceAlpha),
+                .size(glowDiameter)
+                .scale(glowScale)
+                .alpha(glowAlpha)
+                .background(
+                    brush = Brush.radialGradient(
+                        0f to primary.copy(alpha = if (colors.isDark) 0.16f else 0.22f),
+                        0.68f to Color.Transparent,
+                    ),
+                    shape = CircleShape,
+                ),
         )
-        CircularProgressIndicator(
-            modifier = Modifier.size(28.dp).alpha(entranceAlpha),
-            strokeWidth = 3.dp,
-            color = colors.primary,
-            trackColor = MaterialTheme.colorScheme.primaryContainer,
+
+        // Ring — web: 1px solid rgba(primary, 0.35), border-radius 999px.
+        Box(
+            modifier = Modifier
+                .size(ringDiameter)
+                .scale(ringScale)
+                .alpha(ringEntrance)
+                .border(1.dp, primary.copy(alpha = 0.35f), CircleShape),
         )
+
+        Column(
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(18.dp),
+        ) {
+            Image(
+                painter = painterResource(R.drawable.cavotec_logo),
+                contentDescription = null,
+                modifier = Modifier
+                    .width(logoWidth)
+                    .aspectRatio(CAVOTEC_LOGO_ASPECT_RATIO)
+                    .offset(y = 12.dp * (1f - logoEntrance))
+                    .scale(logoScale)
+                    .alpha(logoEntrance)
+                    .then(
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                            Modifier.blur(((1f - logoEntrance) * 4f).dp)
+                        } else {
+                            Modifier
+                        },
+                    ),
+            )
+            Text(
+                text = "Key Management System".uppercase(),
+                style = MaterialTheme.typography.labelMedium,
+                fontWeight = FontWeight.SemiBold,
+                letterSpacing = 0.14f.em,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier
+                    .offset(y = 8.dp * (1f - tagEntrance))
+                    .alpha(tagEntrance),
+            )
+            CircularProgressIndicator(
+                modifier = Modifier.size(28.dp).alpha(logoEntrance),
+                strokeWidth = 3.dp,
+                color = primary,
+                trackColor = MaterialTheme.colorScheme.primaryContainer,
+            )
+        }
     }
 }
 

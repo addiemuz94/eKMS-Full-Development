@@ -12,7 +12,6 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -38,6 +37,10 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.ekms.mobile.data.MobileApiClient
+import com.ekms.mobile.ui.common.ConfirmDialogHost
+import com.ekms.mobile.ui.common.ConfirmRequest
+import com.ekms.mobile.ui.common.IconActionButton
+import com.ekms.mobile.ui.common.MobileActionButtonType
 import com.ekms.mobile.ui.theme.readout
 import com.ekms.shared.api.AuthUserProfile
 import com.ekms.shared.api.CreateKeyAccessRequestRequest
@@ -90,6 +93,7 @@ fun KeyAccessRequestScreen(
     var busyPicId by remember { mutableStateOf<String?>(null) }
     var busyCancelId by remember { mutableStateOf<String?>(null) }
     var hasData by remember { mutableStateOf(false) }
+    var confirmRequest by remember { mutableStateOf<ConfirmRequest?>(null) }
 
     val docPicker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
         if (uri == null) return@rememberLauncherForActivityResult
@@ -110,7 +114,7 @@ fun KeyAccessRequestScreen(
             )
             onNotice("Attached $pendingDocKind ($name)")
         } catch (e: Exception) {
-            onNotice(e.message ?: "Couldn't read document.")
+            onNotice(e.message ?: "Failed to read document.")
         }
     }
 
@@ -134,7 +138,7 @@ fun KeyAccessRequestScreen(
             hasData = true
             onLiveStatus(true, false)
         } catch (e: Exception) {
-            loadError = e.message ?: "Couldn't load exception sites and requests."
+            loadError = e.message ?: "Failed to load exception sites and requests."
             onLiveStatus(false, false)
         } finally {
             loading = false
@@ -157,7 +161,7 @@ fun KeyAccessRequestScreen(
                 sitePics = apiClient.listSitePics(siteId)
             }
         } catch (e: Exception) {
-            onNotice(e.message ?: "Couldn't load keys for that site.")
+            onNotice(e.message ?: "Failed to load keys for that site.")
         } finally {
             loadingKeys = false
         }
@@ -217,7 +221,7 @@ fun KeyAccessRequestScreen(
                 )
                 reload()
             } catch (e: Exception) {
-                onNotice(e.message ?: "Couldn't submit the request.")
+                onNotice(e.message ?: "Failed to submit the request.")
             } finally {
                 submitting = false
             }
@@ -233,7 +237,7 @@ fun KeyAccessRequestScreen(
                 onNotice("Request cancelled. Submit a new request if you still need access.")
                 reload()
             } catch (e: Exception) {
-                onNotice(e.message ?: "Couldn't cancel the request.")
+                onNotice(e.message ?: "Failed to cancel the request.")
             } finally {
                 busyCancelId = null
             }
@@ -276,7 +280,8 @@ fun KeyAccessRequestScreen(
                                     onNotice = onNotice,
                                 )
                                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                    Button(
+                                    IconActionButton(
+                                        type = MobileActionButtonType.CONFIRM,
                                         onClick = {
                                             busyPicId = request.id
                                             scope.launch {
@@ -291,25 +296,35 @@ fun KeyAccessRequestScreen(
                                                 }
                                             }
                                         },
+                                        label = "Approve as PIC",
                                         enabled = busyPicId != request.id,
-                                    ) { Text("Approve as PIC") }
-                                    OutlinedButton(
+                                    )
+                                    IconActionButton(
+                                        type = MobileActionButtonType.CANCEL,
                                         onClick = {
-                                            busyPicId = request.id
-                                            scope.launch {
-                                                try {
-                                                    apiClient.rejectKeyAccessRequest(request.id)
-                                                    onNotice("Rejected at PIC stage.")
-                                                    reload()
-                                                } catch (e: Exception) {
-                                                    onNotice(e.message ?: "Reject failed.")
-                                                } finally {
-                                                    busyPicId = null
-                                                }
-                                            }
+                                            confirmRequest = ConfirmRequest(
+                                                title = "Reject this request?",
+                                                body = "The Vendor will need to submit a new request if they still need access.",
+                                                confirmLabel = "Reject",
+                                                onConfirm = {
+                                                    busyPicId = request.id
+                                                    scope.launch {
+                                                        try {
+                                                            apiClient.rejectKeyAccessRequest(request.id)
+                                                            onNotice("Rejected at PIC stage.")
+                                                            reload()
+                                                        } catch (e: Exception) {
+                                                            onNotice(e.message ?: "Reject failed.")
+                                                        } finally {
+                                                            busyPicId = null
+                                                        }
+                                                    }
+                                                },
+                                            )
                                         },
+                                        label = "Reject",
                                         enabled = busyPicId != request.id,
-                                    ) { Text("Reject") }
+                                    )
                                 }
                             }
                         }
@@ -440,13 +455,13 @@ fun KeyAccessRequestScreen(
                                 minLines = 2,
                             )
 
-                            Button(
+                            IconActionButton(
+                                type = MobileActionButtonType.ADD,
                                 onClick = ::submit,
                                 modifier = Modifier.fillMaxWidth(),
+                                label = if (submitting) "Submitting…" else "Submit request",
                                 enabled = selectedSiteId != null && selectedKeyIds.isNotEmpty() && !submitting,
-                            ) {
-                                Text(if (submitting) "Submitting…" else "Submit request")
-                            }
+                            )
                         }
                     }
                 }
@@ -464,7 +479,15 @@ fun KeyAccessRequestScreen(
                             request = request,
                             busy = busyCancelId == request.id,
                             onCancel = if (isCancellableStatus(request.status)) {
-                                { cancel(request.id) }
+                                {
+                                    confirmRequest = ConfirmRequest(
+                                        title = "Cancel this request?",
+                                        body = "You'll need to submit a new request if you still need access.",
+                                        confirmLabel = "Cancel request",
+                                        cancelLabel = "Keep it",
+                                        onConfirm = { cancel(request.id) },
+                                    )
+                                }
                             } else {
                                 null
                             },
@@ -474,6 +497,8 @@ fun KeyAccessRequestScreen(
             }
         }
     }
+
+    ConfirmDialogHost(confirmRequest) { confirmRequest = null }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -642,13 +667,13 @@ private fun KeyAccessRequestRow(
                 Text(window, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
             if (onCancel != null) {
-                OutlinedButton(
+                IconActionButton(
+                    type = MobileActionButtonType.CANCEL,
                     onClick = onCancel,
                     modifier = Modifier.fillMaxWidth(),
+                    label = if (busy) "Cancelling…" else "Cancel request",
                     enabled = !busy,
-                ) {
-                    Text(if (busy) "Cancelling…" else "Cancel request")
-                }
+                )
             }
         }
     }

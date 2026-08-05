@@ -1,18 +1,19 @@
 package com.ekms.mobile.ui.terminals
 
-import android.annotation.SuppressLint
 import android.content.Intent
 import android.net.Uri
-import android.webkit.JavascriptInterface
-import android.webkit.WebView
-import android.webkit.WebViewClient
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Card
 import androidx.compose.material3.CircularProgressIndicator
@@ -20,12 +21,16 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -34,12 +39,19 @@ import com.ekms.mobile.data.MobileApiClient
 import com.ekms.shared.api.SiteDto
 import com.ekms.shared.api.TerminalDto
 import com.ekms.shared.domain.TerminalConnectionState
-import org.json.JSONArray
-import org.json.JSONObject
+import org.osmdroid.config.Configuration
+import org.osmdroid.tileprovider.tilesource.OnlineTileSourceBase
+import org.osmdroid.tileprovider.tilesource.TileSourceFactory
+import org.osmdroid.util.BoundingBox
+import org.osmdroid.util.GeoPoint
+import org.osmdroid.util.MapTileIndex
+import org.osmdroid.views.MapView
+import org.osmdroid.views.overlay.Marker
 
 /**
- * Scoped terminal list + OSM map (Leaflet in WebView). Pin tap / Directions opens the native
- * Maps chooser — no in-app turn-by-turn.
+ * Scoped terminal list + OSM map (osmdroid native View, see CLAUDE_MOBILE.md's Terminals-tab
+ * map bug entry for why this replaced an earlier WebView+Leaflet implementation). Pin tap /
+ * Directions opens the native Maps chooser — no in-app turn-by-turn.
  */
 @Composable
 fun TerminalsScreen(
@@ -67,7 +79,7 @@ fun TerminalsScreen(
             hasData = true
             onLiveStatus(true, false)
         } catch (e: Exception) {
-            loadError = e.message ?: "Couldn't load terminals."
+            loadError = e.message ?: "Failed to load terminals."
             onLiveStatus(false, false)
             if (!hasData) onNotice(loadError!!)
         } finally {
@@ -174,131 +186,149 @@ private fun MobileTerminalCard(
     }
 }
 
-@SuppressLint("SetJavaScriptEnabled")
 @Composable
 private fun ScopedTerminalsMap(
     terminals: List<TerminalDto>,
     onPinTap: (TerminalDto) -> Unit,
 ) {
-    val terminalsRef = remember { java.util.concurrent.atomic.AtomicReference(terminals) }
-    val tapRef = remember { java.util.concurrent.atomic.AtomicReference(onPinTap) }
-    terminalsRef.set(terminals)
-    tapRef.set(onPinTap)
+    // Fresh MapView per tab visit — NOT a shared/reused instance (see CLAUDE_MOBILE.md's
+    // Terminals-tab map bug entry: a process-lifetime singleton was tried and crashed with a
+    // real, hardware-confirmed NullPointerException in osmdroid's Marker constructor, because
+    // Android's View framework calls MapView.onDetachedFromWindow() automatically on every
+    // tab-away regardless of whether we call onDetach() ourselves — osmdroid's own internal
+    // state does not survive that detach/reattach cycle, so reusing an instance after even one
+    // detach is unsafe). A fresh instance every visit is never reused, so it can never hit a
+    // stale/detached internal state. Deliberately NOT calling mapView.onDetach() ourselves in
+    // onDispose below — the framework's automatic onDetachedFromWindow() already tears the
+    // instance down once it's discarded; an explicit second onDetach() call added nothing but
+    // risk (this is also how the instance now-discarded per visit avoided being reused, versus
+    // the very first pass, which called onDetach() explicitly to avoid a resource leak instead —
+    // that leak concern doesn't apply here since a never-reused, unreferenced MapView instance
+    // has nothing else holding it alive once discarded).
+    val context = LocalContext.current
+    var satelliteActive by remember { mutableStateOf(true) }
     val mapKey = terminals.joinToString { "${it.id}:${it.latitude}:${it.longitude}" }
+    val mapView = remember {
+        // Required by OSM's tile usage policy — a missing/generic user agent gets tile
+        // requests blocked.
+        Configuration.getInstance().userAgentValue = context.packageName
+        MapView(context).apply {
+            setMultiTouchControls(true)
+            setTileSource(TileSourceFactory.MAPNIK)
+        }
+    }
 
-    AndroidView(
-        modifier = Modifier.fillMaxSize(),
-        factory = { ctx ->
-            WebView(ctx).apply {
-                settings.javaScriptEnabled = true
-                webViewClient = WebViewClient()
-                addJavascriptInterface(
-                    object {
-                        @JavascriptInterface
-                        fun openTerminal(id: String) {
-                            val t = terminalsRef.get().firstOrNull { it.id == id } ?: return
-                            tapRef.get().invoke(t)
-                        }
-                    },
-                    "EkmsBridge",
-                )
-                tag = mapKey
-                loadDataWithBaseURL(
-                    "https://unpkg.com/",
-                    buildLeafletHtml(terminalsRef.get()),
-                    "text/html",
-                    "UTF-8",
-                    null,
-                )
+    DisposableEffect(Unit) {
+        mapView.onResume()
+        onDispose { mapView.onPause() }
+    }
+
+    LaunchedEffect(satelliteActive) {
+        mapView.setTileSource(if (satelliteActive) EsriSatelliteTileSource else TileSourceFactory.MAPNIK)
+        mapView.invalidate()
+    }
+
+    LaunchedEffect(mapKey) {
+        mapView.overlays.clear()
+        val points = terminals.mapNotNull { t ->
+            val lat = t.latitude
+            val lng = t.longitude
+            if (lat != null && lng != null) GeoPoint(lat, lng) else null
+        }
+        terminals.forEach { terminal ->
+            val lat = terminal.latitude
+            val lng = terminal.longitude
+            if (lat == null || lng == null) return@forEach
+            val marker = Marker(mapView)
+            marker.position = GeoPoint(lat, lng)
+            marker.title = terminal.name
+            marker.setOnMarkerClickListener { _, _ ->
+                onPinTap(terminal)
+                true
             }
-        },
-        update = { webView ->
-            if (webView.tag != mapKey) {
-                webView.tag = mapKey
-                webView.loadDataWithBaseURL(
-                    "https://unpkg.com/",
-                    buildLeafletHtml(terminalsRef.get()),
-                    "text/html",
-                    "UTF-8",
-                    null,
-                )
+            mapView.overlays.add(marker)
+        }
+        mapView.invalidate()
+        when {
+            points.size == 1 -> {
+                mapView.controller.setZoom(14.0)
+                mapView.controller.setCenter(points[0])
             }
-        },
+            points.size > 1 -> {
+                mapView.post {
+                    mapView.zoomToBoundingBox(BoundingBox.fromGeoPoints(points), false, 24)
+                }
+            }
+            else -> {
+                mapView.controller.setZoom(5.0)
+                mapView.controller.setCenter(GeoPoint(4.2, 109.5))
+            }
+        }
+    }
+
+    Box(modifier = Modifier.fillMaxSize()) {
+        AndroidView(modifier = Modifier.fillMaxSize(), factory = { mapView })
+        BasemapToggle(
+            satelliteActive = satelliteActive,
+            onSelect = { satelliteActive = it },
+            modifier = Modifier
+                .align(Alignment.TopEnd)
+                .padding(10.dp),
+        )
+    }
+}
+
+/** Native replacement for the old HTML/CSS pill toggle — same Satellite/Map two-state UI. */
+@Composable
+private fun BasemapToggle(
+    satelliteActive: Boolean,
+    onSelect: (Boolean) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Row(
+        modifier = modifier
+            .clip(RoundedCornerShape(8.dp))
+            .background(Color.White),
+    ) {
+        BasemapToggleButton("Satellite", active = satelliteActive, onClick = { onSelect(true) })
+        BasemapToggleButton("Map", active = !satelliteActive, onClick = { onSelect(false) })
+    }
+}
+
+@Composable
+private fun BasemapToggleButton(label: String, active: Boolean, onClick: () -> Unit) {
+    Text(
+        label,
+        modifier = Modifier
+            .clickable(onClick = onClick)
+            .background(if (active) Color(0xFF1A73E8) else Color.Transparent)
+            .padding(horizontal = 12.dp, vertical = 8.dp),
+        color = if (active) Color.White else Color(0xFF333333),
+        style = MaterialTheme.typography.labelMedium,
     )
 }
 
-private fun buildLeafletHtml(terminals: List<TerminalDto>): String {
-    val features = JSONArray()
-    terminals.forEach { t ->
-        features.put(
-            JSONObject()
-                .put("id", t.id)
-                .put("name", t.name)
-                .put("lat", t.latitude)
-                .put("lng", t.longitude),
-        )
+/**
+ * osmdroid's [TileSourceFactory] has no built-in Esri World Imagery source, and its generic
+ * [org.osmdroid.tileprovider.tilesource.XYTileSource] hardcodes a z/x/y URL ordering — this
+ * server uses z/y/x (`.../tile/{z}/{y}/{x}`), so a direct subclass override is required. Same
+ * tile server/path this screen used before the osmdroid rewrite (see CLAUDE_MOBILE.md).
+ */
+private object EsriSatelliteTileSource : OnlineTileSourceBase(
+    "EsriWorldImagery",
+    0,
+    19,
+    256,
+    "",
+    arrayOf("https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/"),
+    "Tiles © Esri",
+) {
+    override fun getTileURLString(pMapTileIndex: Long): String {
+        val zoom = MapTileIndex.getZoom(pMapTileIndex)
+        val x = MapTileIndex.getX(pMapTileIndex)
+        val y = MapTileIndex.getY(pMapTileIndex)
+        return "${getBaseUrl()}$zoom/$y/$x"
     }
-    val json = features.toString()
-    return """
-<!DOCTYPE html>
-<html><head>
-<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
-<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
-<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-<style>
-html,body,#map{margin:0;height:100%;width:100%}
-.basemap-toggle{
-  position:absolute;top:10px;right:10px;z-index:1000;
-  display:flex;border-radius:8px;overflow:hidden;
-  box-shadow:0 1px 4px rgba(0,0,0,.35);background:#fff;font:600 12px/1.2 system-ui,sans-serif;
-}
-.basemap-toggle button{
-  border:0;background:transparent;padding:8px 12px;cursor:pointer;color:#333;
-}
-.basemap-toggle button.active{background:#1a73e8;color:#fff}
-</style>
-</head><body>
-<div id="map"></div>
-<div class="basemap-toggle" role="group" aria-label="Map basemap">
-  <button type="button" id="btn-sat" class="active">Satellite</button>
-  <button type="button" id="btn-map">Map</button>
-</div>
-<script>
-const pins = $json;
-const map = L.map('map', { zoomControl: true });
-const street = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-  maxZoom: 19, attribution: '&copy; OpenStreetMap'
-});
-const satellite = L.tileLayer(
-  'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
-  {
-    maxZoom: 19,
-    attribution: 'Tiles &copy; Esri'
-  }
-);
-let active = satellite;
-active.addTo(map);
-function setBasemap(kind) {
-  map.removeLayer(active);
-  active = kind === 'street' ? street : satellite;
-  active.addTo(map);
-  document.getElementById('btn-sat').classList.toggle('active', kind === 'satellite');
-  document.getElementById('btn-map').classList.toggle('active', kind === 'street');
-}
-document.getElementById('btn-sat').onclick = () => setBasemap('satellite');
-document.getElementById('btn-map').onclick = () => setBasemap('street');
-const bounds = [];
-pins.forEach(p => {
-  const m = L.marker([p.lat, p.lng]).addTo(map).bindPopup(p.name);
-  m.on('click', () => { if (window.EkmsBridge) EkmsBridge.openTerminal(p.id); });
-  bounds.push([p.lat, p.lng]);
-});
-if (bounds.length === 1) map.setView(bounds[0], 14);
-else if (bounds.length > 1) map.fitBounds(bounds, { padding: [24, 24] });
-else map.setView([4.2, 109.5], 5);
-</script>
-</body></html>
-""".trimIndent()
 }
 
 private val TerminalConnectionState.mobileLabel: String

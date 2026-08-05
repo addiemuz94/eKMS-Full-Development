@@ -65,7 +65,7 @@ fun DashboardScreen(
             hasData = true
             onLiveStatus(true, false)
         } catch (e: Exception) {
-            loadError = e.message ?: "Couldn't load overview."
+            loadError = e.message ?: "Failed to load overview."
             onLiveStatus(false, false)
             if (!hasData) onNotice(loadError!!)
         } finally {

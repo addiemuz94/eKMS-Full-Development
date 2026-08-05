@@ -7,7 +7,6 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
-import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
@@ -26,6 +25,10 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.core.content.FileProvider
 import com.ekms.mobile.data.MobileApiClient
+import com.ekms.mobile.ui.common.ConfirmDialogHost
+import com.ekms.mobile.ui.common.ConfirmRequest
+import com.ekms.mobile.ui.common.IconActionButton
+import com.ekms.mobile.ui.common.MobileActionButtonType
 import com.ekms.shared.api.KeyAccessRequestDocumentMeta
 import com.ekms.shared.api.KeyAccessRequestDto
 import com.ekms.shared.api.KeyAccessRequestStatus
@@ -49,6 +52,7 @@ fun KeyAccessApprovalScreen(
     var requests by remember { mutableStateOf<List<KeyAccessRequestDto>>(emptyList()) }
     var busyRequestId by remember { mutableStateOf<String?>(null) }
     var hasData by remember { mutableStateOf(false) }
+    var confirmRequest by remember { mutableStateOf<ConfirmRequest?>(null) }
 
     suspend fun reload(showLoading: Boolean = true) {
         if (showLoading) loading = true
@@ -64,7 +68,7 @@ fun KeyAccessApprovalScreen(
             hasData = true
             onLiveStatus(true, false)
         } catch (e: Exception) {
-            loadError = e.message ?: "Couldn't load key access requests."
+            loadError = e.message ?: "Failed to load key access requests."
             onLiveStatus(false, false)
         } finally {
             loading = false
@@ -81,7 +85,7 @@ fun KeyAccessApprovalScreen(
                 onNotice("Request approved — PIN issued to the requester.")
                 reload()
             } catch (e: Exception) {
-                onNotice(e.message ?: "Couldn't approve the request.")
+                onNotice(e.message ?: "Failed to approve the request.")
             } finally {
                 busyRequestId = null
             }
@@ -96,7 +100,7 @@ fun KeyAccessApprovalScreen(
                 onNotice("Request rejected.")
                 reload()
             } catch (e: Exception) {
-                onNotice(e.message ?: "Couldn't reject the request.")
+                onNotice(e.message ?: "Failed to reject the request.")
             } finally {
                 busyRequestId = null
             }
@@ -111,7 +115,7 @@ fun KeyAccessApprovalScreen(
                 onNotice("Access revoked — PIN no longer works at the cabinet.")
                 reload()
             } catch (e: Exception) {
-                onNotice(e.message ?: "Couldn't revoke the request.")
+                onNotice(e.message ?: "Failed to revoke the request.")
             } finally {
                 busyRequestId = null
             }
@@ -144,7 +148,14 @@ fun KeyAccessApprovalScreen(
                             request = request,
                             busy = busyRequestId == request.id,
                             onApprove = { approve(request.id) },
-                            onReject = { reject(request.id) },
+                            onReject = {
+                                confirmRequest = ConfirmRequest(
+                                    title = "Reject this request?",
+                                    body = "The requester will need to submit a new request if they still need access.",
+                                    confirmLabel = "Reject",
+                                    onConfirm = { reject(request.id) },
+                                )
+                            },
                             onRevoke = null,
                             onNotice = onNotice,
                         )
@@ -166,7 +177,19 @@ fun KeyAccessApprovalScreen(
                             busy = busyRequestId == request.id,
                             onApprove = null,
                             onReject = null,
-                            onRevoke = { revoke(request.id) },
+                            onRevoke = {
+                                // Most consequential of the 5 gated actions this pass — kills an
+                                // already-issued PIN that may be in active use right now, worded
+                                // to make that concrete rather than a generic "are you sure."
+                                confirmRequest = ConfirmRequest(
+                                    title = "Revoke this PIN?",
+                                    body = "This PIN may already be in use at the cabinet right now. " +
+                                        "Revoking it immediately stops it from working — the requester " +
+                                        "will be locked out mid-use if they're actively using it.",
+                                    confirmLabel = "Revoke PIN",
+                                    onConfirm = { revoke(request.id) },
+                                )
+                            },
                             onNotice = onNotice,
                         )
                     }
@@ -174,6 +197,8 @@ fun KeyAccessApprovalScreen(
             }
         }
     }
+
+    ConfirmDialogHost(confirmRequest) { confirmRequest = null }
 }
 
 @Composable
@@ -234,29 +259,29 @@ private fun KeyAccessAdminCard(
                 horizontalArrangement = Arrangement.spacedBy(10.dp),
             ) {
                 if (onApprove != null && onReject != null) {
-                    Button(
+                    IconActionButton(
+                        type = MobileActionButtonType.CONFIRM,
                         onClick = onApprove,
                         modifier = Modifier.weight(1f),
+                        label = "Approve",
                         enabled = !busy,
-                    ) {
-                        Text("Approve")
-                    }
-                    OutlinedButton(
+                    )
+                    IconActionButton(
+                        type = MobileActionButtonType.CANCEL,
                         onClick = onReject,
                         modifier = Modifier.weight(1f),
+                        label = "Reject",
                         enabled = !busy,
-                    ) {
-                        Text("Reject")
-                    }
+                    )
                 }
                 if (onRevoke != null) {
-                    OutlinedButton(
+                    IconActionButton(
+                        type = MobileActionButtonType.DESTRUCTIVE,
                         onClick = onRevoke,
                         modifier = Modifier.fillMaxWidth(),
+                        label = "Revoke PIN",
                         enabled = !busy,
-                    ) {
-                        Text("Revoke PIN")
-                    }
+                    )
                 }
             }
         }
@@ -304,7 +329,7 @@ internal fun KeyAccessDocumentsSection(
                 }
                 context.startActivity(Intent.createChooser(view, "Open ${doc.docKind}"))
             } catch (e: Exception) {
-                onNotice(e.message ?: "Couldn't open ${doc.docKind}.")
+                onNotice(e.message ?: "Failed to open ${doc.docKind}.")
             } finally {
                 openingDocId = null
             }

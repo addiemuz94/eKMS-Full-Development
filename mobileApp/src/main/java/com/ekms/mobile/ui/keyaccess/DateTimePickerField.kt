@@ -4,8 +4,6 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.DatePicker
 import androidx.compose.material3.DatePickerDialog
@@ -26,7 +24,9 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.unit.dp
+import com.composables.icons.lucide.R
 import java.time.Instant
 import java.time.LocalDate
 import java.time.LocalDateTime
@@ -70,7 +70,7 @@ fun DateTimePickerField(
         label = { Text(label) },
         trailingIcon = {
             IconButton(onClick = ::openPicker) {
-                Icon(Icons.Filled.Schedule, contentDescription = "Pick date and time")
+                Icon(painterResource(R.drawable.lucide_ic_clock), contentDescription = "Pick date and time")
             }
         },
         supportingText = { Text("Tap to choose date, then time") },
