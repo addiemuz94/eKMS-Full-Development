@@ -290,7 +290,8 @@ private fun HeadTurnGuide(
             },
             contentDescription = null,
             tint = animatedColor,
-            modifier = Modifier.size(56.dp),
+            // Readability pass: 56dp -> 67dp (x1.2).
+            modifier = Modifier.size(67.dp),
         )
         Text(
             text = if (direction == ActiveHeadTurnLivenessChallenge.HeadTurnDirection.LEFT) {

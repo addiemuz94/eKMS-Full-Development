@@ -58,6 +58,12 @@ class CabinetHardwareController(
         // Key Attachment missing-fob blink (Part 3): a plain guess at a "clearly blinking, not
         // flickering" rate — no spec or hardware pass to derive this from, easy to retune.
         private const val MISSING_FOB_BLINK_INTERVAL_MILLIS = 600L
+
+        // Boot-time hardware self-test (see runBootKeyNodeSelfTest): how long each node's red-
+        // on/blue-on state holds before moving to the next step, long enough for an operator
+        // standing at the cabinet to actually see each light — same "clearly visible, not a
+        // flicker" reasoning as FOB_SCAN_FLASH_MILLIS above, easy to retune.
+        private const val BOOT_SELF_TEST_DWELL_MILLIS = 500L
     }
 
     private val mainHandler = Handler(Looper.getMainLooper())
@@ -1901,6 +1907,78 @@ class CabinetHardwareController(
                 Log.w(LOG_TAG, "Auto-scan sweep could not connect: ${error.detail()}")
             } finally {
                 mainHandler.post(onSweepComplete)
+            }
+        }
+    }
+
+    /**
+     * Boot-time-only visual hardware self-test (see CLAUDE_TERMINAL.md's boot-splash self-test
+     * entry) — cycles every configured key node (1..[configuredSlotCount]; node 0/door is never
+     * touched) through unlock -> red on -> red off -> lock -> blue on -> blue off -> **unlock**,
+     * so an operator standing at the cabinet can visually confirm every node's electromagnet and
+     * both indicator lights actually work before the terminal reaches login.
+     *
+     * The trailing unlock is deliberate, not part of the originally-specced 6-step sequence:
+     * ending a node *locked* (0x13) and moving straight to the next node's own 0x13 would either
+     * throw [com.ekms.shared.protocol.ElectromagnetConcurrencyException] (section 10.4 — only one
+     * electromagnet may be engaged cabinet-wide at a time; [KeyCabinetLink.releaseElectromagnet]
+     * only clears the guard for the exact node released, so node 2's own engage would still see
+     * node 1 as engaged) or, if that guard were ever bypassed, would genuinely energize two
+     * electromagnets simultaneously — the exact current-draw hazard the guard exists to prevent.
+     * This goes through the real [KeyCabinetLink.engageElectromagnet]/`releaseElectromagnet` —
+     * the same guard every other electromagnet operation uses, never a bypass — and stays
+     * naturally sequential (one [worker] thread, nodes processed strictly one at a time, this
+     * node's own final release always runs before the next node's unlock), so the guard is never
+     * actually tripped by construction.
+     *
+     * Same "never block on one bad node" precedent [autoScanKeyFobs] and
+     * `StartupDiagnosticsScreen` already establish: a node that fails (after the shared 500ms/
+     * 3-attempt retry already inside [KeyCabinetLink.sendCommand]) is best-effort cleaned up,
+     * logged, and skipped — [onNodeComplete] reports success/failure per node so the caller can
+     * log it, and the loop continues to the next node rather than aborting the whole test.
+     * [onComplete] always fires exactly once on the main thread, even if the cabinet link itself
+     * could not be reached at all.
+     */
+    fun runBootKeyNodeSelfTest(
+        configuredSlotCount: Int,
+        onNodeComplete: (nodeAddress: Int, success: Boolean) -> Unit,
+        onComplete: () -> Unit,
+    ) {
+        if (configuredSlotCount < 1) {
+            mainHandler.post(onComplete)
+            return
+        }
+        worker.execute {
+            try {
+                ensureConnectedOnWorker()
+                val activeLink = requireNotNull(link) { "Cabinet protocol is unavailable." }
+                for (nodeAddress in 1..configuredSlotCount) {
+                    try {
+                        activeLink.releaseElectromagnet(nodeAddress)
+                        activeLink.redLightOn(nodeAddress)
+                        Thread.sleep(BOOT_SELF_TEST_DWELL_MILLIS)
+                        activeLink.redLightOff(nodeAddress)
+                        activeLink.engageElectromagnet(nodeAddress)
+                        activeLink.blueLightOn(nodeAddress)
+                        Thread.sleep(BOOT_SELF_TEST_DWELL_MILLIS)
+                        activeLink.blueLightOff(nodeAddress)
+                        activeLink.releaseElectromagnet(nodeAddress)
+                        mainHandler.post { onNodeComplete(nodeAddress, true) }
+                    } catch (nodeError: Exception) {
+                        // Best-effort cleanup so a failed node isn't left mid-cycle (lit or
+                        // still engaged) — same "runCatching, don't let cleanup itself throw"
+                        // shape autoScanKeyFobs's own catch block uses above.
+                        runCatching { link?.redLightOff(nodeAddress) }
+                        runCatching { link?.blueLightOff(nodeAddress) }
+                        runCatching { link?.releaseElectromagnet(nodeAddress) }
+                        Log.w(LOG_TAG, "Boot self-test: node $nodeAddress failed — ${nodeError.detail()}")
+                        mainHandler.post { onNodeComplete(nodeAddress, false) }
+                    }
+                }
+            } catch (error: Exception) {
+                Log.w(LOG_TAG, "Boot self-test could not connect: ${error.detail()}")
+            } finally {
+                mainHandler.post(onComplete)
             }
         }
     }

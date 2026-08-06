@@ -3,7 +3,7 @@
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE"/>
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
 
-    <application android:allowBackup="false" android:label="eKMS Digital Key" android:supportsRtl="true" android:theme="@style/Theme.Ekms">
+    <application android:allowBackup="false" android:icon="@mipmap/ic_launcher" android:roundIcon="@mipmap/ic_launcher_round" android:label="eKMS Digital Key" android:supportsRtl="true" android:theme="@style/Theme.Ekms">
         <activity android:name=".MainActivity" android:theme="@style/Theme.Ekms.Splash" android:exported="true" android:launchMode="singleTop" android:resizeableActivity="true" android:windowSoftInputMode="adjustResize">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN"/>

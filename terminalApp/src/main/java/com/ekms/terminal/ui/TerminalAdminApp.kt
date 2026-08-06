@@ -686,6 +686,70 @@ fun TerminalAdminApp() {
         onDispose { returnSessionAudio.release() }
     }
 
+    // "Please take your next key" one-shot, multi-key Take queue only. Dedicated instance for
+    // the same reason returnSessionAudio is: it fires from the queue's own onKeyRemoved
+    // advance callback below (this composable's body, not TerminalKeyTakeScreen's), right as
+    // that node's TerminalKeyTakeScreen instance is being torn down and replaced by the next
+    // queued node's — relying on the (about to be disposed) current screen's own `audio`
+    // instance would be fragile.
+    val multiKeyTakeAudio = remember(applicationContext) { AudioFeedbackController(applicationContext) }
+    DisposableEffect(multiKeyTakeAudio) {
+        onDispose { multiKeyTakeAudio.release() }
+    }
+
+    // Cyclic take/return/close-door audio pattern (session-level Phase 2 half — the per-node
+    // Phase 1 half lives in TerminalKeyReturnScreen). Replaces the old one-shot
+    // "please close the door" voice line at Door-Close Warning Time expiry with a repeating
+    // voice+3-beeps cycle that keeps going until the door actually closes OR a new scan resets
+    // the session's warning window (both set this back to false below) — the underlying timer
+    // itself (when it starts/expires/resets) is untouched, only what plays once it fires.
+    var returnSessionDoorWarningActive by remember { mutableStateOf(false) }
+    val currentReturnSessionDoorWarningActive by rememberUpdatedState(returnSessionDoorWarningActive)
+    LaunchedEffect(returnSessionDoorWarningActive) {
+        if (returnSessionDoorWarningActive) {
+            returnSessionAudio.playCyclicUntil(
+                voiceLine = VoiceLine.PLEASE_CLOSE_THE_DOOR,
+                until = { !currentReturnSessionDoorWarningActive },
+            )
+        }
+    }
+
+    // "More keys to return?" 5s hold — applies uniformly to single-key Return and every
+    // insertion in a multi-key Return session (no last-key branching; see onNodeCycleComplete
+    // below, which triggers this on every SUCCESS regardless of what comes next). A unique id
+    // (not a plain Boolean) so `LaunchedEffect` below restarts cleanly even if a fresh insertion
+    // happened to land while a previous wait was still technically pending (shouldn't normally
+    // happen — only one node cycle is ever active — but avoids relying on that). Reset to null
+    // at the exact same two detection points that already govern the session's per-scan/door-
+    // closed lifecycle (startKeyCardReturn's scan reset, beginReturnNodeCycle's
+    // onSessionDoorClosed below) rather than inventing a separate scan/session-end signal.
+    var pendingMoreKeyReturnCheckId by remember { mutableStateOf<Long?>(null) }
+    LaunchedEffect(pendingMoreKeyReturnCheckId) {
+        if (pendingMoreKeyReturnCheckId != null) {
+            // Fire-and-forget, deliberately not awaited — runs concurrently with the 5s wait
+            // below, not before it (see task spec: "running concurrently with the voice line,
+            // not after it finishes").
+            returnSessionAudio.playVoiceLine(VoiceLine.MORE_KEY_RETURN)
+            delay(5_000L)
+            // Still here means this coroutine was never cancelled by a rekey (a new scan or
+            // session end resetting pendingMoreKeyReturnCheckId to null would have cancelled
+            // it already) — no scan arrived in time, so start the existing Phase 2 cyclic
+            // close-door pattern, same trigger point onWarningExpired already uses below.
+            returnSessionDoorWarningActive = true
+            pendingMoreKeyReturnCheckId = null
+        }
+    }
+
+    // Auto-return-to-login pass: door-close is the return session's one and only ending
+    // trigger (beginReturnNodeCycle's onSessionDoorClosed below), regardless of what mix of
+    // success/abandoned/wrong-slot happened inside it — set true there instead of immediately
+    // tearing down session state, so ReturnSessionScreen can show a brief completion message
+    // first (see its own `sessionComplete` param) instead of vanishing abruptly the instant
+    // the door physically closes. The LaunchedEffect that reacts to this lives further down
+    // (after returnToLoginAfterSessionComplete's own declaration — Kotlin local-function
+    // ordering, this var is declared here only because onSessionDoorClosed below needs it).
+    var returnSessionCompletionMessageActive by remember { mutableStateOf(false) }
+
     fun resolveKeyFobUid(rawUid: String): Boolean {
         val matchedUserId = personnelCardStore.recordIdFor(rawUid)
         val matchedKeyId = keyCardStore.recordIdFor(rawUid)
@@ -780,6 +844,18 @@ fun TerminalAdminApp() {
             returnSessionReturnedKeyNames = emptyList()
         }
         hardwareController.resetReturnSessionDoorCloseWarning()
+        // Cyclic take/return/close-door audio pattern: a new scan (first or any subsequent
+        // one, per the session's existing per-scan reset behavior, unchanged above) also
+        // stops an in-progress "please close the door" cycle, if one was running — the
+        // operator scanning again means they're actively at the cabinet, so the reminder
+        // should pause rather than keep repeating over whatever they're doing next. No-op if
+        // one wasn't running.
+        returnSessionDoorWarningActive = false
+        // "More keys to return?" 5s hold: same detection point as the reset directly above —
+        // a new scan arriving within the 5s window is exactly the "cancel the wait, proceed
+        // into the next key's Phase 1 cycle" case from the task spec. No-op if no wait was
+        // pending (e.g. the very first scan of a session).
+        pendingMoreKeyReturnCheckId = null
         Log.d(
             LOG_TAG,
             "ReturnFlowDiag: startKeyCardReturn node=${matchedSlot?.nodeAddress}, " +
@@ -814,7 +890,10 @@ fun TerminalAdminApp() {
                     doorCloseWarningSeconds = snapshot.cabinetSettings.doorCloseWarningTimeSeconds,
                     onWarningExpired = {
                         Log.d(LOG_TAG, "ReturnFlowDiag: session Door-Close Warning Time expired (warning only, session continues)")
-                        returnSessionAudio.playVoiceLine(VoiceLine.PLEASE_CLOSE_THE_DOOR)
+                        // Cyclic take/return/close-door audio pattern: starts the repeating
+                        // voice+3-beeps cycle instead of a single one-shot voice line — see
+                        // returnSessionDoorWarningActive's LaunchedEffect above.
+                        returnSessionDoorWarningActive = true
                         store.logEvent(
                             AuditEventType.KEY_RETURN_DOOR_LEFT_OPEN,
                             session?.userId,
@@ -825,9 +904,20 @@ fun TerminalAdminApp() {
                     },
                     onSessionDoorClosed = {
                         Log.d(LOG_TAG, "ReturnFlowDiag: return session ended, door closed")
-                        returnFlow = null
-                        returnSessionReturnedKeyNames = emptyList()
-                        returnSessionWrongSlotBlockedNodes = emptySet()
+                        returnSessionDoorWarningActive = false
+                        // "More keys to return?" 5s hold: the door closing ends the whole
+                        // session, so a still-pending wait (operator inserted the last key
+                        // and closed the door within 5s instead of scanning again) has
+                        // nothing left to wait for — cancel it rather than letting it fire
+                        // late into an already-ended session.
+                        pendingMoreKeyReturnCheckId = null
+                        // Auto-return-to-login pass: returnFlow stays Waiting (ReturnSessionScreen
+                        // keeps rendering) for a brief completion message instead of nulling
+                        // everything out immediately here — see
+                        // returnSessionCompletionMessageActive's own LaunchedEffect, which does
+                        // the actual teardown (returnFlow = null, etc.) plus the login redirect
+                        // after the message.
+                        returnSessionCompletionMessageActive = true
                     },
                     onFailure = onFailure,
                 )
@@ -880,6 +970,13 @@ fun TerminalAdminApp() {
                 "priorReturnFlow=${returnFlow?.javaClass?.simpleName}",
         )
         returnFlow = ReturnFlow.Waiting
+        // "More keys to return?" 5s hold: only a genuinely confirmed insertion starts it —
+        // ABANDONED/FAILED/NO_NODE_TEST never do, since nothing was actually returned. Applies
+        // uniformly whether this is the only key in the session or one of several — no
+        // last-key check here at all, matching the task's "always run this" spec.
+        if (outcome == "SUCCESS") {
+            pendingMoreKeyReturnCheckId = System.nanoTime()
+        }
     }
 
     fun handleReturnFlowOutcome(outcome: ReturnFlowOutcome) {
@@ -1208,6 +1305,48 @@ fun TerminalAdminApp() {
         route = SuperAdminRoute.LOGIN
     }
 
+    // Auto-return-to-login pass: fires after a Take/Return session's own brief completion
+    // message, on genuine door-close-confirmed session end. Deliberately NOT a call to
+    // signOut() itself, even though the task's intent is "exactly as if they had logged out"
+    // for the operator's own session: signOut()'s hardwareController.disconnect() tears down
+    // the cabinet's serial link with no automatic reconnect anywhere in this codebase outside
+    // cold-launch's probeStartupHardwareIfNeeded() — every hardware call site (e.g.
+    // CabinetHardwareController.beginReturnNodeCycle) does `requireNotNull(link) { ... }` and
+    // throws rather than reconnecting, so disconnecting here would break the very next
+    // operator's Take/Return until the app is restarted. Every other signOut() side effect
+    // (backend personnel-session clear, route, and the same UI state resets) is reused as-is —
+    // apiClient.clearSession() is confirmed safe/intended for this shape specifically (see
+    // TerminalPairingScreen's doc: it clears the PERSONNEL token, not the terminal's own
+    // separate device-pairing token, exactly the "operator logged out, device stays paired"
+    // split this needs).
+    fun returnToLoginAfterSessionComplete() {
+        apiClient.clearSession()
+        session = null
+        passkeySessionKeyIds = null
+        multiKeyQueue = null
+        multiKeyQueuePending = false
+        capturedFob = null
+        notice = null
+        loginMethod = null
+        route = SuperAdminRoute.LOGIN
+    }
+
+    // Auto-return-to-login pass: reacts to returnSessionCompletionMessageActive (declared
+    // earlier, set true from beginReturnNodeCycle's onSessionDoorClosed) — placed here rather
+    // than next to that var's own declaration since it needs returnSessionReturnedKeyNames/
+    // returnSessionWrongSlotBlockedNodes/returnToLoginAfterSessionComplete, none of which are
+    // declared yet at that earlier point in this function.
+    LaunchedEffect(returnSessionCompletionMessageActive) {
+        if (returnSessionCompletionMessageActive) {
+            delay(RETURN_SESSION_COMPLETION_MESSAGE_MILLIS)
+            returnSessionCompletionMessageActive = false
+            returnFlow = null
+            returnSessionReturnedKeyNames = emptyList()
+            returnSessionWrongSlotBlockedNodes = emptySet()
+            returnToLoginAfterSessionComplete()
+        }
+    }
+
     fun applyAuthSession(outcome: AuthOutcome) {
         when (outcome) {
             is AuthOutcome.Server -> {
@@ -1427,6 +1566,29 @@ fun TerminalAdminApp() {
         }
     }
 
+    // Boot-time key-node self-test (visual hardware check — see
+    // CabinetHardwareController.runBootKeyNodeSelfTest's doc): a second, independent gate on
+    // the splash screen alongside the existing Phase 2 self-diagnostic below, not a
+    // replacement of it. Started only once the cabinet link is actually connected (not just
+    // once the splash is showing) — sending commands to a not-yet-open port would just fail
+    // every node — and only once, guarded the same way startupHardwareProbeStarted guards the
+    // diagnostic probe above. configuredSlotCount comes from the already-loaded local snapshot
+    // (TerminalAdminStore's cached settings), no server round-trip needed.
+    var bootNodeSelfTestStarted by remember { mutableStateOf(false) }
+    var bootNodeSelfTestComplete by remember { mutableStateOf(false) }
+    LaunchedEffect(showStartupDiagnostics, hardwareState.connected) {
+        if (showStartupDiagnostics && hardwareState.connected && !bootNodeSelfTestStarted) {
+            bootNodeSelfTestStarted = true
+            hardwareController.runBootKeyNodeSelfTest(
+                configuredSlotCount = snapshot.cabinetSettings.configuredKeyNodeCount,
+                onNodeComplete = { nodeAddress, success ->
+                    Log.d(LOG_TAG, "BootSelfTestDiag: node=$nodeAddress success=$success")
+                },
+                onComplete = { bootNodeSelfTestComplete = true },
+            )
+        }
+    }
+
     if (showStartupDiagnostics) {
         EkmsTerminalTheme(darkTheme = isDarkTheme) {
             Scaffold(
@@ -1439,6 +1601,7 @@ fun TerminalAdminApp() {
                     cameraAvailable = cameraAvailable,
                     publicCardReaderState = publicCardReaderState,
                     networkStatus = networkStatus,
+                    nodeSelfTestComplete = bootNodeSelfTestComplete,
                     onRetryHardware = ::probeStartupHardwareIfNeeded,
                     onContinue = { showStartupDiagnostics = false },
                 )
@@ -1574,6 +1737,10 @@ fun TerminalAdminApp() {
                     padding = padding,
                     returnedKeyNames = returnSessionReturnedKeyNames,
                     blockedWrongSlotNodes = returnSessionWrongSlotBlockedNodes,
+                    // Auto-return-to-login pass: brief "session complete" message shown for
+                    // RETURN_SESSION_COMPLETION_MESSAGE_MILLIS between door-close and the
+                    // actual teardown/login-redirect — see returnSessionCompletionMessageActive.
+                    sessionComplete = returnSessionCompletionMessageActive,
                 )
 
                 // Mandatory-manual-return-time rework: the once-per-session return-time decision.
@@ -2569,6 +2736,15 @@ fun TerminalAdminApp() {
                                 hardwareController.endTakeSession()
                                 takeFlow = null
                             },
+                            // Auto-return-to-login pass: the single-key path is always its own
+                            // whole session (same reasoning as endTakeSession's own call site
+                            // above), so a genuine door-close-confirmed success here ends the
+                            // operator's session too, not just the take.
+                            onSessionComplete = {
+                                hardwareController.endTakeSession()
+                                takeFlow = null
+                                returnToLoginAfterSessionComplete()
+                            },
                         )
                     } else {
                         TerminalKeyRetrievalScreen(
@@ -2643,7 +2819,16 @@ fun TerminalAdminApp() {
                                 // accepted trade-off rather than two overlapping continuous beeps.
                                 onKeyRemoved = {
                                     takenKeyIds = takenKeyIds + currentKey.id
-                                    if (nextQueue != null) multiKeyQueue = nextQueue
+                                    if (nextQueue != null) {
+                                        // "Please take your next key" one-shot: every key
+                                        // except the last one in the queue. The genuinely
+                                        // last key (nextQueue == null) plays nothing here and
+                                        // proceeds straight to the existing end-of-queue
+                                        // Phase 2 close-door cycle in onCompleted below,
+                                        // unchanged.
+                                        multiKeyTakeAudio.playVoiceLine(VoiceLine.PLEASE_TAKE_YOUR_NEXT_KEY)
+                                        multiKeyQueue = nextQueue
+                                    }
                                 },
                                 onEvent = { outcome -> handleTakeFlowOutcome(outcome, activeQueue.checkoutDeadline) },
                                 // Door-close time. For a non-last key, multiKeyQueue already
@@ -2663,6 +2848,22 @@ fun TerminalAdminApp() {
                                         hardwareController.endTakeSession()
                                         multiKeyQueue = null
                                         notice = "All selected keys have been taken."
+                                    }
+                                },
+                                // Auto-return-to-login pass: only the genuinely last node's own
+                                // door-close reaches this callback while its owning composable
+                                // is still mounted — a non-last node's TerminalKeyTakeScreen
+                                // instance is already torn down (superseded by the next queued
+                                // node, see onKeyRemoved above) by the time its own door
+                                // physically closes, same accepted trade-off onCompleted already
+                                // has above (a stray late callback there is similarly a no-op
+                                // for the disposed instance). `nextQueue == null` guard kept for
+                                // defense in depth even though it should be structurally implied.
+                                onSessionComplete = {
+                                    if (nextQueue == null) {
+                                        hardwareController.endTakeSession()
+                                        multiKeyQueue = null
+                                        returnToLoginAfterSessionComplete()
                                     }
                                 },
                             )
@@ -3402,7 +3603,8 @@ private fun HardwareControlScreen(
                     attention = !hardwareState.connected,
                 )
                 if (hardwareState.busy) {
-                    CircularProgressIndicator(modifier = Modifier.size(28.dp), strokeWidth = 3.dp)
+                    // Readability pass: 28dp -> 34dp (x1.2).
+                    CircularProgressIndicator(modifier = Modifier.size(34.dp), strokeWidth = 3.dp)
                 }
                 Text(
                     text = hardwareState.message,
@@ -3843,6 +4045,11 @@ private fun activeReturnFlowAttemptId(flow: ReturnFlow?): Long? =
     (flow as? ReturnFlow.AwaitingCertification)?.attemptId
 
 private const val LOG_TAG = "TerminalAdminApp"
+
+/** Auto-return-to-login pass: how long `ReturnSessionScreen`'s completion message shows
+ * before the session actually tears down and the screen returns to login — see
+ * `returnSessionCompletionMessageActive`. */
+private const val RETURN_SESSION_COMPLETION_MESSAGE_MILLIS = 1_500L
 
 /** Key Take Flow (CLAUDE.md "Terminal App UX Baseline (Production)" §1) in-progress state; see `TerminalKeyTakeScreen`. */
 private data class TakeFlow(val key: ManagedKey, val slot: KeySlot, val checkoutDeadline: CheckoutDeadlineChoice)

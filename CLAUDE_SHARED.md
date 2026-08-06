@@ -136,6 +136,14 @@ Keep all of this logic (layout/list state, access grant rules, Recycle Bin
 timing, conflict data shape) in the `shared` module so webApp and
 terminalApp consume the same source of truth rather than reimplementing it.
 
+## App Icon / Favicon Branding
+
+All three apps' default/placeholder icon was replaced with the real eKMS logo (source: `ekms_logo_assets.zip`, provided by the user) in one cross-cutting pass — noted here rather than in any one app's own file since the same asset set and swap touched all three.
+
+- **terminalApp / mobileApp**: neither `AndroidManifest.xml` previously had an `android:icon`/`android:roundIcon` attribute at all (not "wrong value" — genuinely absent, confirmed by grep before changing anything), and neither had a `mipmap-*` resource tree either. Both now have the full `mipmap-anydpi-v26/` (adaptive icon XML) + `mipmap-{m,h,x,xx,xxx}hdpi/` (legacy PNG fallback tiers) sets copied in as-is (not regenerated/resized), an `ic_launcher_background` color (`#141A24`) added to each app's `values/colors.xml` (created fresh for terminalApp, which had no `colors.xml` before this; merged into mobileApp's existing one alongside its unrelated `splash_background` entry), and `android:icon="@mipmap/ic_launcher"` / `android:roundIcon="@mipmap/ic_launcher_round"` added to each manifest's `<application>` tag.
+- **web**: `favicon.ico`/`favicon.svg`/`favicon-16x16.png`/`favicon-32x32.png`/`apple-touch-icon-180x180.png`/`android-chrome-192x192.png`/`android-chrome-512x512.png`/`site.webmanifest` copied into `web/public/` (overwriting an old, already-unreferenced `favicon.svg` that existed there — it was never linked from `index.html`). `index.html`'s `<head>` previously had **no** favicon `<link>` tags of any kind (not a default Vite tag needing replacement — genuinely none); added the standard `icon`/`apple-touch-icon`/`manifest` set.
+- **Verify**: terminalApp and mobileApp are `:assembleDebug`-verified (`BUILD SUCCESSFUL`, both manifests/resources parse correctly). web ran an actual `npm run build` (Node was available) — confirmed the favicon `<link>` tags and all 7 copied asset files land correctly in `dist/`. **None of the three have been visually confirmed yet** — a successful build proves the manifest/resource references resolve, not that the icon renders correctly (right image, not distorted/cropped, adaptive-icon background looks right) on an actual launcher (Android) or browser tab (web). Pending next session: install terminalApp/mobileApp on a real device (or emulator) and check the launcher icon; open the web portal in a real browser and check the tab favicon.
+
 ## Hardware Feature Findings
 
 Permanent record of features that were investigated against real hardware and found not

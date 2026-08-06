@@ -116,11 +116,12 @@ fun TerminalFingerprintLoginScreen(
             // screens (Take/Return Flow, NFC login), so its own size/padding is deliberately
             // left untouched here to avoid an unintended blast radius; this large tone-colored
             // icon is local to this screen only and is the actual size/prominence increase.
+            // Readability pass: 88dp -> 106dp (x1.2).
             Icon(
                 imageVector = Icons.Filled.Fingerprint,
                 contentDescription = null,
                 tint = statusToneColor(tone),
-                modifier = Modifier.size(88.dp),
+                modifier = Modifier.size(106.dp),
             )
             SoftWaitPanel(
                 tone = tone,
