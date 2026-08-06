@@ -94,10 +94,11 @@ async function loadCabinetSettingsForSync(terminalId) {
   return mapCabinetSettings(created[0]);
 }
 
-function mapTerminal(row) {
+function mapTerminal(row, siteName = null) {
   return {
     id: row.id,
     siteId: row.site_id,
+    siteName,
     name: row.name,
     boxAddress: Number(row.box_address),
     serialNumber: row.serial_number,
@@ -138,6 +139,9 @@ async function assertTerminal(terminalId) {
 async function buildSnapshot(terminalRow) {
   const siteId = terminalRow.site_id;
   const terminalId = terminalRow.id;
+
+  const [siteRows] = await pool.execute(`SELECT name FROM sites WHERE id = :siteId LIMIT 1`, { siteId });
+  const siteName = siteRows[0]?.name ?? null;
 
   const [userRows] = await pool.execute(
     `SELECT u.* FROM users u
@@ -184,7 +188,7 @@ async function buildSnapshot(terminalRow) {
   }
 
   return {
-    terminal: mapTerminal(terminalRow),
+    terminal: mapTerminal(terminalRow, siteName),
     cabinetSettings: await loadCabinetSettingsForSync(terminalId),
     users,
     keys: keyRows.map(mapKey),

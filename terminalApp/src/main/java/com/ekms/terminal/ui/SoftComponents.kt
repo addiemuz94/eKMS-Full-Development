@@ -16,6 +16,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
@@ -196,6 +197,16 @@ fun SoftScanTile(
     selected: Boolean = false,
     onClick: (() -> Unit)? = null,
     modifier: Modifier = Modifier,
+    /**
+     * Full-width single-column rows (TerminalLoginScreen's v3 rework) run far taller than
+     * the compact grid tiles this composable was originally sized for — `false` (the
+     * default, used by every pre-existing call site, e.g. TerminalKeyMenuScreen's
+     * multi-select key tiles) renders pixel-identical to before. `true` scales up the icon
+     * / icon-container / title+description typography and centers the whole icon+text
+     * block vertically in the tile instead of pinning it to the top, so a tall row doesn't
+     * read as an oversized, mostly-empty box around a small icon.
+     */
+    expanded: Boolean = false,
 ) {
     val colors = LocalEkmsColors.current
     val pulseScale = if (listening) {
@@ -213,6 +224,12 @@ fun SoftScanTile(
     } else {
         1f
     }
+    val iconBoxSize = if (expanded) 64.dp else 44.dp
+    val iconBoxCorner = if (expanded) 18.dp else 14.dp
+    val iconGlyphSize = if (expanded) 34.dp else 24.dp
+    val iconTextGap = if (expanded) 16.dp else 10.dp
+    val titleStyle = if (expanded) MaterialTheme.typography.titleLarge else MaterialTheme.typography.titleSmall
+    val descriptionStyle = if (expanded) MaterialTheme.typography.bodyLarge else MaterialTheme.typography.bodySmall
 
     SoftCard(
         modifier = modifier.scale(pulseScale),
@@ -230,43 +247,61 @@ fun SoftScanTile(
             BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
         },
     ) {
-        Box(
-            modifier = Modifier
-                .size(44.dp)
-                .clip(RoundedCornerShape(14.dp))
-                .background(MaterialTheme.colorScheme.primaryContainer)
-                .align(Alignment.CenterHorizontally),
-            contentAlignment = Alignment.Center,
+        // SoftCard's own Column only wraps its content (Arrangement.Top) — fine for the
+        // compact grid tiles, but on an `expanded` full-height row that leaves the whole
+        // icon+text block pinned to the top with dead space below. This inner Column opts
+        // into filling that height and centering, without touching SoftCard itself (every
+        // other SoftCard call site is unaffected).
+        val contentModifier = if (expanded) {
+            Modifier
+                .fillMaxWidth()
+                .fillMaxHeight()
+        } else {
+            Modifier.fillMaxWidth()
+        }
+        Column(
+            modifier = contentModifier,
+            verticalArrangement = if (expanded) Arrangement.Center else Arrangement.Top,
+            horizontalAlignment = Alignment.CenterHorizontally,
         ) {
-            Icon(
-                imageVector = icon,
-                contentDescription = null,
-                tint = colors.primary,
+            Box(
+                modifier = Modifier
+                    .size(iconBoxSize)
+                    .clip(RoundedCornerShape(iconBoxCorner))
+                    .background(MaterialTheme.colorScheme.primaryContainer),
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(
+                    imageVector = icon,
+                    contentDescription = null,
+                    tint = colors.primary,
+                    modifier = Modifier.size(iconGlyphSize),
+                )
+            }
+            Spacer(modifier = Modifier.height(iconTextGap))
+            Text(
+                text = title,
+                style = titleStyle,
+                // Explicit rather than relying on Card's contentColorFor(containerColor)
+                // auto-resolution: that only matches when containerColor is exactly one of
+                // ColorScheme's named roles (e.g. the literal `surface` dark mode still passes),
+                // and light mode's resting fill above is now a custom blended Color that won't
+                // match any role — leaving this implicit would leave the title's color undefined
+                // in light mode. onSurface resolves to the same textPrimary token this already
+                // rendered with before, in both modes, so this is a no-visual-change safety fix.
+                color = MaterialTheme.colorScheme.onSurface,
+                fontWeight = FontWeight.SemiBold,
+                textAlign = TextAlign.Center,
+                modifier = Modifier.fillMaxWidth(),
+            )
+            Text(
+                text = description,
+                style = descriptionStyle,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                textAlign = TextAlign.Center,
+                modifier = Modifier.fillMaxWidth(),
             )
         }
-        Spacer(modifier = Modifier.height(10.dp))
-        Text(
-            text = title,
-            style = MaterialTheme.typography.titleSmall,
-            // Explicit rather than relying on Card's contentColorFor(containerColor)
-            // auto-resolution: that only matches when containerColor is exactly one of
-            // ColorScheme's named roles (e.g. the literal `surface` dark mode still passes),
-            // and light mode's resting fill above is now a custom blended Color that won't
-            // match any role — leaving this implicit would leave the title's color undefined
-            // in light mode. onSurface resolves to the same textPrimary token this already
-            // rendered with before, in both modes, so this is a no-visual-change safety fix.
-            color = MaterialTheme.colorScheme.onSurface,
-            fontWeight = FontWeight.SemiBold,
-            textAlign = TextAlign.Center,
-            modifier = Modifier.fillMaxWidth(),
-        )
-        Text(
-            text = description,
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            textAlign = TextAlign.Center,
-            modifier = Modifier.fillMaxWidth(),
-        )
     }
 }
 

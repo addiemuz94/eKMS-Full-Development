@@ -215,6 +215,8 @@ fun TerminalAdminApp() {
                                     current.copy(
                                         cabinetId = response.terminal.id,
                                         cabinetName = response.terminal.name.ifBlank { current.cabinetName },
+                                        siteName = response.terminal.siteName?.takeIf { it.isNotBlank() }
+                                            ?: current.siteName,
                                     ),
                                 )
                                 // Reuse the existing bootstrap pipeline (Admin Menu's own
@@ -1450,15 +1452,6 @@ fun TerminalAdminApp() {
             topBar = {
                 TopAppBar(
                     title = {
-                        Text(
-                            when (route) {
-                                SuperAdminRoute.LOGIN -> "eKMS Terminal"
-                                SuperAdminRoute.CHANGE_PASSWORD -> "Secure Super Admin account"
-                                else -> "eKMS Terminal · " + (session?.displayName ?: "Session")
-                            },
-                        )
-                    },
-                    actions = {
                         val serverChipText = when {
                             liveSyncInProgress -> "Syncing…"
                             !networkStatus.hasInternet -> "Offline"
@@ -1466,37 +1459,58 @@ fun TerminalAdminApp() {
                             apiClient.isAuthenticated -> "Reconnecting…"
                             else -> "Not linked"
                         }
-                        // Two labeled status chips, global (every route reaches this same
-                        // TopAppBar, not just the dashboard) — "Server" is unchanged
-                        // network+backend-sync logic; "Cabinet" is hardwareState.connected,
-                        // relocated here from the now-removed SuperAdminDashboardScreen-only
-                        // badge, so there is exactly one place an operator looks for either.
-                        // Label is baked into each chip's own text ("Server: ...", "Cabinet:
-                        // ...") rather than a separate label composable, matching this app's only
-                        // existing labeled-chip-pair precedent (StartupDiagnosticsScreen's
-                        // "Hardware: OK"/"Network: Online (...)" chips).
-                        // Stacked (Column), not side-by-side (Row), deliberately: the title to
-                        // the left is unbounded-length (session displayName is user data), so a
-                        // horizontal two-chip group risks overflowing next to a long title on
-                        // this kiosk tablet's TopAppBar — stacking bounds this group's width to
-                        // whichever single chip is currently widest, not the sum of both.
-                        Column(
-                            horizontalAlignment = Alignment.End,
-                            verticalArrangement = Arrangement.spacedBy(4.dp),
+                        // Title and the two status chips share one full-width row
+                        // (Arrangement.SpaceBetween) instead of the title sitting at the
+                        // TopAppBar's natural leading edge with the chips stacked in a narrow
+                        // Column pinned to the trailing edge — that older layout read as two
+                        // floating corner elements with dead space between them on this
+                        // full-bleed kiosk tablet. The chips are now side-by-side (Row, not
+                        // Column) since SpaceBetween already bounds their combined width to
+                        // whatever's left of the title, so the earlier column-stacking
+                        // (originally there to avoid overflowing next to a long title) is no
+                        // longer needed.
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically,
                         ) {
-                            SoftAssistChip(
-                                text = "Server: $serverChipText",
-                                success = liveServerConnected && networkStatus.hasInternet,
-                                attention = !networkStatus.hasInternet ||
-                                    (apiClient.isAuthenticated && !liveServerConnected),
+                            Text(
+                                when (route) {
+                                    // Falls back to the old plain "eKMS Terminal" until a
+                                    // pairing/bootstrap response with a siteName has landed
+                                    // locally (fresh device, or an older server that doesn't
+                                    // join one yet) — see TerminalCabinetSettings.siteName.
+                                    SuperAdminRoute.LOGIN -> snapshot.cabinetSettings.siteName
+                                        .ifBlank { null }
+                                        ?.let { "eKMS Cabinet · $it" }
+                                        ?: "eKMS Terminal"
+                                    SuperAdminRoute.CHANGE_PASSWORD -> "Secure Super Admin account"
+                                    else -> "eKMS Terminal · " + (session?.displayName ?: "Session")
+                                },
                             )
-                            SoftAssistChip(
-                                text = if (hardwareState.connected) "Cabinet: Connected" else "Cabinet: Disconnected",
-                                success = hardwareState.connected,
-                                attention = !hardwareState.connected,
-                            )
+                            // Two labeled status chips, global (every route reaches this same
+                            // TopAppBar, not just the dashboard) — "Server" is unchanged
+                            // network+backend-sync logic; "Cabinet" is hardwareState.connected,
+                            // relocated here from the now-removed SuperAdminDashboardScreen-only
+                            // badge, so there is exactly one place an operator looks for either.
+                            // Label is baked into each chip's own text ("Server: ...", "Cabinet:
+                            // ...") rather than a separate label composable, matching this app's
+                            // only existing labeled-chip-pair precedent (StartupDiagnosticsScreen's
+                            // "Hardware: OK"/"Network: Online (...)" chips).
+                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                SoftAssistChip(
+                                    text = "Server: $serverChipText",
+                                    success = liveServerConnected && networkStatus.hasInternet,
+                                    attention = !networkStatus.hasInternet ||
+                                        (apiClient.isAuthenticated && !liveServerConnected),
+                                )
+                                SoftAssistChip(
+                                    text = if (hardwareState.connected) "Cabinet: Connected" else "Cabinet: Disconnected",
+                                    success = hardwareState.connected,
+                                    attention = !hardwareState.connected,
+                                )
+                            }
                         }
-                        Spacer(modifier = Modifier.width(12.dp))
                     },
                 )
             },

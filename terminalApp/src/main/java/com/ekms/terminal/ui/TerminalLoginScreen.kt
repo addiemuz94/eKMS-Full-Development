@@ -8,9 +8,6 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.widthIn
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Face
 import androidx.compose.material.icons.filled.Fingerprint
@@ -71,80 +68,96 @@ fun TerminalLoginScreen(
         modifier = Modifier
             .fillMaxSize()
             .padding(padding),
-        contentAlignment = Alignment.Center,
     ) {
         Column(
             modifier = Modifier
-                .fillMaxWidth()
-                .widthIn(max = 720.dp)
-                .verticalScroll(rememberScrollState())
-                .padding(24.dp),
-            verticalArrangement = Arrangement.spacedBy(14.dp),
+                .fillMaxSize()
+                .padding(horizontal = 40.dp, vertical = 32.dp),
+            verticalArrangement = Arrangement.spacedBy(28.dp),
         ) {
+            // Brand block (eK logo + "eKMS" wordmark + "CAB · Terminal" subtitle) removed —
+            // the cabinet/location identity now lives in the global TopAppBar title
+            // ("eKMS Cabinet · {location}") instead of being repeated here. With it gone,
+            // this row is just the sign-in instruction (left) and the theme toggle
+            // (right) — no third weighted section needed to fill a middle gap, since
+            // there's no longer a brand block on the opposite end to balance against.
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                SoftBrandHeader(subtitle = "CAB · Terminal")
+                Text(
+                    text = "Choose how you'd like to sign in.",
+                    style = MaterialTheme.typography.titleMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
                 if (onToggleTheme != null) {
                     ThemeModeToggle(isDarkTheme = isDarkTheme, onToggle = onToggleTheme)
                 }
             }
-            Text(
-                text = "Choose how you'd like to sign in.",
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
 
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(10.dp),
+            // Single-column full-width vertical list (reference-device UI, replaces the
+            // rejected 3+2 grid): one SoftScanTile per row, stacked top to bottom, each
+            // `fillMaxWidth()` + `weight(1f)` so all 5 rows divide the available height
+            // evenly and fill it completely — no leftover empty space top or bottom, and
+            // no side-by-side tiles. Tile internals (icon centered above title+subtitle)
+            // are SoftScanTile's own unchanged content; only this container arrangement
+            // changed.
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .weight(1f),
+                verticalArrangement = Arrangement.spacedBy(14.dp),
             ) {
                 SoftScanTile(
                     title = "Password",
                     description = "Account & password",
                     icon = Icons.Filled.Password,
                     onClick = { onSelectMethod(LoginMethod.PASSWORD) },
-                    modifier = Modifier.weight(1f),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .weight(1f),
+                    expanded = true,
                 )
                 SoftScanTile(
                     title = "Fingerprint",
                     description = "Scan a finger",
                     icon = Icons.Filled.Fingerprint,
                     onClick = { onSelectMethod(LoginMethod.FINGERPRINT) },
-                    modifier = Modifier.weight(1f),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .weight(1f),
+                    expanded = true,
                 )
-            }
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(10.dp),
-            ) {
                 SoftScanTile(
                     title = "Facial Recognition",
                     description = "Look at the camera",
                     icon = Icons.Filled.Face,
                     onClick = { onSelectMethod(LoginMethod.FACE) },
-                    modifier = Modifier.weight(1f),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .weight(1f),
+                    expanded = true,
                 )
                 SoftScanTile(
                     title = "NFC Card",
                     description = "Tap your card",
                     icon = Icons.Filled.Nfc,
                     onClick = { onSelectMethod(LoginMethod.NFC_CARD) },
-                    modifier = Modifier.weight(1f),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .weight(1f),
+                    expanded = true,
                 )
-            }
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(10.dp),
-            ) {
                 SoftScanTile(
                     title = "Passkey",
                     description = "4-digit code",
                     icon = Icons.Filled.VpnKey,
                     onClick = { onSelectMethod(LoginMethod.PASSKEY) },
-                    modifier = Modifier.weight(1f),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .weight(1f),
+                    expanded = true,
                 )
             }
         }

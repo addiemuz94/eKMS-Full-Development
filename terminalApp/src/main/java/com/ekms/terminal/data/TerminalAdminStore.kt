@@ -505,6 +505,7 @@ class TerminalAdminStore(context: Context) {
             cabinetName = snapshot.terminal.name.ifBlank { current.cabinetName },
             cabinetId = snapshot.terminal.id.ifBlank { current.cabinetId },
             siteId = snapshot.terminal.siteId.ifBlank { current.siteId },
+            siteName = snapshot.terminal.siteName?.takeIf { it.isNotBlank() } ?: current.siteName,
             configuredKeyNodeCount = snapshot.terminal.configuredSlotCount.coerceIn(
                 MIN_KEY_NODE_COUNT,
                 MAX_KEY_NODE_COUNT,
@@ -703,6 +704,7 @@ class TerminalAdminStore(context: Context) {
                 cabinetName = item.optString("cabinetName", ""),
                 cabinetId = item.optString("cabinetId", ""),
                 siteId = item.optString("siteId", ""),
+                siteName = item.optString("siteName", ""),
                 serverAddress = TerminalApiClient.resolveProductionBaseUrl(
                     item.optString("serverAddress", ""),
                 ),
@@ -747,6 +749,7 @@ class TerminalAdminStore(context: Context) {
             .put("cabinetName", settings.cabinetName)
             .put("cabinetId", settings.cabinetId)
             .put("siteId", settings.siteId)
+            .put("siteName", settings.siteName)
             .put("serverAddress", settings.serverAddress)
             .put("activationCode", settings.activationCode)
             .put("configuredKeyNodeCount", settings.configuredKeyNodeCount)
@@ -866,6 +869,10 @@ data class TerminalCabinetSettings(
     val cabinetId: String = "",
     /** Unit (site) id from bootstrap/download — stamped onto local audit events. */
     val siteId: String = "",
+    /** Owning site's human-readable name (e.g. for the top-bar title) — server-joined
+     * display convenience alongside [siteId], not itself authoritative. Blank until the
+     * first successful pairing/bootstrap that returns one (older servers omit it). */
+    val siteName: String = "",
     /** Device-local API base; defaults to production. Admin Menu / pairing Advanced may override for LAN. */
     val serverAddress: String = TerminalApiClient.DEFAULT_BASE_URL,
     val activationCode: String = "",
