@@ -66,12 +66,16 @@ export function RecycleBinPage() {
                         loading={busy}
                         onClick={() =>
                           void (async () => {
-                            await api.restoreRecycleBin({
-                              recordType: entry.recordType,
-                              recordId: entry.recordId,
-                              expectedRevision: entry.restorePayloadVersion,
-                            })
-                            await reload()
+                            try {
+                              await api.restoreRecycleBin({
+                                recordType: entry.recordType,
+                                recordId: entry.recordId,
+                                expectedRevision: entry.restorePayloadVersion,
+                              })
+                              await reload()
+                            } catch (err) {
+                              setError(err instanceof ApiError ? err.message : 'Failed to restore record')
+                            }
                           })()
                         }
                       >
@@ -89,11 +93,15 @@ export function RecycleBinPage() {
                               }))
                             )
                               return
-                            await api.purgeRecycleBin({
-                              recordType: entry.recordType,
-                              recordId: entry.recordId,
-                            })
-                            await reload()
+                            try {
+                              await api.purgeRecycleBin({
+                                recordType: entry.recordType,
+                                recordId: entry.recordId,
+                              })
+                              await reload()
+                            } catch (err) {
+                              setError(err instanceof ApiError ? err.message : 'Failed to permanently delete record')
+                            }
                           })()
                         }
                       >

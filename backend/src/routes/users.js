@@ -343,12 +343,25 @@ router.delete('/:id', async (req, res) => {
   }
 
   const now = nowMs();
+  // users.email keeps a plain UNIQUE KEY (uq_users_email) unscoped by lifecycle_state — MySQL has
+  // no partial/filtered index — so a soft-deleted row's real email is parked in original_email
+  // (migration 014) and swapped for a generated, guaranteed-unique placeholder. This is what lets
+  // a brand-new account reuse the address while the old row sits in the Recycle Bin. The restore
+  // route (recycleBin.js) moves it back, after checking no ACTIVE user has since taken it.
+  const placeholderEmail = `deleted+${req.params.id}+${now}@deleted.local`;
   await pool.execute(
     `UPDATE users
      SET lifecycle_state = 'RECYCLE_BIN', deleted_at_epoch_ms = :now, deleted_by_user_id = :actor,
-         revision = revision + 1, updated_at_epoch_ms = :now, account_status = 'DISABLED'
+         revision = revision + 1, updated_at_epoch_ms = :now, account_status = 'DISABLED',
+         original_email = :originalEmail, email = :placeholderEmail
      WHERE id = :id AND lifecycle_state = 'ACTIVE'`,
-    { id: req.params.id, now, actor: req.auth.sub },
+    {
+      id: req.params.id,
+      now,
+      actor: req.auth.sub,
+      originalEmail: existing[0].email,
+      placeholderEmail,
+    },
   );
   await pool.execute(`UPDATE refresh_tokens SET revoked = 1 WHERE user_id = :id`, {
     id: req.params.id,

@@ -133,7 +133,12 @@ async function hardDeleteKeys(conn) {
   await conn.execute(`UPDATE key_slots SET managed_key_id = NULL WHERE managed_key_id IS NOT NULL`);
   await conn.execute(`DELETE FROM key_access_request_keys`).catch(() => undefined);
   await conn.execute(`DELETE FROM appointment_keys`).catch(() => undefined);
-  await conn.execute(`DELETE FROM key_checkouts`).catch(() => undefined);
+  // key_checkout_notifications (migration 012) FK's to key_checkouts with no cascade — must clear
+  // it before key_checkouts or the delete below throws ER_ROW_IS_REFERENCED_2. Once this real
+  // dependent is cleared first, key_checkouts is left unguarded on purpose: if something else
+  // still blocks it, that should surface as a real error, not silently no-op.
+  await conn.execute(`DELETE FROM key_checkout_notifications`).catch(() => undefined);
+  await conn.execute(`DELETE FROM key_checkouts`);
   const [r] = await conn.execute(`DELETE FROM managed_keys`);
   return r.affectedRows ?? 0;
 }
@@ -160,12 +165,22 @@ async function hardDeleteTerminals(conn) {
     for (const id of keyIds) {
       await conn.execute(`DELETE FROM key_access_request_keys WHERE key_id = :id`, { id }).catch(() => undefined);
       await conn.execute(`DELETE FROM appointment_keys WHERE key_id = :id`, { id }).catch(() => undefined);
-      await conn.execute(`DELETE FROM key_checkouts WHERE key_id = :id`, { id }).catch(() => undefined);
+      // Same key_checkout_notifications FK gap as hardDeleteKeys() above — clear it before the
+      // real key_checkouts delete, then leave key_checkouts unguarded.
+      await conn.execute(
+        `DELETE FROM key_checkout_notifications WHERE checkout_id IN
+           (SELECT id FROM key_checkouts WHERE key_id = :id)`,
+        { id },
+      ).catch(() => undefined);
+      await conn.execute(`DELETE FROM key_checkouts WHERE key_id = :id`, { id });
       await conn.execute(`DELETE FROM managed_keys WHERE id = :id`, { id });
     }
   }
 
-  await conn.execute(`DELETE FROM key_checkouts`).catch(() => undefined);
+  // Same key_checkout_notifications FK gap as above, for any remaining checkouts tied to this
+  // terminal directly (terminal_id) rather than via one of the keyIds just handled.
+  await conn.execute(`DELETE FROM key_checkout_notifications`).catch(() => undefined);
+  await conn.execute(`DELETE FROM key_checkouts`);
   await conn.execute(`DELETE FROM terminal_cabinet_settings`).catch(() => undefined);
   await conn.execute(`DELETE FROM terminal_refresh_tokens`).catch(() => undefined);
   await conn.execute(`DELETE FROM sync_conflicts`).catch(() => undefined);
@@ -197,6 +212,18 @@ async function hardDeleteUsers(conn) {
     await conn.execute(`DELETE FROM key_access_requests WHERE requester_user_id = :id`, { id: u.id }).catch(
       () => undefined,
     );
+    // vendor_passkey_requests.vendor_user_id (fk_vendor_passkey_vendor) and
+    // key_access_requests.pic_user_id (fk_key_access_requests_pic) both FK to users but weren't
+    // cleaned above — requester_user_id only covers a user's own requests, not requests where
+    // this user is someone else's PIC. Unlike requester_user_id's request row (deleted outright,
+    // it's that user's own), a pic_user_id reference is nulled rather than deleting the whole
+    // request — the request itself still belongs to a different (possibly surviving) requester.
+    await conn.execute(`DELETE FROM vendor_passkey_requests WHERE vendor_user_id = :id`, { id: u.id }).catch(
+      () => undefined,
+    );
+    await conn.execute(`UPDATE key_access_requests SET pic_user_id = NULL WHERE pic_user_id = :id`, {
+      id: u.id,
+    }).catch(() => undefined);
     await conn.execute(`DELETE FROM users WHERE id = :id`, { id: u.id });
   }
   return users.length;
@@ -215,6 +242,14 @@ async function hardDeleteSites(conn) {
   await conn.execute(`DELETE FROM key_access_request_keys`).catch(() => undefined);
   await conn.execute(`DELETE FROM key_access_requests`).catch(() => undefined);
   await conn.execute(`DELETE FROM vendor_passkey_requests`).catch(() => undefined);
+  // user_site_assignments / user_region_assignments for preserved SUPER_ADMIN/GOD_ADMIN users
+  // (never wiped by hardDeleteUsers, which only touches non-SA/GOD_ADMIN accounts) still FK to
+  // sites/regions and block the DELETE FROM sites below. Unscoped, same as every other table in
+  // this function — every site is going away in this scope, so every assignment row is moot
+  // regardless of which user it belongs to (this also covers the SITES-only scope, where
+  // hardDeleteUsers never runs at all, not just the ALL scope's leftover SA/GOD_ADMIN rows).
+  await conn.execute(`DELETE FROM user_site_assignments`).catch(() => undefined);
+  await conn.execute(`DELETE FROM user_region_assignments`).catch(() => undefined);
   await conn.execute(`UPDATE sites SET parent_site_id = NULL`);
   await conn.execute(`UPDATE sites SET region_id = NULL`).catch(() => undefined);
   const [r] = await conn.execute(`DELETE FROM sites`);
