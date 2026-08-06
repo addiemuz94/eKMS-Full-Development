@@ -9,4 +9,4 @@ CREATE TABLE IF NOT EXISTS key_checkout_notifications (
   sent_at_epoch_ms BIGINT NOT NULL,
   UNIQUE KEY uq_checkout_notification (checkout_id, notification_type),
   CONSTRAINT fk_kcn_checkout FOREIGN KEY (checkout_id) REFERENCES key_checkouts(id)
-);
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;

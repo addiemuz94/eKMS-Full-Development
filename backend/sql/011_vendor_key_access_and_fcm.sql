@@ -26,7 +26,7 @@ CREATE TABLE IF NOT EXISTS key_access_request_documents (
   created_at_epoch_ms BIGINT NOT NULL,
   KEY idx_kard_request (request_id),
   CONSTRAINT fk_kard_request FOREIGN KEY (request_id) REFERENCES key_access_requests(id)
-);
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS mobile_push_tokens (
   id CHAR(36) NOT NULL PRIMARY KEY,
@@ -37,4 +37,4 @@ CREATE TABLE IF NOT EXISTS mobile_push_tokens (
   UNIQUE KEY uq_mobile_push_token (fcm_token),
   KEY idx_mobile_push_user (user_id),
   CONSTRAINT fk_mobile_push_user FOREIGN KEY (user_id) REFERENCES users(id)
-);
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
