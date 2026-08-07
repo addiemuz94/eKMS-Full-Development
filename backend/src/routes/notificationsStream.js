@@ -1,11 +1,12 @@
 import { Router } from 'express';
-import { requireAuth, requireSuperAdmin } from '../middleware/auth.js';
+import { requireAuth, requireSuperAdminOrRegionalAdmin } from '../middleware/auth.js';
 import {
   consumeStreamTicket,
   mintStreamTicket,
-  registerSuperAdminConnection,
-  unregisterSuperAdminConnection,
+  registerAdminConnection,
+  unregisterAdminConnection,
 } from '../notifications.js';
+import { assignedRegionIdsForUser } from '../util.js';
 
 const router = Router();
 
@@ -16,18 +17,21 @@ const router = Router();
 // notifications.js's own doc for the full reasoning. This is the same class of deliberate,
 // explicitly-reasoned exception to "every route sits behind requireAuth" that pair-with-code
 // and passkey-login already are, not an oversight.
-router.post('/stream/ticket', requireAuth, requireSuperAdmin, (req, res) => {
-  const ticket = mintStreamTicket(req.auth.sub);
+router.post('/stream/ticket', requireAuth, requireSuperAdminOrRegionalAdmin, async (req, res) => {
+  const role = req.auth.role;
+  const regionIds =
+    role === 'REGIONAL_ADMIN' ? await assignedRegionIdsForUser(req.auth.sub) : null;
+  const ticket = mintStreamTicket(req.auth.sub, { role, regionIds });
   res.json({ ticket });
 });
 
 // Ticket-authenticated, not JWT-authenticated — the ticket itself was only ever mintable by an
-// already-`requireAuth`+`requireSuperAdmin`-checked caller, is single-use, and expires in 30s,
-// so consuming it here is the actual auth check for this connection.
+// already-`requireAuth`+`requireSuperAdminOrRegionalAdmin`-checked caller, is single-use, and
+// expires in 30s, so consuming it here is the actual auth check for this connection.
 router.get('/stream', (req, res) => {
   const ticket = req.query.ticket;
-  const userId = typeof ticket === 'string' ? consumeStreamTicket(ticket) : null;
-  if (!userId) {
+  const identity = typeof ticket === 'string' ? consumeStreamTicket(ticket) : null;
+  if (!identity) {
     return res.status(401).json({ error: 'UNAUTHORIZED', message: 'Invalid or expired stream ticket' });
   }
 
@@ -37,7 +41,10 @@ router.get('/stream', (req, res) => {
     Connection: 'keep-alive',
   });
   res.write(': connected\n\n');
-  registerSuperAdminConnection(userId, res);
+  registerAdminConnection(identity.userId, res, {
+    role: identity.role,
+    regionIds: identity.regionIds,
+  });
 
   // Periodic comment line, not a real event — keeps the connection demonstrably active against
   // any idle-connection timeout (Node's own or Caddy's reverse_proxy defaults), independent of
@@ -52,7 +59,7 @@ router.get('/stream', (req, res) => {
 
   req.on('close', () => {
     clearInterval(heartbeat);
-    unregisterSuperAdminConnection(userId, res);
+    unregisterAdminConnection(identity.userId, res);
   });
 });
 

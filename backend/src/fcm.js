@@ -4,8 +4,12 @@
  * all). When FCM_SERVICE_ACCOUNT_PATH is unset or the file can't be read/parsed, logs and
  * no-ops (dev-safe) — same graceful-skip contract the legacy implementation had, just a
  * different missing-credential reason string.
+ *
+ * firebase-admin v14+: use modular `firebase-admin/app` + `firebase-admin/messaging`
+ * (`admin.credential.cert` no longer exists on the default export).
  */
-import admin from 'firebase-admin';
+import { cert, getApps, initializeApp } from 'firebase-admin/app';
+import { getMessaging } from 'firebase-admin/messaging';
 import fs from 'fs';
 import pool from './db.js';
 import { newId, nowMs } from './util.js';
@@ -39,9 +43,10 @@ function getFirebaseApp() {
   }
   try {
     const serviceAccount = JSON.parse(fs.readFileSync(credentialPath, 'utf8'));
-    firebaseApp = admin.initializeApp({
-      credential: admin.credential.cert(serviceAccount),
-    });
+    const existing = getApps();
+    firebaseApp = existing.length
+      ? existing[0]
+      : initializeApp({ credential: cert(serviceAccount) });
   } catch (err) {
     console.warn(`[fcm] failed to init firebase-admin from FCM_SERVICE_ACCOUNT_PATH: ${err.message}`);
     firebaseApp = null;
@@ -62,7 +67,7 @@ export async function sendPushToUser(userId, title, body, data = {}) {
     return { sent: 0, skipped: 'no_service_account' };
   }
 
-  const messaging = admin.messaging(app);
+  const messaging = getMessaging(app);
   let sent = 0;
   for (const row of rows) {
     try {

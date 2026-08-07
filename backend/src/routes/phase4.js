@@ -6,7 +6,7 @@ import {
   streamActivityLogsPdf,
   streamKeyOperationsPdf,
 } from '../reportPdf.js';
-import { badRequest, conflict, newId, notFound, nowMs, writeAudit, appendCabinetScopeSql, parseCabinetScope } from '../util.js';
+import { badRequest, conflict, newId, notFound, nowMs, writeAudit, appendCabinetScopeSql, appendSiteIdsSql, parseCabinetScope, resolveRegionalAdminSiteScope } from '../util.js';
 
 const ACTIVITY_CATEGORY_TYPES = {
   KEY_TAKE: ['KEY_TAKEN', 'KEY_TAKE_FAILED', 'KEY_TAKE_ABANDONED', 'KEY_TAKE_DOOR_LEFT_OPEN'],
@@ -623,6 +623,7 @@ async function queryAudit(req, eventTypes, options = {}) {
   const toMs = req.query.untilEpochMillis ? Number(req.query.untilEpochMillis) : null;
   const limit = Math.min(Number(req.query.limit || 100), 500);
   const cabinetScope = options.cabinetScope ?? 'ACTIVE';
+  const allowedSiteIds = options.allowedSiteIds ?? null;
 
   if (!eventTypes.length) return [];
 
@@ -631,7 +632,10 @@ async function queryAudit(req, eventTypes, options = {}) {
   eventTypes.forEach((t, i) => {
     params[`t${i}`] = t;
   });
-  if (siteId) {
+  if (allowedSiteIds) {
+    if (allowedSiteIds.length === 0) return [];
+    ({ sql, params } = appendSiteIdsSql(sql, params, allowedSiteIds));
+  } else if (siteId) {
     sql += ` AND site_id = :siteId`;
     params.siteId = siteId;
   }
@@ -730,6 +734,7 @@ async function queryActivityLogs(filter = {}) {
   };
   const rows = await queryAudit(fakeReq, eventTypes, {
     cabinetScope: filter.cabinetScope ?? 'ACTIVE',
+    allowedSiteIds: filter.allowedSiteIds ?? null,
   });
   return enrichActivityRows(rows);
 }
@@ -739,6 +744,11 @@ async function queryActivitySummary(filter = {}) {
   const byCategory = {};
   for (const cat of ALL_ACTIVITY_CATEGORIES) byCategory[cat] = 0;
   const cabinetScope = filter.cabinetScope ?? 'ACTIVE';
+  const allowedSiteIds = filter.allowedSiteIds ?? null;
+
+  if (allowedSiteIds && allowedSiteIds.length === 0) {
+    return { total: 0, byCategory };
+  }
 
   let total = 0;
   for (const cat of categories) {
@@ -749,7 +759,9 @@ async function queryActivitySummary(filter = {}) {
     types.forEach((t, i) => {
       params[`t${i}`] = t;
     });
-    if (filter.siteId) {
+    if (allowedSiteIds) {
+      ({ sql, params } = appendSiteIdsSql(sql, params, allowedSiteIds));
+    } else if (filter.siteId) {
       sql += ` AND site_id = :siteId`;
       params.siteId = filter.siteId;
     }
@@ -774,46 +786,74 @@ async function queryActivitySummary(filter = {}) {
   return { total, byCategory };
 }
 
+/** Resolve RA site scope for a reports request; null allowedSiteIds means unrestricted (SA). */
+async function reportsSiteScope(req, siteId = null) {
+  const scope = await resolveRegionalAdminSiteScope(req, siteId || null);
+  if (scope.empty) return { empty: true, allowedSiteIds: [] };
+  return { empty: false, allowedSiteIds: scope.siteIds };
+}
+
+function rejectDeletedScopeForRa(req, cabinetScope) {
+  return req.auth?.role === 'REGIONAL_ADMIN' && cabinetScope === 'DELETED';
+}
+
 const reportsRouter = Router();
 
 reportsRouter.get('/key-operations', async (req, res) => {
-  res.json({ items: await queryAudit(req, ['KEY_TAKEN', 'KEY_RETURNED']) });
+  const scope = await reportsSiteScope(req, req.query.siteId);
+  if (scope.empty) return res.json({ items: [] });
+  res.json({
+    items: await queryAudit(req, ['KEY_TAKEN', 'KEY_RETURNED'], {
+      allowedSiteIds: scope.allowedSiteIds,
+    }),
+  });
 });
 
 reportsRouter.get('/system-operation-logs', async (req, res) => {
+  const scope = await reportsSiteScope(req, req.query.siteId);
+  if (scope.empty) return res.json({ items: [] });
   res.json({
-    items: await queryAudit(req, [
-      'LOGIN_SUCCEEDED',
-      'LOGIN_DENIED',
-      'USER_ACCOUNT_STATUS_CHANGED',
-      'PERSONNEL_REGISTERED',
-      'RECORD_MOVED_TO_BIN',
-      'RECORD_RESTORED',
-      'RECORD_PURGED',
-      'SITE_CREATED',
-      'SITE_UPDATED',
-      'TERMINAL_CREATED',
-      'TERMINAL_UPDATED',
-      'APPOINTMENT_CREATED',
-      'APPOINTMENT_REVIEWED',
-      'CONFLICT_CREATED',
-      'CONFLICT_RESOLVED',
-    ]),
+    items: await queryAudit(
+      req,
+      [
+        'LOGIN_SUCCEEDED',
+        'LOGIN_DENIED',
+        'USER_ACCOUNT_STATUS_CHANGED',
+        'PERSONNEL_REGISTERED',
+        'RECORD_MOVED_TO_BIN',
+        'RECORD_RESTORED',
+        'RECORD_PURGED',
+        'SITE_CREATED',
+        'SITE_UPDATED',
+        'TERMINAL_CREATED',
+        'TERMINAL_UPDATED',
+        'APPOINTMENT_CREATED',
+        'APPOINTMENT_REVIEWED',
+        'CONFLICT_CREATED',
+        'CONFLICT_RESOLVED',
+      ],
+      { allowedSiteIds: scope.allowedSiteIds },
+    ),
   });
 });
 
 reportsRouter.get('/equipment-operation-logs', async (req, res) => {
+  const scope = await reportsSiteScope(req, req.query.siteId);
+  if (scope.empty) return res.json({ items: [] });
   res.json({
-    items: await queryAudit(req, [
-      'KEY_TAKEN',
-      'KEY_RETURNED',
-      'TERMINAL_HARDWARE_CONFIGURATION_CHANGED',
-      'KEY_FOB_ENROLLED',
-    ]),
+    items: await queryAudit(
+      req,
+      ['KEY_TAKEN', 'KEY_RETURNED', 'TERMINAL_HARDWARE_CONFIGURATION_CHANGED', 'KEY_FOB_ENROLLED'],
+      { allowedSiteIds: scope.allowedSiteIds },
+    ),
   });
 });
 
 reportsRouter.get('/activity-logs', async (req, res) => {
+  const cabinetScope = parseCabinetScope(req.query.cabinetScope, 'ACTIVE');
+  if (rejectDeletedScopeForRa(req, cabinetScope)) return res.json({ items: [] });
+  const scope = await reportsSiteScope(req, req.query.siteId);
+  if (scope.empty) return res.json({ items: [] });
   const items = await queryActivityLogs({
     siteId: req.query.siteId,
     terminalId: req.query.terminalId,
@@ -823,19 +863,35 @@ reportsRouter.get('/activity-logs', async (req, res) => {
     untilEpochMillis: req.query.untilEpochMillis,
     limit: req.query.limit,
     categories: req.query.categories,
-    cabinetScope: parseCabinetScope(req.query.cabinetScope, 'ACTIVE'),
+    cabinetScope,
+    allowedSiteIds: scope.allowedSiteIds,
   });
   res.json({ items });
 });
 
 reportsRouter.get('/activity-summary', async (req, res) => {
+  const cabinetScope = parseCabinetScope(req.query.cabinetScope, 'ACTIVE');
+  if (rejectDeletedScopeForRa(req, cabinetScope)) {
+    return res.json({
+      total: 0,
+      byCategory: Object.fromEntries(ALL_ACTIVITY_CATEGORIES.map((c) => [c, 0])),
+    });
+  }
+  const scope = await reportsSiteScope(req, req.query.siteId);
+  if (scope.empty) {
+    return res.json({
+      total: 0,
+      byCategory: Object.fromEntries(ALL_ACTIVITY_CATEGORIES.map((c) => [c, 0])),
+    });
+  }
   const summary = await queryActivitySummary({
     siteId: req.query.siteId,
     terminalId: req.query.terminalId,
     fromEpochMillis: req.query.fromEpochMillis,
     untilEpochMillis: req.query.untilEpochMillis,
     categories: req.query.categories,
-    cabinetScope: parseCabinetScope(req.query.cabinetScope, 'ACTIVE'),
+    cabinetScope,
+    allowedSiteIds: scope.allowedSiteIds,
   });
   res.json(summary);
 });
@@ -876,12 +932,24 @@ reportsRouter.post('/exports', async (req, res) => {
   if (!parsed.success) return badRequest(res, 'Invalid export request');
 
   const filter = parsed.data.filter;
+  if (rejectDeletedScopeForRa(req, filter.cabinetScope)) {
+    return res.status(403).json({ error: 'FORBIDDEN', message: 'Regional Admin cannot export deleted-cabinet archive' });
+  }
+  const scope = await reportsSiteScope(req, filter.siteId);
+  if (scope.empty) {
+    return res.status(403).json({ error: 'FORBIDDEN', message: 'Not permitted for this site' });
+  }
+  const scopedFilter = {
+    ...filter,
+    ...(scope.allowedSiteIds ? { allowedSiteIds: scope.allowedSiteIds } : {}),
+  };
+
   let rowCount = 0;
   if (parsed.data.kind === 'KEY_OPERATIONS') {
-    const checkoutRows = await queryKeyCheckoutReportRows(pool, filter);
+    const checkoutRows = await queryKeyCheckoutReportRows(pool, scopedFilter);
     rowCount = checkoutRows.length;
   } else if (parsed.data.kind === 'ACTIVITY_LOGS') {
-    const items = await queryActivityLogs({ ...filter, limit: filter.limit ?? 500 });
+    const items = await queryActivityLogs({ ...scopedFilter, limit: filter.limit ?? 500 });
     rowCount = items.length;
   } else {
     const fakeReq = { query: { ...filter } };
@@ -889,7 +957,11 @@ reportsRouter.post('/exports', async (req, res) => {
       SYSTEM_OPERATION_LOGS: ['LOGIN_SUCCEEDED', 'LOGIN_DENIED', 'APPOINTMENT_REVIEWED'],
       EQUIPMENT_OPERATION_LOGS: ['KEY_TAKEN', 'KEY_RETURNED', 'KEY_FOB_ENROLLED'],
     };
-    rowCount = (await queryAudit(fakeReq, eventMap[parsed.data.kind])).length;
+    rowCount = (
+      await queryAudit(fakeReq, eventMap[parsed.data.kind], {
+        allowedSiteIds: scope.allowedSiteIds,
+      })
+    ).length;
   }
 
   const id = newId();
@@ -903,7 +975,7 @@ reportsRouter.post('/exports', async (req, res) => {
       id,
       kind: parsed.data.kind,
       format: parsed.data.format,
-      filterJson: JSON.stringify(filter),
+      filterJson: JSON.stringify(scopedFilter),
       rowCount,
       downloadPath: `/v1/reports/exports/${id}`,
       actor: req.auth.sub,
@@ -980,7 +1052,9 @@ reportsRouter.get('/exports/:id', async (req, res) => {
     SYSTEM_OPERATION_LOGS: ['LOGIN_SUCCEEDED', 'LOGIN_DENIED', 'APPOINTMENT_REVIEWED'],
     EQUIPMENT_OPERATION_LOGS: ['KEY_TAKEN', 'KEY_RETURNED', 'KEY_FOB_ENROLLED'],
   };
-  const auditRows = await queryAudit(fakeReq, eventMap[job.kind] ?? ['KEY_TAKEN', 'KEY_RETURNED']);
+  const auditRows = await queryAudit(fakeReq, eventMap[job.kind] ?? ['KEY_TAKEN', 'KEY_RETURNED'], {
+    allowedSiteIds: filter.allowedSiteIds ?? null,
+  });
   return streamKeyOperationsPdf(res, {
     rows: auditRows.map((row) => ({
       userName: row.actorUserId,

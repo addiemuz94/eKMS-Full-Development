@@ -1,7 +1,7 @@
 import cors from 'cors';
 import dotenv from 'dotenv';
 import express from 'express';
-import { requireAuth, requireSuperAdmin, requireSuperAdminOrAllowlistedRole } from './middleware/auth.js';
+import { requireAuth, requireSuperAdminOrAllowlistedRole, requireSuperAdminOrRegionalAdmin } from './middleware/auth.js';
 import { idempotency } from './middleware/idempotency.js';
 import { login, refresh } from './routes/auth.js';
 import { pairWithCode } from './routes/pairing.js';
@@ -114,12 +114,12 @@ admin.use('/multi-authentication-rules', multiAuthRulesRouter);
 app.use('/v1/admin', admin);
 
 const audit = express.Router();
-audit.use(requireAuth, requireSuperAdmin);
+audit.use(requireAuth, requireSuperAdminOrRegionalAdmin);
 audit.use('/events', auditRouter);
 app.use('/v1/audit', audit);
 
 const reports = express.Router();
-reports.use(requireAuth, requireSuperAdmin, idempotency);
+reports.use(requireAuth, requireSuperAdminOrRegionalAdmin, idempotency);
 reports.use('/', reportsRouter);
 app.use('/v1/reports', reports);
 

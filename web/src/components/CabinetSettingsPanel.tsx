@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import type { SiteDto, TerminalDto } from '../api/types'
 import { api } from '../api/client'
+import { useAuth } from '../auth/AuthContext'
 import { CabinetIdentityForm } from './CabinetIdentityForm'
 import { CabinetSettingsForm } from './CabinetSettingsForm'
 import { UnitSettingsForm } from './UnitSettingsForm'
@@ -25,11 +26,28 @@ type Props = {
   onCabinetSaved?: (terminal: TerminalDto) => void
 }
 
+const ALL_TABS: { value: SettingsTab; label: string; roles?: string[] }[] = [
+  { value: 'cabinet', label: 'Cabinet', roles: ['SUPER_ADMIN'] },
+  { value: 'unit', label: 'Location', roles: ['SUPER_ADMIN'] },
+  { value: 'behavior', label: 'Timers & video' },
+  { value: 'personnel', label: 'Assign User', roles: ['SUPER_ADMIN'] },
+  { value: 'keys', label: 'Keys' },
+  { value: 'permissions', label: 'Key Permission' },
+  { value: 'key-access', label: 'Key Access' },
+]
+
 /**
  * Per-cabinet settings hub shown only after Location → Cabinet selection.
  */
 export function CabinetSettingsPanel({ terminal, unitName, onUnitSaved, onCabinetSaved }: Props) {
-  const [tab, setTab] = useState<SettingsTab>('cabinet')
+  const { session } = useAuth()
+  const role = session?.role
+  const visibleTabs = useMemo(
+    () =>
+      ALL_TABS.filter((tab) => !tab.roles || (role != null && tab.roles.includes(role))),
+    [role],
+  )
+  const [tab, setTab] = useState<SettingsTab>(visibleTabs[0]?.value ?? 'behavior')
   const [liveUnitName, setLiveUnitName] = useState(unitName)
   const [preferredUserIds, setPreferredUserIds] = useState<string[]>([])
   const [peopleTick, setPeopleTick] = useState(0)
@@ -37,8 +55,14 @@ export function CabinetSettingsPanel({ terminal, unitName, onUnitSaved, onCabine
 
   useEffect(() => {
     setLiveUnitName(unitName)
-    setTab('cabinet')
-  }, [unitName, terminal.id])
+    setTab(visibleTabs[0]?.value ?? 'behavior')
+  }, [unitName, terminal.id]) // eslint-disable-line react-hooks/exhaustive-deps -- reset when cabinet changes
+
+  useEffect(() => {
+    if (!visibleTabs.some((t) => t.value === tab)) {
+      setTab(visibleTabs[0]?.value ?? 'behavior')
+    }
+  }, [visibleTabs, tab])
 
   useEffect(() => {
     let cancelled = false
@@ -77,17 +101,7 @@ export function CabinetSettingsPanel({ terminal, unitName, onUnitSaved, onCabine
       </p>
 
       <div className="cabinet-settings-tabs" role="tablist" aria-label="Cabinet settings section">
-        {(
-          [
-            { value: 'cabinet', label: 'Cabinet' },
-            { value: 'unit', label: 'Location' },
-            { value: 'behavior', label: 'Timers & video' },
-            { value: 'personnel', label: 'Assign User' },
-            { value: 'keys', label: 'Keys' },
-            { value: 'permissions', label: 'Key Permission' },
-            { value: 'key-access', label: 'Key Access' },
-          ] as const
-        ).map((opt) => (
+        {visibleTabs.map((opt) => (
           <button
             key={opt.value}
             type="button"

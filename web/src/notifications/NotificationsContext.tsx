@@ -13,7 +13,7 @@ import type { NotificationStreamEventType, NotificationStreamPayload } from '../
 import { useAuth } from '../auth/AuthContext'
 import { useToastQueue } from '../components/ui'
 
-const STORAGE_KEY = 'ekms_web_notifications'
+const STORAGE_KEY_PREFIX = 'ekms_web_notifications'
 const MAX_STORED = 100
 const BASE_RECONNECT_DELAY_MS = 3000
 const MAX_RECONNECT_DELAY_MS = 30_000
@@ -34,9 +34,13 @@ function randomId(prefix: string) {
     : `${prefix}-${Date.now()}-${Math.random().toString(16).slice(2)}`
 }
 
-function loadStored(): StoredNotification[] {
+function storageKeyForUser(userId: string) {
+  return `${STORAGE_KEY_PREFIX}:${userId}`
+}
+
+function loadStored(userId: string): StoredNotification[] {
   try {
-    const raw = localStorage.getItem(STORAGE_KEY)
+    const raw = localStorage.getItem(storageKeyForUser(userId))
     if (!raw) return []
     const parsed = JSON.parse(raw)
     return Array.isArray(parsed) ? (parsed as StoredNotification[]) : []
@@ -45,23 +49,37 @@ function loadStored(): StoredNotification[] {
   }
 }
 
-function saveStored(items: StoredNotification[]) {
+function saveStored(userId: string, items: StoredNotification[]) {
   try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(items.slice(0, MAX_STORED)))
+    localStorage.setItem(storageKeyForUser(userId), JSON.stringify(items.slice(0, MAX_STORED)))
   } catch {
     /* localStorage unavailable (private mode, etc.) — list still works for this session */
   }
 }
 
 /**
- * The SSE payload only carries checkoutId/keyId/dueAtEpochMillis (see
- * backend/src/deadlineMonitor.js — title/body text is only ever built for the FCM push, not
- * broadcast to the portal), so the human-readable message is synthesized here instead.
+ * Prefer server-provided key/terminal names (same text as FCM). Fall back to the older
+ * checkout-id synthesis for any event that predates those fields.
  */
 function describeEvent(
   eventType: NotificationStreamEventType,
   payload: NotificationStreamPayload,
 ): { title: string; body: string } {
+  const keyLabel = payload.keyDisplayName?.trim() || null
+  const terminalLabel = payload.terminalName?.trim() || null
+  if (keyLabel && terminalLabel) {
+    if (eventType === 'CHECKOUT_OVERDUE') {
+      return {
+        title: 'Key return overdue',
+        body: `${keyLabel} at ${terminalLabel} is now overdue.`,
+      }
+    }
+    return {
+      title: 'Key return due soon',
+      body: `${keyLabel} at ${terminalLabel} is due back in 15 minutes.`,
+    }
+  }
+
   const dueLabel = Number.isFinite(payload.dueAtEpochMillis)
     ? new Date(payload.dueAtEpochMillis).toLocaleString(undefined, {
         dateStyle: 'medium',
@@ -97,32 +115,40 @@ const EMPTY_STATE: NotificationsState = {
 
 const NotificationsContext = createContext<NotificationsState | null>(null)
 
+function mayReceiveCheckoutNotifications(role: string | undefined) {
+  return role === 'SUPER_ADMIN' || role === 'REGIONAL_ADMIN'
+}
+
 /**
- * Live checkout-deadline notifications for Super Admin only — connects an SSE stream after
- * Super Admin login, disconnects on logout/role change. Mirrors ThemeProvider/AuthContext's
- * provider-hook shape. Backend contract: POST /v1/notifications/stream/ticket (Bearer-authed,
- * mints a single-use 30s ticket) then GET /v1/notifications/stream?ticket=... (ticket-authed —
- * EventSource cannot set an Authorization header). See notificationsStream.js/notifications.js.
+ * Live checkout-deadline notifications for Super Admin and Regional Admin — connects an SSE
+ * stream after login, disconnects on logout/role change. Regional Admin events are already
+ * region-filtered server-side (see broadcastCheckoutDeadline). Backend contract:
+ * POST /v1/notifications/stream/ticket then GET /v1/notifications/stream?ticket=...
  */
 export function NotificationsProvider({ children }: { children: ReactNode }) {
   const { session } = useAuth()
-  const isSuperAdmin = session?.role === 'SUPER_ADMIN'
+  const canReceive = mayReceiveCheckoutNotifications(session?.role)
+  const userId = session?.userId ?? ''
   const [notifications, setNotifications] = useState<StoredNotification[]>([])
-  const hydrated = useRef(false)
+  const hydratedForUser = useRef<string | null>(null)
   const { push: pushToast, stack: toastStack } = useToastQueue()
 
-  // Hydrate from localStorage only once, only for a Super Admin session — never for any other
-  // role, so nothing from a prior Super Admin session on this browser is exposed elsewhere.
+  // Hydrate per-user so SA and RA sessions on the same browser never share each other's list.
   useEffect(() => {
-    if (!isSuperAdmin || hydrated.current) return
-    hydrated.current = true
-    setNotifications(loadStored())
-  }, [isSuperAdmin])
+    if (!canReceive || !userId) {
+      hydratedForUser.current = null
+      setNotifications([])
+      return
+    }
+    if (hydratedForUser.current === userId) return
+    hydratedForUser.current = userId
+    setNotifications(loadStored(userId))
+  }, [canReceive, userId])
 
   useEffect(() => {
-    if (!isSuperAdmin) return
-    saveStored(notifications)
-  }, [isSuperAdmin, notifications])
+    if (!canReceive || !userId) return
+    saveStored(userId, notifications)
+  }, [canReceive, userId, notifications])
 
   const handleEvent = useCallback(
     (eventType: NotificationStreamEventType, payload: NotificationStreamPayload) => {
@@ -143,7 +169,7 @@ export function NotificationsProvider({ children }: { children: ReactNode }) {
   )
 
   useEffect(() => {
-    if (!isSuperAdmin) return
+    if (!canReceive) return
 
     let cancelled = false
     let es: EventSource | null = null
@@ -197,7 +223,7 @@ export function NotificationsProvider({ children }: { children: ReactNode }) {
           scheduleReconnect()
         }
       } catch {
-        // Ticket mint failed (network down, server unreachable, etc.) — same backoff-and-retry.
+        // Ticket mint failed (network down, 403 for unexpected role, etc.) — same backoff.
         scheduleReconnect()
       }
     }
@@ -209,7 +235,7 @@ export function NotificationsProvider({ children }: { children: ReactNode }) {
       if (reconnectTimer) clearTimeout(reconnectTimer)
       es?.close()
     }
-  }, [isSuperAdmin, handleEvent])
+  }, [canReceive, handleEvent])
 
   const markAllRead = useCallback(() => {
     setNotifications((prev) =>
@@ -229,9 +255,9 @@ export function NotificationsProvider({ children }: { children: ReactNode }) {
   )
 
   return (
-    <NotificationsContext.Provider value={isSuperAdmin ? value : EMPTY_STATE}>
+    <NotificationsContext.Provider value={canReceive ? value : EMPTY_STATE}>
       {children}
-      {isSuperAdmin && toastStack}
+      {canReceive && toastStack}
     </NotificationsContext.Provider>
   )
 }

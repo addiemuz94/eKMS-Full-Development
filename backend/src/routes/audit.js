@@ -1,6 +1,11 @@
 import { Router } from 'express';
 import pool from '../db.js';
-import { appendCabinetScopeSql, parseCabinetScope } from '../util.js';
+import {
+  appendCabinetScopeSql,
+  appendSiteIdsSql,
+  parseCabinetScope,
+  resolveRegionalAdminSiteScope,
+} from '../util.js';
 
 const router = Router();
 
@@ -12,11 +17,20 @@ router.get('/', async (req, res) => {
   const toMs = req.query.toEpochMillis ? Number(req.query.toEpochMillis) : null;
   const limit = Math.min(Number(req.query.limit || 100), 500);
   // Default ACTIVE — deleted-cabinet history belongs on Activity archive / Deleted items.
-  const cabinetScope = parseCabinetScope(req.query.cabinetScope, 'ACTIVE');
+  let cabinetScope = parseCabinetScope(req.query.cabinetScope, 'ACTIVE');
+  // Regional Admin may not browse deleted-cabinet archive.
+  if (req.auth?.role === 'REGIONAL_ADMIN' && cabinetScope === 'DELETED') {
+    return res.json({ items: [] });
+  }
+
+  const scope = await resolveRegionalAdminSiteScope(req, siteId || null);
+  if (scope.empty) return res.json({ items: [] });
 
   let sql = `SELECT * FROM audit_events WHERE 1=1`;
   let params = {};
-  if (siteId) {
+  if (scope.siteIds) {
+    ({ sql, params } = appendSiteIdsSql(sql, params, scope.siteIds));
+  } else if (siteId) {
     sql += ` AND site_id = :siteId`;
     params.siteId = siteId;
   }

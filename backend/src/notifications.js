@@ -1,69 +1,133 @@
 /**
- * Super Admin live SSE notification channel (checkout-deadline warnings/overdue). Two pieces,
- * both purely in-process — no external pub/sub needed for a single-process deploy:
+ * Live SSE notification channel (checkout-deadline warnings/overdue) for Super Admin and
+ * Regional Admin portal sessions. Two pieces, both purely in-process — no external pub/sub
+ * needed for a single-process deploy:
  *
  * 1. A short-lived, single-use "stream ticket" workaround for the fact that the browser's
  *    native EventSource cannot set an Authorization header — a real API limitation, not
  *    something to work around by putting the actual JWT in a query string (which would land
  *    in server/proxy access logs). A ticket is minted by a normal `requireAuth`-guarded POST
- *    right before the client opens the stream, is resolved to exactly one userId, and is
- *    burned (deleted) the instant it's looked up, whether or not it turns out to be expired —
- *    it is never valid for a second attempt.
- * 2. An in-process registry of currently-open Super Admin SSE connections (Map<userId,
- *    Set<Response>>), and `broadcastToSuperAdmins`, called by deadlineMonitor.js whenever a
- *    WARNING_15MIN/OVERDUE event fires. A user can have more than one open tab/window, hence a
- *    Set per user, not a single Response.
+ *    right before the client opens the stream, is resolved to exactly one connection identity
+ *    (userId + role + optional regionIds), and is burned (deleted) the instant it's looked up,
+ *    whether or not it turns out to be expired — it is never valid for a second attempt.
+ * 2. An in-process registry of currently-open portal SSE connections, and
+ *    `broadcastCheckoutDeadline`, called by deadlineMonitor.js whenever a WARNING_15MIN/
+ *    OVERDUE event fires. Super Admins receive every event; Regional Admins only receive
+ *    events whose site's region is in their `user_region_assignments`. A user can have more
+ *    than one open tab/window, hence a Set per user, not a single Response.
  */
 import { randomUUID } from 'crypto';
 import { nowMs } from './util.js';
 
 const STREAM_TICKET_TTL_MS = 30_000;
 
-const pendingStreamTickets = new Map(); // ticket -> { userId, expiresAtEpochMs }
+/** ticket -> { userId, role, regionIds: string[] | null, expiresAtEpochMs } */
+const pendingStreamTickets = new Map();
 
-export function mintStreamTicket(userId) {
+/**
+ * @param {string} userId
+ * @param {{ role: string, regionIds?: string[] | null }} meta
+ *   Super Admin: regionIds omitted/null (receives all). Regional Admin: assigned region ids.
+ */
+export function mintStreamTicket(userId, { role, regionIds = null } = {}) {
   const ticket = randomUUID();
-  pendingStreamTickets.set(ticket, { userId, expiresAtEpochMs: nowMs() + STREAM_TICKET_TTL_MS });
+  pendingStreamTickets.set(ticket, {
+    userId,
+    role,
+    regionIds: role === 'REGIONAL_ADMIN' ? [...(regionIds ?? [])] : null,
+    expiresAtEpochMs: nowMs() + STREAM_TICKET_TTL_MS,
+  });
   return ticket;
 }
 
-/** Single-use: the ticket is deleted here regardless of outcome, valid or not. */
+/** Single-use: the ticket is deleted here regardless of outcome, valid or not.
+ *  @returns {{ userId: string, role: string, regionIds: string[] | null } | null} */
 export function consumeStreamTicket(ticket) {
   const entry = pendingStreamTickets.get(ticket);
   if (!entry) return null;
   pendingStreamTickets.delete(ticket);
   if (entry.expiresAtEpochMs < nowMs()) return null;
-  return entry.userId;
+  return {
+    userId: entry.userId,
+    role: entry.role,
+    regionIds: entry.regionIds,
+  };
 }
 
-const superAdminConnections = new Map(); // userId -> Set<Response>
+/** userId -> Set<{ res, role, regionIds: Set<string> | null }> */
+const adminConnections = new Map();
 
-export function registerSuperAdminConnection(userId, res) {
-  if (!superAdminConnections.has(userId)) {
-    superAdminConnections.set(userId, new Set());
+export function registerAdminConnection(userId, res, { role, regionIds = null } = {}) {
+  if (!adminConnections.has(userId)) {
+    adminConnections.set(userId, new Set());
   }
-  superAdminConnections.get(userId).add(res);
+  adminConnections.get(userId).add({
+    res,
+    role,
+    regionIds: role === 'REGIONAL_ADMIN' ? new Set(regionIds ?? []) : null,
+  });
 }
 
-export function unregisterSuperAdminConnection(userId, res) {
-  const set = superAdminConnections.get(userId);
+export function unregisterAdminConnection(userId, res) {
+  const set = adminConnections.get(userId);
   if (!set) return;
-  set.delete(res);
-  if (set.size === 0) superAdminConnections.delete(userId);
+  for (const entry of set) {
+    if (entry.res === res) {
+      set.delete(entry);
+      break;
+    }
+  }
+  if (set.size === 0) adminConnections.delete(userId);
 }
 
-/** [eventType] e.g. 'CHECKOUT_WARNING_15MIN' / 'CHECKOUT_OVERDUE'. Silently drops if no Super
- * Admin currently has the portal open — there is no queue/replay, this is a live-popup channel
- * only, not a notification-history mechanism (that's the audit log / a future Alerts-tab view). */
-export function broadcastToSuperAdmins(eventType, data) {
+/** @deprecated Prefer registerAdminConnection — kept as alias for any leftover callers. */
+export function registerSuperAdminConnection(userId, res) {
+  registerAdminConnection(userId, res, { role: 'SUPER_ADMIN', regionIds: null });
+}
+
+/** @deprecated Prefer unregisterAdminConnection. */
+export function unregisterSuperAdminConnection(userId, res) {
+  unregisterAdminConnection(userId, res);
+}
+
+function writeEvent(res, eventType, data) {
   const payload = `event: ${eventType}\ndata: ${JSON.stringify(data)}\n\n`;
-  for (const connections of superAdminConnections.values()) {
-    for (const res of connections) {
-      try {
-        res.write(payload);
-      } catch {
-        // Connection is already gone; its own 'close' handler will unregister it.
+  try {
+    res.write(payload);
+  } catch {
+    // Connection is already gone; its own 'close' handler will unregister it.
+  }
+}
+
+/**
+ * Fan-out a checkout-deadline event to open portal SSE sessions.
+ * Super Admins always receive it. Regional Admins receive it only when `regionId` is non-null
+ * and listed in their assigned regions (regionless sites → no RA SSE, matching FCM).
+ *
+ * @param {string} eventType e.g. 'CHECKOUT_WARNING_15MIN' / 'CHECKOUT_OVERDUE'
+ * @param {object} data
+ * @param {{ regionId?: string | null }} [opts]
+ */
+export function broadcastCheckoutDeadline(eventType, data, { regionId = null } = {}) {
+  for (const connections of adminConnections.values()) {
+    for (const entry of connections) {
+      if (entry.role === 'SUPER_ADMIN') {
+        writeEvent(entry.res, eventType, data);
+        continue;
+      }
+      if (
+        entry.role === 'REGIONAL_ADMIN' &&
+        regionId &&
+        entry.regionIds &&
+        entry.regionIds.has(regionId)
+      ) {
+        writeEvent(entry.res, eventType, data);
       }
     }
   }
+}
+
+/** @deprecated Prefer broadcastCheckoutDeadline. Still fans out to SUPER_ADMIN connections only. */
+export function broadcastToSuperAdmins(eventType, data) {
+  broadcastCheckoutDeadline(eventType, data, { regionId: null });
 }

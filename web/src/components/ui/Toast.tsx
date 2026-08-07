@@ -1,5 +1,5 @@
 import { useCallback, useRef, useState } from 'react'
-import { X } from 'lucide-react'
+import { AlertTriangle, Clock3, Info, X } from 'lucide-react'
 
 export type ToastTone = 'info' | 'warning' | 'danger'
 
@@ -13,6 +13,12 @@ type ToastItem = ToastOptions & { id: string }
 
 const TOAST_DURATION_MS = 8000
 
+function ToastIcon({ tone }: { tone: ToastTone }) {
+  if (tone === 'danger') return <AlertTriangle size={16} aria-hidden="true" />
+  if (tone === 'warning') return <Clock3 size={16} aria-hidden="true" />
+  return <Info size={16} aria-hidden="true" />
+}
+
 function ToastStack({
   toasts,
   onDismiss,
@@ -23,22 +29,28 @@ function ToastStack({
   if (toasts.length === 0) return null
   return (
     <div className="toast-stack" role="region" aria-label="Notifications">
-      {toasts.map((toast) => (
-        <div className={`toast toast-${toast.tone ?? 'info'}`} role="status" key={toast.id}>
-          <div className="toast-text">
-            <p className="toast-title">{toast.title}</p>
-            {toast.body && <p className="toast-body">{toast.body}</p>}
+      {toasts.map((toast) => {
+        const tone = toast.tone ?? 'info'
+        return (
+          <div className={`toast toast-${tone}`} role="status" key={toast.id}>
+            <span className="toast-icon" aria-hidden="true">
+              <ToastIcon tone={tone} />
+            </span>
+            <div className="toast-text">
+              <p className="toast-title">{toast.title}</p>
+              {toast.body && <p className="toast-body">{toast.body}</p>}
+            </div>
+            <button
+              type="button"
+              className="toast-close"
+              aria-label="Dismiss notification"
+              onClick={() => onDismiss(toast.id)}
+            >
+              <X size={14} aria-hidden="true" />
+            </button>
           </div>
-          <button
-            type="button"
-            className="toast-close"
-            aria-label="Dismiss notification"
-            onClick={() => onDismiss(toast.id)}
-          >
-            <X size={14} aria-hidden="true" />
-          </button>
-        </div>
-      ))}
+        )
+      })}
     </div>
   )
 }

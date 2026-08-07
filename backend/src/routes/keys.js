@@ -41,12 +41,19 @@ router.get('/', async (req, res) => {
   // always self-scoped to their OWN assigned sites, regardless of any siteId filter — a
   // Technician/Vendor building their request form's key picker must never be able to list keys
   // at a site they have no assignment to, just by passing a different siteId.
-  if (req.auth?.role === 'TECHNICIAN' || req.auth?.role === 'VENDOR') {
+  // Regional Admin: same site-assignment scope (Cabinet Management Keys tab).
+  if (
+    req.auth?.role === 'TECHNICIAN' ||
+    req.auth?.role === 'VENDOR' ||
+    req.auth?.role === 'REGIONAL_ADMIN'
+  ) {
     const assignedSiteIds = await assignedSiteIdsForUser(req.auth.sub);
     if (assignedSiteIds.length === 0) return res.json({ items: [] });
-    const placeholders = assignedSiteIds.map((_, i) => `:site${i}`).join(', ');
+    if (siteId && !assignedSiteIds.includes(siteId)) return res.json({ items: [] });
+    const scopeIds = siteId ? [siteId] : assignedSiteIds;
+    const placeholders = scopeIds.map((_, i) => `:site${i}`).join(', ');
     const params = { state };
-    assignedSiteIds.forEach((id, i) => {
+    scopeIds.forEach((id, i) => {
       params[`site${i}`] = id;
     });
     const [rows] = await pool.execute(
@@ -72,6 +79,10 @@ router.get('/:id', async (req, res) => {
     id: req.params.id,
   });
   if (!rows[0]) return notFound(res, 'Key not found');
+  if (req.auth?.role === 'REGIONAL_ADMIN') {
+    const assignedSiteIds = await assignedSiteIdsForUser(req.auth.sub);
+    if (!assignedSiteIds.includes(rows[0].site_id)) return notFound(res, 'Key not found');
+  }
   return res.json(mapKey(rows[0]));
 });
 

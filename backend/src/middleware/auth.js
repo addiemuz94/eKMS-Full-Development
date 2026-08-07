@@ -23,6 +23,14 @@ export function requireSuperAdmin(req, res, next) {
   return next();
 }
 
+/** Super Admin unrestricted; Regional Admin may reach audit/reports (row-scoped in handlers). */
+export function requireSuperAdminOrRegionalAdmin(req, res, next) {
+  if (req.auth?.role === 'SUPER_ADMIN' || req.auth?.role === 'REGIONAL_ADMIN') {
+    return next();
+  }
+  return res.status(403).json({ error: 'FORBIDDEN', message: 'Super Admin or Regional Admin required' });
+}
+
 /**
  * Exact (method, path) allowlist for TERMINAL_DEVICE-scoped tokens, mounted under
  * `/v1/admin`. `path` is matched against `req.path` INSIDE the `admin` router — i.e.
@@ -153,6 +161,14 @@ const REGIONAL_ADMIN_ALLOWED_ROUTES = [
   // list rows to the Regional Admin's assigned sites.
   { method: 'GET', pattern: /^\/terminals$/ },
   { method: 'GET', pattern: /^\/terminals\/[^/]+$/ },
+  // Cabinet Management operational tabs (Keys / Key Permission / Key Access) — read-only.
+  // Row scoping lives in users.js / keys.js / keySlots.js (assigned sites only).
+  { method: 'GET', pattern: /^\/users$/ },
+  { method: 'GET', pattern: /^\/users\/[^/]+$/ },
+  { method: 'GET', pattern: /^\/keys$/ },
+  { method: 'GET', pattern: /^\/keys\/[^/]+$/ },
+  { method: 'GET', pattern: /^\/key-slots$/ },
+  { method: 'GET', pattern: /^\/key-slots\/[^/]+$/ },
 ];
 
 /**
@@ -212,8 +228,8 @@ const GOD_ADMIN_ALLOWED_ROUTES = [
  * token only passes for the exact routes in REGIONAL_ADMIN_ALLOWED_ROUTES; a TECHNICIAN or
  * VENDOR token only passes for the exact routes in TECHNICIAN_VENDOR_ALLOWED_ROUTES. A
  * GOD_ADMIN token only passes for GOD_ADMIN_ALLOWED_ROUTES. Everything else under `/v1/admin`
- * — and all of `/v1/audit` and `/v1/reports`, which still use the plain `requireSuperAdmin` —
- * remains 403, same least-privilege intent as today.
+ * — remains 403. `/v1/audit` and `/v1/reports` use `requireSuperAdminOrRegionalAdmin`
+ * (RA results are site-scoped in those handlers).
  */
 export function requireSuperAdminOrAllowlistedRole(req, res, next) {
   if (req.auth?.role === 'SUPER_ADMIN') {

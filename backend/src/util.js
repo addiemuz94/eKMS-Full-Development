@@ -158,3 +158,35 @@ export function parseCabinetScope(value, defaultScope = undefined) {
   if (value === 'ACTIVE' || value === 'DELETED') return value;
   return defaultScope;
 }
+
+/**
+ * Append `site_id IN (...)` for a Regional Admin's assigned sites.
+ * Returns `{ sql, params, empty: true }` when the RA has no sites (caller should return []).
+ * If `requestedSiteId` is set and not in the assignment set, also empty.
+ */
+export async function resolveRegionalAdminSiteScope(req, requestedSiteId = null) {
+  if (req?.auth?.role !== 'REGIONAL_ADMIN') {
+    return { siteIds: null, empty: false };
+  }
+  const assigned = await assignedSiteIdsForUser(req.auth.sub);
+  if (assigned.length === 0) return { siteIds: [], empty: true };
+  if (requestedSiteId) {
+    if (!assigned.includes(requestedSiteId)) return { siteIds: [], empty: true };
+    return { siteIds: [requestedSiteId], empty: false };
+  }
+  return { siteIds: assigned, empty: false };
+}
+
+/** Apply siteIds IN-clause onto an audit_events-style SQL fragment. */
+export function appendSiteIdsSql(sql, params, siteIds, column = 'site_id') {
+  if (!siteIds || siteIds.length === 0) return { sql, params };
+  const placeholders = siteIds.map((_, i) => `:scopeSite${i}`).join(', ');
+  const nextParams = { ...params };
+  siteIds.forEach((id, i) => {
+    nextParams[`scopeSite${i}`] = id;
+  });
+  return {
+    sql: `${sql} AND ${column} IN (${placeholders})`,
+    params: nextParams,
+  };
+}

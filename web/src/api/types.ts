@@ -130,7 +130,15 @@ export type KeyAccessRequestDto = {
   reason?: string | null
   pickupAtEpochMillis?: number | null
   returnAtEpochMillis?: number | null
-  status: 'PENDING' | 'APPROVED' | 'REJECTED' | 'REVOKED'
+  status:
+    | 'PENDING'
+    | 'PENDING_PIC'
+    | 'PENDING_RA'
+    | 'APPROVED'
+    | 'REJECTED'
+    | 'REVOKED'
+    | 'EXPIRED'
+    | 'CANCELLED'
   approvedByUserId?: string | null
   approvedAtEpochMillis?: number | null
   passkeyExpiresAtEpochMillis?: number | null
@@ -171,4 +179,8 @@ export type NotificationStreamPayload = {
   checkoutId: string
   keyId: string
   dueAtEpochMillis: number
+  /** Present on events emitted after RA SSE support (Aug 2026). */
+  siteId?: string
+  keyDisplayName?: string
+  terminalName?: string
 }

@@ -290,7 +290,7 @@ export function streamActivityLogsPdf(res, { rows, siteName, terminalName, filte
 }
 
 export async function queryKeyCheckoutReportRows(pool, filter = {}) {
-  const { siteId, terminalId, fromEpochMillis, untilEpochMillis, limit = 500 } = filter;
+  const { siteId, terminalId, fromEpochMillis, untilEpochMillis, limit = 500, allowedSiteIds } = filter;
   let sql = `
     SELECT kc.id, kc.key_id, kc.user_id, kc.terminal_id,
            kc.taken_at_epoch_ms, kc.returned_at_epoch_ms, kc.due_at_epoch_ms,
@@ -308,7 +308,14 @@ export async function queryKeyCheckoutReportRows(pool, filter = {}) {
       AND t.lifecycle_state = 'ACTIVE'
   `;
   const params = {};
-  if (siteId) {
+  if (allowedSiteIds) {
+    if (allowedSiteIds.length === 0) return [];
+    const placeholders = allowedSiteIds.map((_, i) => `:scopeSite${i}`).join(', ');
+    sql += ` AND t.site_id IN (${placeholders})`;
+    allowedSiteIds.forEach((id, i) => {
+      params[`scopeSite${i}`] = id;
+    });
+  } else if (siteId) {
     sql += ` AND t.site_id = :siteId`;
     params.siteId = siteId;
   }

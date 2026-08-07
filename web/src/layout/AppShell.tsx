@@ -12,6 +12,8 @@ type NavItem = {
   description: string
   icon: NavIconName
   end?: boolean
+  /** When set, only these roles see the item. Omitted = all authenticated roles. */
+  roles?: string[]
 }
 
 type NavGroup = { kind: 'group'; title: string; items: NavItem[] }
@@ -38,6 +40,7 @@ const NAV: NavEntry[] = [
         label: 'Registration',
         description: 'Register a location, cabinet, keys, and setup code',
         icon: 'units',
+        roles: ['SUPER_ADMIN'],
       },
       {
         to: '/terminals',
@@ -51,6 +54,7 @@ const NAV: NavEntry[] = [
         description: 'Create and manage personnel accounts',
         icon: 'personnel',
         end: true,
+        roles: ['SUPER_ADMIN'],
       },
     ],
   },
@@ -69,6 +73,7 @@ const NAV: NavEntry[] = [
         label: 'Activity archive',
         description: 'Activity for removed cabinets',
         icon: 'recycleBin',
+        roles: ['SUPER_ADMIN'],
       },
       {
         to: '/key-records',
@@ -111,12 +116,14 @@ const NAV: NavEntry[] = [
         label: 'Deleted items',
         description: 'Restore items removed in the last 60 days',
         icon: 'recycleBin',
+        roles: ['SUPER_ADMIN'],
       },
       {
         to: '/flush-data',
         label: 'Erase data',
         description: 'Permanently delete selected data (cannot be undone)',
         icon: 'flushData',
+        roles: ['SUPER_ADMIN'],
       },
       {
         to: '/settings',
@@ -127,6 +134,11 @@ const NAV: NavEntry[] = [
     ],
   },
 ]
+
+function itemVisibleToRole(item: NavItem, role: string | undefined) {
+  if (!item.roles || item.roles.length === 0) return true
+  return Boolean(role && item.roles.includes(role))
+}
 
 function NavItemLink({ item }: { item: NavItem }) {
   const ItemIcon = NAV_ICONS[item.icon]
@@ -148,8 +160,9 @@ function NavItemLink({ item }: { item: NavItem }) {
 
 export function AppShell() {
   const location = useLocation()
-  const { logout } = useAuth()
+  const { logout, session } = useAuth()
   const [navOpen, setNavOpen] = useState(false)
+  const role = session?.role
 
   useEffect(() => {
     setNavOpen(false)
@@ -161,6 +174,15 @@ export function AppShell() {
       document.body.style.overflow = ''
     }
   }, [navOpen])
+
+  const visibleNav = NAV.map((entry) => {
+    if (entry.kind === 'link') {
+      return itemVisibleToRole(entry.item, role) ? entry : null
+    }
+    const items = entry.items.filter((item) => itemVisibleToRole(item, role))
+    if (items.length === 0) return null
+    return { ...entry, items }
+  }).filter((entry): entry is NavEntry => entry != null)
 
   return (
     <div className={`app-shell${navOpen ? ' nav-open' : ''}`}>
@@ -183,7 +205,7 @@ export function AppShell() {
         </div>
 
         <nav className="sidebar-nav" aria-label="Primary">
-          {NAV.map((entry) => {
+          {visibleNav.map((entry) => {
             if (entry.kind === 'link') {
               return (
                 <section className="sidebar-group sidebar-top-link" key={entry.item.to}>
@@ -209,7 +231,6 @@ export function AppShell() {
         </nav>
 
         <div className="sidebar-footer">
-          <NotificationBell />
           <Button
             variant="outlined"
             className="sidebar-logout"
@@ -234,14 +255,6 @@ export function AppShell() {
           </Button>
           <div className="topbar-actions">
             <NotificationBell />
-            <Button
-              variant="outlined"
-              className="topbar-logout"
-              icon={LogOut}
-              onClick={logout}
-            >
-              Sign out
-            </Button>
           </div>
         </div>
         <div className="content">

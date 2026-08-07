@@ -3,6 +3,7 @@ import { Router } from 'express';
 import { z } from 'zod';
 import pool from '../db.js';
 import {
+  assignedSiteIdsForUser,
   badRequest,
   conflict,
   lifecycleFromRow,
@@ -88,7 +89,19 @@ router.get('/', async (req, res) => {
   // GOD_ADMIN is developer/bootstrap-only — never appear in personnel lists.
   let sql = `SELECT * FROM users WHERE lifecycle_state = :state AND role <> 'GOD_ADMIN'`;
   const params = { state };
-  if (siteId) {
+
+  // Regional Admin: only personnel assigned to at least one of the RA's sites.
+  if (req.auth?.role === 'REGIONAL_ADMIN') {
+    const assignedSiteIds = await assignedSiteIdsForUser(req.auth.sub);
+    if (assignedSiteIds.length === 0) return res.json({ items: [] });
+    if (siteId && !assignedSiteIds.includes(siteId)) return res.json({ items: [] });
+    const scopeIds = siteId ? [siteId] : assignedSiteIds;
+    const placeholders = scopeIds.map((_, i) => `:site${i}`).join(', ');
+    sql += ` AND id IN (SELECT user_id FROM user_site_assignments WHERE site_id IN (${placeholders}))`;
+    scopeIds.forEach((id, i) => {
+      params[`site${i}`] = id;
+    });
+  } else if (siteId) {
     sql += ` AND id IN (SELECT user_id FROM user_site_assignments WHERE site_id = :siteId)`;
     params.siteId = siteId;
   }
@@ -120,6 +133,14 @@ router.get('/:id', async (req, res) => {
   if (!rows[0]) return notFound(res, 'User not found');
   if (rows[0].role === 'GOD_ADMIN' && req.auth?.role !== 'GOD_ADMIN') {
     return notFound(res, 'User not found');
+  }
+  if (req.auth?.role === 'REGIONAL_ADMIN') {
+    const assignedSiteIds = await assignedSiteIdsForUser(req.auth.sub);
+    if (assignedSiteIds.length === 0) return notFound(res, 'User not found');
+    const userSites = await assignedSites(rows[0].id);
+    if (!userSites.some((id) => assignedSiteIds.includes(id))) {
+      return notFound(res, 'User not found');
+    }
   }
   return res.json(mapUser(rows[0], await assignedSites(rows[0].id), await assignedRegions(rows[0].id)));
 });

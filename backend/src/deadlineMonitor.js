@@ -9,15 +9,15 @@
  * push via sendPushToUser); every Regional Admin covering the checkout's site
  * (notifyRegionalAdminsForSite, reused as-is from keyAccessRequests.js — a site with no
  * region_id yet routes to nobody, a deliberate, already-established decision, not a gap: see
- * that function's own doc and migration 009's comment); every Super Admin, via the SSE
- * broadcast (not push) — the two recipient channels are genuinely different per the feature's
- * own design, not an oversight.
+ * that function's own doc and migration 009's comment); Super Admins + covering Regional
+ * Admins via the portal SSE broadcast (not push for SA; RA also get FCM above) — channels are
+ * complementary, not an either/or.
  */
 import pool from './db.js';
 import { notifyRegionalAdminsForSite } from './routes/keyAccessRequests.js';
 import { sendPushToUser } from './fcm.js';
-import { broadcastToSuperAdmins } from './notifications.js';
-import { newId, nowMs } from './util.js';
+import { broadcastCheckoutDeadline } from './notifications.js';
+import { newId, nowMs, regionIdForSite } from './util.js';
 
 const TICK_INTERVAL_MILLIS = 60_000;
 const WARNING_WINDOW_MILLIS = 15 * 60_000;
@@ -40,11 +40,15 @@ async function notifyCheckout(row, { title, body, eventType }) {
   const data = {
     checkoutId: row.id,
     keyId: row.key_id,
+    siteId: row.site_id,
     dueAtEpochMillis: row.due_at_epoch_ms,
+    keyDisplayName: row.key_display_name,
+    terminalName: row.terminal_name,
   };
   await sendPushToUser(row.user_id, title, body, data);
   await notifyRegionalAdminsForSite(row.site_id, title, body, data);
-  broadcastToSuperAdmins(eventType, data);
+  const regionId = await regionIdForSite(row.site_id);
+  broadcastCheckoutDeadline(eventType, data, { regionId });
 }
 
 async function checkWarnings() {

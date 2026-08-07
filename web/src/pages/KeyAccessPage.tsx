@@ -8,6 +8,35 @@ function formatEpoch(ms?: number | null) {
   return new Date(ms).toLocaleString()
 }
 
+/** In-flight statuses across Technician (PENDING) and Vendor Only-B (PENDING_PIC → PENDING_RA). */
+const PENDING_STATUSES = new Set(['PENDING', 'PENDING_PIC', 'PENDING_RA'])
+
+/** RA/SA can approve these (backend: Vendor requires PENDING_RA; Technician PENDING). */
+const APPROVABLE_STATUSES = new Set(['PENDING', 'PENDING_RA'])
+
+type StatusFilter =
+  | 'active'
+  | 'ALL'
+  | 'PENDING'
+  | 'PENDING_PIC'
+  | 'PENDING_RA'
+  | 'APPROVED'
+  | 'REJECTED'
+  | 'REVOKED'
+  | 'EXPIRED'
+  | 'CANCELLED'
+
+function statusLabel(status: KeyAccessRequestDto['status']): string {
+  switch (status) {
+    case 'PENDING_PIC':
+      return 'Pending PIC'
+    case 'PENDING_RA':
+      return 'Pending RA'
+    default:
+      return status
+  }
+}
+
 type Props = {
   /** When set, only requests for this location are shown. */
   lockedSiteId?: string
@@ -23,9 +52,7 @@ export function KeyAccessPage({ lockedSiteId, embedded = false, cabinetName }: P
   const [users, setUsers] = useState<UserDto[]>([])
   const [keys, setKeys] = useState<KeyDto[]>([])
   const [sites, setSites] = useState<SiteDto[]>([])
-  const [statusFilter, setStatusFilter] = useState<'active' | 'ALL' | 'PENDING' | 'APPROVED' | 'REJECTED' | 'REVOKED'>(
-    'active',
-  )
+  const [statusFilter, setStatusFilter] = useState<StatusFilter>('active')
   const [query, setQuery] = useState('')
   const [error, setError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
@@ -63,7 +90,11 @@ export function KeyAccessPage({ lockedSiteId, embedded = false, cabinetName }: P
       .filter((r) => {
         if (lockedSiteId && r.siteId !== lockedSiteId) return false
         if (statusFilter === 'active') {
-          if (r.status !== 'PENDING' && r.status !== 'APPROVED') return false
+          // Include Vendor staged statuses — exact PENDING-only used to hide PENDING_RA/PENDING_PIC.
+          if (!PENDING_STATUSES.has(r.status) && r.status !== 'APPROVED') return false
+        } else if (statusFilter === 'PENDING') {
+          // Match backend SA/RA "PENDING" queue semantics: all in-flight pending stages.
+          if (!PENDING_STATUSES.has(r.status)) return false
         } else if (statusFilter !== 'ALL' && r.status !== statusFilter) {
           return false
         }
@@ -205,13 +236,17 @@ export function KeyAccessPage({ lockedSiteId, embedded = false, cabinetName }: P
           value={query}
           onChange={(e) => setQuery(e.target.value)}
         />
-        <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value as typeof statusFilter)}>
+        <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value as StatusFilter)}>
           <option value="active">Pending + Approved</option>
           <option value="ALL">All statuses</option>
-          <option value="PENDING">Pending</option>
+          <option value="PENDING">All pending</option>
+          <option value="PENDING_PIC">Pending PIC</option>
+          <option value="PENDING_RA">Pending RA</option>
           <option value="APPROVED">Approved</option>
           <option value="REJECTED">Rejected</option>
           <option value="REVOKED">Revoked</option>
+          <option value="EXPIRED">Expired</option>
+          <option value="CANCELLED">Cancelled</option>
         </select>
       </div>
 
@@ -273,11 +308,11 @@ export function KeyAccessPage({ lockedSiteId, embedded = false, cabinetName }: P
                       </div>
                     </td>
                     <td>
-                      <span className="muted">{r.status}</span>
+                      <span className="muted">{statusLabel(r.status)}</span>
                     </td>
                     <td>
                       <div className="row-actions">
-                        {r.status === 'PENDING' && (
+                        {APPROVABLE_STATUSES.has(r.status) && (
                           <>
                             <Button type="button" disabled={rowBusy} onClick={() => void approve(r.id)}>
                               Approve
@@ -302,7 +337,7 @@ export function KeyAccessPage({ lockedSiteId, embedded = false, cabinetName }: P
                             Revoke PIN
                           </Button>
                         )}
-                        {r.status !== 'PENDING' && r.status !== 'APPROVED' && (
+                        {!APPROVABLE_STATUSES.has(r.status) && r.status !== 'APPROVED' && (
                           <span className="muted">—</span>
                         )}
                       </div>

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { Bell, X } from 'lucide-react'
+import { AlertTriangle, Bell, BellOff, Clock3, X } from 'lucide-react'
 import { useAuth } from '../auth/AuthContext'
 import { Button } from '../components/ui'
 import { useNotifications, type StoredNotification } from './NotificationsContext'
@@ -17,18 +17,25 @@ function relativeTime(epochMillis: number): string {
 }
 
 function NotificationRow({ item }: { item: StoredNotification }) {
+  const overdue = item.eventType === 'CHECKOUT_OVERDUE'
+  const Icon = overdue ? AlertTriangle : Clock3
   return (
-    <div className={`notif-item${item.read ? '' : ' unread'}`}>
-      <p className="notif-item-title">{item.title}</p>
-      <p className="notif-item-body">{item.body}</p>
-      <p className="notif-item-time">{relativeTime(item.receivedAtEpochMillis)}</p>
-    </div>
+    <article
+      className={`notif-item${item.read ? '' : ' unread'}${overdue ? ' notif-item-danger' : ' notif-item-warning'}`}
+    >
+      <span className="notif-item-icon" aria-hidden="true">
+        <Icon size={16} />
+      </span>
+      <div className="notif-item-copy">
+        <p className="notif-item-title">{item.title}</p>
+        <p className="notif-item-body">{item.body}</p>
+        <p className="notif-item-time">{relativeTime(item.receivedAtEpochMillis)}</p>
+      </div>
+    </article>
   )
 }
 
-/** Bell + badge + dropdown panel, mounted next to Sign out in AppShell's topbar. Super Admin only
- * — every other role gets nothing rendered here at all (checked directly, not just via the
- * NotificationsProvider's empty state, so there's no dead/hidden markup for other roles). */
+/** Top-right bell + dropdown. Super Admin and Regional Admin only — other roles render nothing. */
 export function NotificationBell() {
   const { session } = useAuth()
   const { notifications, unreadCount, markAllRead, clearAll } = useNotifications()
@@ -42,19 +49,28 @@ export function NotificationBell() {
         setOpen(false)
       }
     }
+    function onKeyDown(event: KeyboardEvent) {
+      if (event.key === 'Escape') setOpen(false)
+    }
     document.addEventListener('mousedown', onPointerDown)
-    return () => document.removeEventListener('mousedown', onPointerDown)
+    document.addEventListener('keydown', onKeyDown)
+    return () => {
+      document.removeEventListener('mousedown', onPointerDown)
+      document.removeEventListener('keydown', onKeyDown)
+    }
   }, [open])
 
-  if (session?.role !== 'SUPER_ADMIN') return null
+  const role = session?.role
+  if (role !== 'SUPER_ADMIN' && role !== 'REGIONAL_ADMIN') return null
 
   return (
     <div className="notif-bell-wrap" ref={wrapRef}>
-      <Button
-        variant="outlined"
-        className="notif-bell-btn"
+      <button
+        type="button"
+        className={`notif-bell-btn${unreadCount > 0 ? ' has-unread' : ''}${open ? ' is-open' : ''}`}
         aria-label={unreadCount > 0 ? `Notifications, ${unreadCount} unread` : 'Notifications'}
         aria-expanded={open}
+        aria-haspopup="dialog"
         onClick={() => {
           setOpen((next) => {
             const willOpen = !next
@@ -63,16 +79,25 @@ export function NotificationBell() {
           })
         }}
       >
-        <Bell size={18} aria-hidden="true" />
+        <Bell size={18} strokeWidth={2} aria-hidden="true" />
         {unreadCount > 0 && (
           <span className="notif-badge">{unreadCount > 9 ? '9+' : unreadCount}</span>
         )}
-      </Button>
+      </button>
 
       {open && (
         <div className="notif-panel" role="dialog" aria-label="Notifications">
           <div className="notif-panel-header">
-            <h3>Notifications</h3>
+            <div className="notif-panel-heading">
+              <h3>Notifications</h3>
+              <p className="notif-panel-sub">
+                {notifications.length === 0
+                  ? 'Checkout deadline alerts'
+                  : unreadCount > 0
+                    ? `${unreadCount} unread`
+                    : `${notifications.length} recent`}
+              </p>
+            </div>
             <button
               type="button"
               className="notif-panel-close"
@@ -84,7 +109,11 @@ export function NotificationBell() {
           </div>
           <div className="notif-list">
             {notifications.length === 0 ? (
-              <p className="notif-empty">No notifications yet.</p>
+              <div className="notif-empty">
+                <BellOff size={28} strokeWidth={1.5} aria-hidden="true" />
+                <p className="notif-empty-title">You’re all caught up</p>
+                <p className="notif-empty-body">Key return warnings will show up here.</p>
+              </div>
             ) : (
               notifications.map((item) => <NotificationRow item={item} key={item.id} />)
             )}

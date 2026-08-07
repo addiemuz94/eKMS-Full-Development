@@ -2,8 +2,10 @@ import { Router } from 'express';
 import { z } from 'zod';
 import pool from '../db.js';
 import {
+  assignedSiteIdsForUser,
   badRequest,
   conflict,
+  isSiteAssignedToUser,
   lifecycleFromRow,
   newId,
   notFound,
@@ -32,16 +34,44 @@ function mapSlot(row) {
   };
 }
 
+async function terminalSiteId(terminalId) {
+  const [rows] = await pool.execute(
+    `SELECT site_id FROM terminals WHERE id = :id LIMIT 1`,
+    { id: terminalId },
+  );
+  return rows[0]?.site_id ?? null;
+}
+
 router.get('/', async (req, res) => {
   const state = req.query.state || 'ACTIVE';
   const terminalId = req.query.terminalId;
-  let sql = `SELECT * FROM key_slots WHERE lifecycle_state = :state`;
+  let sql = `SELECT ks.* FROM key_slots ks`;
   const params = { state };
-  if (terminalId) {
-    sql += ` AND terminal_id = :terminalId`;
+  const joins = [];
+  const conditions = [`ks.lifecycle_state = :state`];
+
+  if (req.auth?.role === 'REGIONAL_ADMIN') {
+    const assignedSiteIds = await assignedSiteIdsForUser(req.auth.sub);
+    if (assignedSiteIds.length === 0) return res.json({ items: [] });
+    joins.push(`INNER JOIN terminals t ON t.id = ks.terminal_id`);
+    if (terminalId) {
+      const siteId = await terminalSiteId(terminalId);
+      if (!siteId || !assignedSiteIds.includes(siteId)) return res.json({ items: [] });
+      conditions.push(`ks.terminal_id = :terminalId`);
+      params.terminalId = terminalId;
+    } else {
+      const placeholders = assignedSiteIds.map((_, i) => `:site${i}`).join(', ');
+      conditions.push(`t.site_id IN (${placeholders})`);
+      assignedSiteIds.forEach((id, i) => {
+        params[`site${i}`] = id;
+      });
+    }
+  } else if (terminalId) {
+    conditions.push(`ks.terminal_id = :terminalId`);
     params.terminalId = terminalId;
   }
-  sql += ` ORDER BY node_address ASC`;
+
+  sql += ` ${joins.join(' ')} WHERE ${conditions.join(' AND ')} ORDER BY ks.node_address ASC`;
   const [rows] = await pool.execute(sql, params);
   res.json({ items: rows.map(mapSlot) });
 });
@@ -51,6 +81,12 @@ router.get('/:id', async (req, res) => {
     id: req.params.id,
   });
   if (!rows[0]) return notFound(res, 'Key slot not found');
+  if (req.auth?.role === 'REGIONAL_ADMIN') {
+    const siteId = await terminalSiteId(rows[0].terminal_id);
+    if (!siteId || !(await isSiteAssignedToUser(req.auth.sub, siteId))) {
+      return notFound(res, 'Key slot not found');
+    }
+  }
   return res.json(mapSlot(rows[0]));
 });
 

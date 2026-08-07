@@ -55,12 +55,10 @@ services:
       SUPER_ADMIN_PASSWORD: ${SUPER_ADMIN_PASSWORD}
       SUPER_ADMIN_DISPLAY_NAME: ${SUPER_ADMIN_DISPLAY_NAME:-Super Admin}
       CORS_ORIGINS: ${CORS_ORIGINS:-https://kms-cvt.com,https://www.kms-cvt.com}
-      # Real FCM push (checkout-deadline notifications). Set FCM_SERVICE_ACCOUNT_PATH +
-      # FCM_SERVICE_ACCOUNT_HOST_PATH in .env.production, place the JSON on the host, then
-      # uncomment the volume mount below. Missing file = fcm.js logs and no-ops (no crash).
-      FCM_SERVICE_ACCOUNT_PATH: ${FCM_SERVICE_ACCOUNT_PATH:-}
-    # volumes:
-    #   - ${FCM_SERVICE_ACCOUNT_HOST_PATH}:/run/secrets/fcm-service-account.json:ro
+      # Real FCM push — service-account JSON bind-mounted from FCM_SERVICE_ACCOUNT_HOST_PATH.
+      FCM_SERVICE_ACCOUNT_PATH: ${FCM_SERVICE_ACCOUNT_PATH:-/run/secrets/fcm-service-account.json}
+    volumes:
+      - ${FCM_SERVICE_ACCOUNT_HOST_PATH}:/run/secrets/fcm-service-account.json:ro
     networks:
       - ekms
 
