@@ -6,7 +6,12 @@ import android.media.AudioManager
 import android.media.MediaPlayer
 import android.util.Log
 import com.ekms.terminal.R
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
 
 /**
@@ -14,12 +19,35 @@ import kotlinx.coroutines.suspendCancellableCoroutine
  * feedback behind CLAUDE.md's "Terminal App UX Baseline (Production)" §1/§2.
  *
  * [beep]/[playVoiceLine] remain the raw one-shot primitives; the cyclic take/return/
- * close-door audio pattern ([playCyclicUntil]) is built on top of them (plus
- * [playVoiceLineAwaitingCompletion], a completion-aware sibling of [playVoiceLine]) and is
- * what every Take/Return flow screen actually drives its phase audio through now — see
+ * close-door audio pattern ([playCyclicUntil]) is built on top of them and is what every
+ * Take/Return flow screen actually drives its phase audio through now — see
  * [playCyclicUntil]'s own doc for the pattern itself, and CLAUDE_TERMINAL.md for the full
  * before/after (it replaced the old "continuous 1s-interval beep the whole phase through,
  * plus a one-shot voice line at some trigger point" behavior).
+ *
+ * **Return Flow rewrite, Tier 2 (audio consolidation).** [playVoiceLine] and the old
+ * `playVoiceLineSuspending` (a near-duplicate `MediaPlayer` setup, differing only in
+ * whether the caller waited for completion) are now one implementation, [playVoiceLineSuspending] —
+ * [playVoiceLine] is a thin fire-and-forget `scope.launch` wrapper over it, [playCyclicUntil]
+ * calls it directly and awaits it. One code path for the hard-won `setAudioAttributes`-before-
+ * `setDataSource`/`prepareAsync` ordering below, not two that could drift apart. **Enforcement is
+ * last-caller-wins, no priority tiers**: every call — fire-and-forget or cyclic, Take or Return —
+ * releases whatever is currently in [voiceLinePlayer] first (see [playVoiceLineSuspending]), so a
+ * new request always interrupts whatever voice line was playing, regardless of which logical
+ * phase issued it. This enforcement was previously only correct *within one instance* — see the
+ * next paragraph for why that was the actual overlap bug, not the two-methods duality itself.
+ *
+ * **Also Tier 2: exactly one instance now exists app-wide**, hoisted once in `TerminalAdminApp`
+ * and threaded down as a parameter everywhere audio is triggered (both `TerminalKeyTakeScreen`
+ * and `TerminalKeyReturnScreen` used to `remember` their own instance, plus `TerminalAdminApp`
+ * itself held two more, `returnSessionAudio`/`multiKeyTakeAudio` — four independent instances in
+ * total, each with its own private [voiceLinePlayer]). [playVoiceLine]/[playVoiceLineSuspending]
+ * already correctly cut each other off *within a single instance* before this pass — the actual
+ * voice-line-overlap bug was that a per-node screen's own cyclic "insert the key"/"take the key"
+ * playback and a *different* instance's session-level "please close the door" reminder (or the
+ * multi-key queue's "please take your next key" one-shot) could each hold a live `MediaPlayer` at
+ * the same moment, since nothing coordinated across separate instances. One shared instance means
+ * one shared [voiceLinePlayer] field, so last-caller-wins now genuinely holds globally.
  *
  * The F7G18P has confirmed speaker hardware (8Ω/10W amp, PH2.0-4P SPK
  * connector) that plays back through standard Android audio APIs with no
@@ -90,6 +118,14 @@ class AudioFeedbackController(context: Context) {
     private var beepPlayer: MediaPlayer? = null
     private var voiceLinePlayer: MediaPlayer? = null
 
+    /** Backs [playVoiceLine]'s fire-and-forget wrapper over [playVoiceLineSuspending] — a plain
+     * (non-suspend) caller can't be assumed to already be inside a coroutine (e.g. the multi-key
+     * Take queue's advance callback, invoked directly from a hardware-thread `mainHandler.post`,
+     * not from a `LaunchedEffect`), so this class owns its own scope rather than requiring one.
+     * Main-dispatcher, matching every other call in this class (all `MediaPlayer` calls/callbacks
+     * already run on the main thread) — cancelled in [release]. */
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+
     /**
      * Plays the beep clip once at [loud]'s volume. The caller (the Key
      * Take/Return Flow screens) already owns the 1-second repeat interval
@@ -137,68 +173,18 @@ class AudioFeedbackController(context: Context) {
     }
 
     /**
-     * Plays a voice line once, fire-and-forget. A new call interrupts and replaces any
-     * still-playing voice line from a *previous* call (voice lines never need to overlap each
-     * other — only a concurrently-running [beep], a fully separate [MediaPlayer] instance
-     * ([beepPlayer]), and unaffected by this).
-     *
-     * Currently has no call sites — every Take/Return flow screen now drives its voice lines
-     * through [playCyclicUntil] (via [playVoiceLineAwaitingCompletion]) instead, since all of
-     * them need the cyclic take/return/close-door pattern, not a bare one-shot. Kept as a
-     * public primitive (same reasoning as [beep] remaining public) for a genuine future
-     * one-shot need, since its exact `MediaPlayer` setup order below is a real, hard-won
-     * hardware lesson worth preserving rather than re-deriving later.
-     *
-     * Deliberately built as `MediaPlayer()` + [MediaPlayer.setAudioAttributes]
-     * + `setDataSource` + `prepareAsync()`, NOT the `MediaPlayer.create(...)`
-     * convenience method. `create()` opens the data source and prepares the
-     * player internally *before* handing back an instance to call
-     * `setAudioAttributes` on — on this device's vendor audio pipeline
-     * (custom `awplayer`/CedarX stack, not stock AOSP) that ordering was
-     * confirmed live to silently route to an inaudible output: playback
-     * completed cleanly (start → EOS → stop, matching sample rate/channel
-     * count in the decoder logs) with no audible sound. Setting attributes
-     * before the data source/prepare call, the officially documented-safe
-     * order, is what actually gets honored by that pipeline.
+     * Plays a voice line once, fire-and-forget — a thin wrapper launching [playVoiceLineSuspending]
+     * without awaiting it, for callers that aren't already inside a coroutine (e.g. the multi-key
+     * Take queue's advance callback, or Return's `MORE_KEY_RETURN` hold). A new call interrupts
+     * and replaces any still-playing voice line from a *previous* call — see [playVoiceLineSuspending]'s
+     * own doc for the enforcement, now a single implementation both this and [playCyclicUntil]
+     * share (Tier 2 merge — was two near-duplicate `MediaPlayer` setups, `playVoiceLine` and the
+     * old `playVoiceLineSuspending`, differing only in whether the caller awaited
+     * completion). Only a concurrently-running [beep] (a fully separate [MediaPlayer] instance,
+     * [beepPlayer]) is unaffected by this.
      */
     fun playVoiceLine(line: VoiceLine) {
-        val resId = when (line) {
-            VoiceLine.PLEASE_TAKE_THE_KEY -> R.raw.please_take_the_key
-            VoiceLine.PLEASE_INSERT_THE_KEY -> R.raw.please_insert_the_key
-            VoiceLine.PLEASE_CLOSE_THE_DOOR -> R.raw.please_close_the_door
-            VoiceLine.MORE_KEY_RETURN -> R.raw.more_key_return
-            VoiceLine.PLEASE_TAKE_YOUR_NEXT_KEY -> R.raw.please_take_your_next_key
-        }
-        Log.d(LOG_TAG, "playVoiceLine($line) requested")
-        releaseVoiceLinePlayer()
-        val player = MediaPlayer()
-        try {
-            player.setAudioAttributes(voiceLineAudioAttributes)
-            appContext.resources.openRawResourceFd(resId).use { afd ->
-                player.setDataSource(afd.fileDescriptor, afd.startOffset, afd.length)
-            }
-            player.setOnPreparedListener { prepared ->
-                Log.d(LOG_TAG, "playVoiceLine($line) prepared -> starting")
-                prepared.start()
-            }
-            player.setOnCompletionListener { completed ->
-                Log.d(LOG_TAG, "playVoiceLine($line) completed")
-                completed.release()
-                if (voiceLinePlayer === completed) voiceLinePlayer = null
-            }
-            player.setOnErrorListener { failed, what, extra ->
-                Log.w(LOG_TAG, "Voice line $line playback error (what=$what, extra=$extra)")
-                failed.release()
-                if (voiceLinePlayer === failed) voiceLinePlayer = null
-                true
-            }
-            voiceLinePlayer = player
-            player.prepareAsync()
-        } catch (error: Exception) {
-            Log.w(LOG_TAG, "Unable to prepare voice line $line", error)
-            player.release()
-            if (voiceLinePlayer === player) voiceLinePlayer = null
-        }
+        scope.launch { playVoiceLineSuspending(line) }
     }
 
     /**
@@ -222,7 +208,7 @@ class AudioFeedbackController(context: Context) {
      * callers run this inside a `LaunchedEffect` keyed on whatever should restart the cycle —
      * cancelling that coroutine (a new key value, or the composable leaving composition) stops
      * this immediately at its current suspension point (mid voice-line playback included, via
-     * [playVoiceLineAwaitingCompletion]'s cancellation handling), and a fresh call starts a
+     * [playVoiceLineSuspending]'s cancellation handling), and a fresh call starts a
      * brand new cycle from the voice line.
      */
     suspend fun playCyclicUntil(
@@ -232,7 +218,7 @@ class AudioFeedbackController(context: Context) {
         until: () -> Boolean,
     ) {
         while (!until()) {
-            playVoiceLineAwaitingCompletion(voiceLine)
+            playVoiceLineSuspending(voiceLine)
             if (until()) return
             for (i in 0 until beepCount) {
                 if (until()) return
@@ -244,19 +230,29 @@ class AudioFeedbackController(context: Context) {
     }
 
     /**
-     * Same [MediaPlayer] setup/ordering as [playVoiceLine] — see that method's KDoc for why
-     * `setAudioAttributes` must precede `setDataSource`/`prepareAsync` on this device's vendor
-     * pipeline, unchanged and duplicated here rather than shared, to avoid touching that
-     * already hardware-verified method — but suspends until playback actually completes (or
-     * errors; either way this resumes, it never hangs the caller) instead of firing and
-     * forgetting. Backs [playCyclicUntil], which needs to know exactly when the voice line
-     * finishes before starting its beeps. Same single-instance "cut off and replace" ownership
-     * of [voiceLinePlayer] as [playVoiceLine] — a stray previous call (cyclic or one-shot) is
-     * always interrupted first. Cancellation (the cyclic loop stopping mid-line) stops and
-     * releases the player immediately rather than letting it finish out loud after the caller
-     * has moved on.
+     * The single voice-line playback implementation (Tier 2 merge — replaces the old duplicate
+     * `playVoiceLine`/`playVoiceLineAwaitingCompletion` `MediaPlayer` setups). Deliberately built
+     * as `MediaPlayer()` + [MediaPlayer.setAudioAttributes] + `setDataSource` + `prepareAsync()`,
+     * NOT the `MediaPlayer.create(...)` convenience method: `create()` opens the data source and
+     * prepares the player internally *before* handing back an instance to call
+     * `setAudioAttributes` on — on this device's vendor audio pipeline (custom `awplayer`/CedarX
+     * stack, not stock AOSP) that ordering was confirmed live to silently route to an inaudible
+     * output: playback completed cleanly (start → EOS → stop, matching sample rate/channel count
+     * in the decoder logs) with no audible sound. Setting attributes before the data
+     * source/prepare call, the officially documented-safe order, is what actually gets honored by
+     * that pipeline.
+     *
+     * Suspends until playback actually completes (or errors; either way this resumes, it never
+     * hangs the caller) — [playCyclicUntil] calls this directly and awaits it (needs to know
+     * exactly when the voice line finishes before starting its beeps); [playVoiceLine] launches it
+     * fire-and-forget instead. **Enforcement, shared by every caller now that this is the one
+     * implementation and one shared instance exists app-wide (see class doc): releases whatever
+     * is currently in [voiceLinePlayer] first — a new request, from anywhere, always interrupts
+     * whatever voice line was playing (last-caller-wins, no priority tiers).** Cancellation (the
+     * cyclic loop stopping mid-line) stops and releases the player immediately rather than
+     * letting it finish out loud after the caller has moved on.
      */
-    private suspend fun playVoiceLineAwaitingCompletion(line: VoiceLine) = suspendCancellableCoroutine<Unit> { cont ->
+    private suspend fun playVoiceLineSuspending(line: VoiceLine) = suspendCancellableCoroutine<Unit> { cont ->
         val resId = when (line) {
             VoiceLine.PLEASE_TAKE_THE_KEY -> R.raw.please_take_the_key
             VoiceLine.PLEASE_INSERT_THE_KEY -> R.raw.please_insert_the_key
@@ -264,7 +260,7 @@ class AudioFeedbackController(context: Context) {
             VoiceLine.MORE_KEY_RETURN -> R.raw.more_key_return
             VoiceLine.PLEASE_TAKE_YOUR_NEXT_KEY -> R.raw.please_take_your_next_key
         }
-        Log.d(LOG_TAG, "playVoiceLineAwaitingCompletion($line) requested")
+        Log.d(LOG_TAG, "playVoiceLineSuspending($line) requested")
         releaseVoiceLinePlayer()
         val player = MediaPlayer()
         fun finish() {
@@ -278,15 +274,15 @@ class AudioFeedbackController(context: Context) {
                 player.setDataSource(afd.fileDescriptor, afd.startOffset, afd.length)
             }
             player.setOnPreparedListener { prepared ->
-                Log.d(LOG_TAG, "playVoiceLineAwaitingCompletion($line) prepared -> starting")
+                Log.d(LOG_TAG, "playVoiceLineSuspending($line) prepared -> starting")
                 prepared.start()
             }
             player.setOnCompletionListener {
-                Log.d(LOG_TAG, "playVoiceLineAwaitingCompletion($line) completed")
+                Log.d(LOG_TAG, "playVoiceLineSuspending($line) completed")
                 finish()
             }
             player.setOnErrorListener { _, what, extra ->
-                Log.w(LOG_TAG, "playVoiceLineAwaitingCompletion($line) playback error (what=$what, extra=$extra)")
+                Log.w(LOG_TAG, "playVoiceLineSuspending($line) playback error (what=$what, extra=$extra)")
                 finish()
                 true
             }
@@ -323,15 +319,18 @@ class AudioFeedbackController(context: Context) {
     }
 
     /**
-     * Releases both players. Call when the owning screen leaves composition
-     * (e.g. from a `DisposableEffect`'s `onDispose`) so a take/return flow
-     * that's abandoned mid-beep doesn't leak a still-playing `MediaPlayer`
-     * past the screen's lifetime. [playClick] owns no releasable resource of its own —
-     * `AudioManager` is a shared system service, not something this class allocates.
+     * Releases both players and cancels [scope] (so an in-flight fire-and-forget [playVoiceLine]
+     * launch doesn't keep running past this call). Tier 2: this instance is now hoisted once at
+     * `TerminalAdminApp`'s top level rather than `remember`-ed per screen, so this fires from that
+     * one call site's `DisposableEffect.onDispose` (app-lifetime, not per-screen) — still the same
+     * "don't leak a still-playing `MediaPlayer`" contract, just a longer-lived owner.
+     * [playClick] owns no releasable resource of its own — `AudioManager` is a shared system
+     * service, not something this class allocates.
      */
     fun release() {
         releaseBeepPlayer()
         releaseVoiceLinePlayer()
+        scope.cancel()
     }
 
     private fun releaseBeepPlayer() {

@@ -21,7 +21,6 @@ import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -89,6 +88,10 @@ fun TerminalKeyTakeScreen(
     slot: KeySlot,
     takeWarningTimeSeconds: Int,
     videoRecordingEnabled: Boolean,
+    /** Return Flow rewrite, Tier 2: shared app-wide instance, hoisted once in `TerminalAdminApp`
+     * and passed down here — this screen no longer `remember`s its own (see
+     * `AudioFeedbackController`'s class doc for why that was the actual voice-line-overlap bug). */
+    audio: AudioFeedbackController,
     onBeginTake: (nodeAddress: Int, onDoorOpenConfirmed: () -> Unit, onFailure: (String) -> Unit) -> Unit,
     onPollRemoval: (
         nodeAddress: Int,
@@ -115,9 +118,7 @@ fun TerminalKeyTakeScreen(
      * still compiling. */
     onSessionComplete: () -> Unit,
 ) {
-    val context = LocalContext.current
     val videoRecorder = remember { VideoRecordingController() }
-    val audio = remember { AudioFeedbackController(context) }
     // Bug fix (Jul 2026, found via ad hoc hardware testing on the multi-key queue): these three
     // were remembered with no keys, so at Key Menu's call site — where this same composable
     // instance stays mounted across every queued node in turn, only ever re-parameterized with
@@ -138,10 +139,6 @@ fun TerminalKeyTakeScreen(
     DisposableEffect(videoRecordingEnabled) {
         if (videoRecordingEnabled) videoRecorder.start("key_take")
         onDispose { videoRecorder.stop() }
-    }
-
-    DisposableEffect(audio) {
-        onDispose { audio.release() }
     }
 
     LaunchedEffect(key, slot) {

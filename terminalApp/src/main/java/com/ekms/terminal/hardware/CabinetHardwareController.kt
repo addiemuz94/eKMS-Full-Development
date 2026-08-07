@@ -11,6 +11,7 @@ import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
+import java.util.concurrent.atomic.AtomicReference
 
 /**
  * Serializes all physical cabinet operations and publishes only safe status
@@ -66,17 +67,31 @@ class CabinetHardwareController(
         private const val BOOT_SELF_TEST_DWELL_MILLIS = 500L
     }
 
+    /** Return Flow rewrite (Tier 1) — see [returnSessionPhase]'s doc. Ordinal order matters:
+     * [canStartOperatorCommand] compares ordinals, not identity. */
+    private enum class ReturnSessionPhase { CLOSED, SESSION_OPEN_IDLE, NODE_CYCLE_ACTIVE }
+
     private val mainHandler = Handler(Looper.getMainLooper())
     private val worker: ExecutorService = Executors.newSingleThreadExecutor()
     private val transport = AndroidSerialTransport()
-    /** Return Flow session rebuild (Jul 2026): guards one node's own unlock-through-inserted-or-
-     * abandoned cycle only — short-lived, re-acquired per scan. The whole open session is
-     * guarded separately by [returnSessionMonitoring]. */
-    private val returnMonitoring = AtomicBoolean(false)
-    /** Return Flow session rebuild (Jul 2026): guards the whole open return session — acquired
-     * once by [beginReturnSessionDoorMonitor] on the first scan, released only when the door is
-     * confirmed physically closed. Session-wide, unlike [returnMonitoring]. */
-    private val returnSessionMonitoring = AtomicBoolean(false)
+    /** Return Flow rewrite (Tier 1): consolidates the old `returnMonitoring`/
+     * `returnSessionMonitoring` `AtomicBoolean` pair into one ordered phase — `CLOSED` (no
+     * session) < [ReturnSessionPhase.SESSION_OPEN_IDLE] (session open, no node active — the
+     * "reentry" case that used to need a separate `allowReturnSessionReentry` escape hatch on
+     * [canStartOperatorCommand]) < [ReturnSessionPhase.NODE_CYCLE_ACTIVE] (a node is genuinely
+     * mid-cycle). [canStartOperatorCommand]'s `maxTolerableReturnPhase` replaces that escape
+     * hatch with a plain ordinal comparison instead of a caller-supplied boolean — see that
+     * function's doc. Read from the caller's thread (main), written only from [worker]'s single
+     * background thread — same cross-thread requirement the two `AtomicBoolean`s this replaces
+     * had, hence [AtomicReference] rather than a plain var. */
+    private val returnSessionPhase = AtomicReference(ReturnSessionPhase.CLOSED)
+    /** Idempotent-start guard for [beginReturnSessionDoorMonitor]'s own poll loop only — a
+     * distinct concern from [returnSessionPhase] (the caller-facing "is a return session open"
+     * state): a node cycle can begin and even fail before the door monitor has ever started (the
+     * very first scan of a session, hardware fault before unlock succeeds), so "is a node active"
+     * and "is the door-monitor loop running" are not always the same fact. Same shape as the
+     * pre-existing [returnSessionWrongSlotMonitoring] idempotency guard below. */
+    private val returnSessionDoorMonitorRunning = AtomicBoolean(false)
     /** Node currently mid-cycle (unlocked, awaiting insertion) during an open return session, or
      * null if none — read by [beginReturnSessionDoorMonitor] to force-clean-up a node that was
      * still active when the door closed. Only ever touched from [worker]'s single thread. */
@@ -93,8 +108,9 @@ class CabinetHardwareController(
     private val returnSessionLastScanAtEpochMillis = AtomicLong(0L)
     /** Multi-key Return hard-block (session-scoped wrong-slot sweep): guards
      * [beginReturnSessionWrongSlotSweep], the whole open session's own cross-node sweep —
-     * independent of [returnMonitoring] (one node's own cycle) and started/stopped alongside
-     * [returnSessionMonitoring], not tied to any one node's [pollForKeyInsertion] call. */
+     * independent of [returnSessionPhase]'s NODE_CYCLE_ACTIVE (one node's own cycle) and
+     * started/stopped alongside [returnSessionDoorMonitorRunning], not tied to any one node's
+     * [pollForKeyInsertion] call. */
     private val returnSessionWrongSlotMonitoring = AtomicBoolean(false)
     /** Every node address currently reading as wrong-slot-present, mapped to whether it resolved
      * to a confirmed enrolled key (Multi-key Return hard-block). Replaces the old single nullable
@@ -165,7 +181,7 @@ class CabinetHardwareController(
     }
 
     fun disconnect() {
-        returnMonitoring.set(false)
+        returnSessionPhase.set(ReturnSessionPhase.CLOSED)
         takeMonitoring.set(false)
         publish(currentState.copy(busy = true, message = "Closing cabinet serial port…"))
         worker.execute {
@@ -208,7 +224,7 @@ class CabinetHardwareController(
         onDoorEjected: () -> Unit,
         onFailure: (String) -> Unit,
     ) {
-        if (currentState.busy || returnMonitoring.get()) {
+        if (currentState.busy || returnSessionPhase.get() != ReturnSessionPhase.CLOSED) {
             notifyCommandFailure("Wait for the current cabinet action to finish.", onFailure)
             return
         }
@@ -990,11 +1006,12 @@ class CabinetHardwareController(
      *
      * Called once per fob scan during an open return session — first scan (door closed) and
      * every subsequent scan (door already open from an earlier key in this same session) both
-     * go through this one function; there is no separate "first scan" path. Acquires
-     * [returnMonitoring] for the duration of *this node's* cycle only (unlock through
-     * insertion-confirmed-or-abandoned, released by [pollForKeyInsertion]) — a genuinely
-     * shorter-lived guard than before, since the flow no longer waits on door-close per key.
-     * The session-wide guard is the separate [returnSessionMonitoring], acquired by
+     * go through this one function; there is no separate "first scan" path. Moves
+     * [returnSessionPhase] to `NODE_CYCLE_ACTIVE` for the duration of *this node's* cycle only
+     * (unlock through insertion-confirmed-or-abandoned, released back to `SESSION_OPEN_IDLE` by
+     * [pollForKeyInsertion]) — a genuinely shorter-lived guard than the phase's own session-wide
+     * meaning, since the flow no longer waits on door-close per key. The session-wide idempotent
+     * loop guard is the separate [returnSessionDoorMonitorRunning], acquired by
      * [beginReturnSessionDoorMonitor] once per session, not here.
      */
     fun beginReturnNodeCycle(
@@ -1002,8 +1019,11 @@ class CabinetHardwareController(
         onNodeUnlocked: () -> Unit,
         onFailure: (String) -> Unit,
     ) {
-        if (!canStartOperatorCommand(onFailure, allowReturnSessionReentry = true)) return
-        if (!returnMonitoring.compareAndSet(false, true)) {
+        if (!canStartOperatorCommand(onFailure, maxTolerableReturnPhase = ReturnSessionPhase.SESSION_OPEN_IDLE)) return
+        val previousReturnPhase = returnSessionPhase.getAndUpdate { current ->
+            if (current == ReturnSessionPhase.NODE_CYCLE_ACTIVE) current else ReturnSessionPhase.NODE_CYCLE_ACTIVE
+        }
+        if (previousReturnPhase == ReturnSessionPhase.NODE_CYCLE_ACTIVE) {
             notifyCommandFailure("A key return is already in progress at another node.", onFailure)
             return
         }
@@ -1040,7 +1060,7 @@ class CabinetHardwareController(
                 runCatching { link?.releaseElectromagnet(nodeAddress) }
                 runCatching { link?.blueLightOff(nodeAddress) }
                 activeReturnNodeAddress = null
-                returnMonitoring.set(false)
+                returnSessionPhase.set(ReturnSessionPhase.SESSION_OPEN_IDLE)
                 reportCommandFailure("Unable to begin the key return at node $nodeAddress", error, onFailure)
             }
         }
@@ -1134,9 +1154,9 @@ class CabinetHardwareController(
             runCatching {
                 worker.execute {
                     try {
-                        if (!returnMonitoring.get()) return@execute
+                        if (returnSessionPhase.get() != ReturnSessionPhase.NODE_CYCLE_ACTIVE) return@execute
                         if (!transport.isOpen) {
-                            returnMonitoring.set(false)
+                            returnSessionPhase.set(ReturnSessionPhase.SESSION_OPEN_IDLE)
                             throw IllegalStateException("Cabinet connection closed while waiting for key insertion.")
                         }
                         val activeLink = requireNotNull(link) { "Cabinet protocol is unavailable." }
@@ -1158,7 +1178,7 @@ class CabinetHardwareController(
                                 activeLink.releaseElectromagnet(nodeAddress)
                                 activeLink.blueLightOff(nodeAddress)
                                 activeReturnNodeAddress = null
-                                returnMonitoring.set(false)
+                                returnSessionPhase.set(ReturnSessionPhase.SESSION_OPEN_IDLE)
                                 Log.d(LOG_TAG, "ReturnFlowDiag: node=$nodeAddress correct key confirmed via 0x17, SUCCESS")
                                 publish(
                                     currentState.copy(
@@ -1191,7 +1211,7 @@ class CabinetHardwareController(
                             activeLink.releaseElectromagnet(nodeAddress)
                             activeLink.blueLightOff(nodeAddress)
                             activeReturnNodeAddress = null
-                            returnMonitoring.set(false)
+                            returnSessionPhase.set(ReturnSessionPhase.SESSION_OPEN_IDLE)
                             publish(
                                 currentState.copy(
                                     busy = false,
@@ -1206,7 +1226,7 @@ class CabinetHardwareController(
                         mainHandler.postDelayed({ pollStep() }, KEY_INSERTION_POLL_INTERVAL_MILLIS)
                     } catch (error: Exception) {
                         activeReturnNodeAddress = null
-                        returnMonitoring.set(false)
+                        returnSessionPhase.set(ReturnSessionPhase.SESSION_OPEN_IDLE)
                         reportCommandFailure("Unable to monitor key insertion at node $nodeAddress", error, onFailure)
                     }
                 }
@@ -1218,7 +1238,8 @@ class CabinetHardwareController(
     /**
      * Multi-key Return hard-block: session-scoped cross-node wrong-slot sweep, extracted out of
      * [pollForKeyInsertion] (see that function's doc). Runs continuously for the whole open
-     * session — including during [ReturnFlow.Waiting], between node cycles, unlike the old
+     * session — including between node cycles (`ReturnSession.Waiting`, the app layer's own
+     * idle-listening state — see `ui/returnflow/ReturnSessionController.kt`), unlike the old
      * per-node-cycle sweep this replaces — so a wrong fob placed while no node is currently active
      * is still caught, not just one placed while some other node's cycle happens to be running.
      *
@@ -1325,7 +1346,7 @@ class CabinetHardwareController(
      * moment this poll detects closure, that node's cycle is force-ended here — electromagnet
      * released, light off — rather than left with an unlocked latch and no poll watching it;
      * [pollForKeyInsertion]'s own loop then exits silently on its next scheduled tick (sees
-     * [returnMonitoring] already cleared), the same "stopped externally" exit
+     * [returnSessionPhase] no longer `NODE_CYCLE_ACTIVE`), the same "stopped externally" exit
      * [pollForKeyRemoval] already uses.
      *
      * **Threading**: reschedule-based from the start (see [pollForKeyInsertion]'s doc for why
@@ -1339,7 +1360,7 @@ class CabinetHardwareController(
         onSessionDoorClosed: () -> Unit,
         onFailure: (String) -> Unit,
     ) {
-        if (!returnSessionMonitoring.compareAndSet(false, true)) return
+        if (!returnSessionDoorMonitorRunning.compareAndSet(false, true)) return
         returnSessionDoorCloseWarningMillis = doorCloseWarningSeconds * 1_000L
         returnSessionLastScanAtEpochMillis.set(System.currentTimeMillis())
         var lastWarnedAnchor = -1L
@@ -1349,9 +1370,9 @@ class CabinetHardwareController(
             runCatching {
                 worker.execute {
                     try {
-                        if (!returnSessionMonitoring.get()) return@execute
+                        if (!returnSessionDoorMonitorRunning.get()) return@execute
                         if (!transport.isOpen) {
-                            returnSessionMonitoring.set(false)
+                            returnSessionDoorMonitorRunning.set(false)
                             throw IllegalStateException("Cabinet connection closed while monitoring the return session.")
                         }
                         val activeLink = requireNotNull(link) { "Cabinet protocol is unavailable." }
@@ -1363,8 +1384,8 @@ class CabinetHardwareController(
                                 runCatching { activeLink.blueLightOff(staleNode) }
                             }
                             activeReturnNodeAddress = null
-                            returnMonitoring.set(false)
-                            returnSessionMonitoring.set(false)
+                            returnSessionPhase.set(ReturnSessionPhase.CLOSED)
+                            returnSessionDoorMonitorRunning.set(false)
                             // Multi-key Return hard-block: the whole session ending is what ends
                             // beginReturnSessionWrongSlotSweep too — clear its tracked nodes'
                             // lights here rather than waiting for that sweep's own next tick.
@@ -1395,7 +1416,7 @@ class CabinetHardwareController(
 
                         mainHandler.postDelayed({ pollStep() }, RETURN_DOOR_CLOSE_POLL_INTERVAL_MILLIS)
                     } catch (error: Exception) {
-                        returnSessionMonitoring.set(false)
+                        returnSessionDoorMonitorRunning.set(false)
                         reportCommandFailure("Unable to monitor the return session door", error, onFailure)
                     }
                 }
@@ -1451,7 +1472,13 @@ class CabinetHardwareController(
         onSecured: () -> Unit,
         onFailure: (String) -> Unit,
     ) {
-        if (!returnMonitoring.compareAndSet(false, true)) {
+        // Dead code, confirmed zero call sites anywhere (see Tier 1 report) — mechanically
+        // redirected to the new returnSessionPhase field only so this compiles; not a behavior
+        // preservation attempt.
+        val previousPhase = returnSessionPhase.getAndUpdate { current ->
+            if (current == ReturnSessionPhase.NODE_CYCLE_ACTIVE) current else ReturnSessionPhase.NODE_CYCLE_ACTIVE
+        }
+        if (previousPhase == ReturnSessionPhase.NODE_CYCLE_ACTIVE) {
             notifyCommandFailure("A key return is already being monitored.", onFailure)
             return
         }
@@ -1466,12 +1493,12 @@ class CabinetHardwareController(
         worker.execute {
             try {
                 val activeLink = requireNotNull(link) { "Cabinet protocol is unavailable." }
-                while (returnMonitoring.get() && transport.isOpen) {
+                while (returnSessionPhase.get() == ReturnSessionPhase.NODE_CYCLE_ACTIVE && transport.isOpen) {
                     val data = activeLink.testMicroSwitch(nodeAddress).data
                     if (data.isFourBytesOf(0x00)) {
                         activeLink.releaseElectromagnet(nodeAddress)
                         activeLink.blueLightOff(nodeAddress)
-                        returnMonitoring.set(false)
+                        returnSessionPhase.set(ReturnSessionPhase.CLOSED)
                         publish(
                             currentState.copy(
                                 busy = false,
@@ -1505,7 +1532,7 @@ class CabinetHardwareController(
                     ),
                 )
             } catch (error: Exception) {
-                returnMonitoring.set(false)
+                returnSessionPhase.set(ReturnSessionPhase.CLOSED)
                 reportCommandFailure("Unable to secure the returned key at node $nodeAddress", error, onFailure)
             }
         }
@@ -1571,7 +1598,13 @@ class CabinetHardwareController(
         onFailure: (String) -> Unit,
     ) {
         if (!canStartEnrollmentCommand(onFailure)) return
-        if (!returnMonitoring.compareAndSet(false, true)) {
+        // Dead code, confirmed zero call sites anywhere (see Tier 1 report) — mechanically
+        // redirected to the new returnSessionPhase field only so this compiles; not a behavior
+        // preservation attempt.
+        val previousPhase = returnSessionPhase.getAndUpdate { current ->
+            if (current == ReturnSessionPhase.NODE_CYCLE_ACTIVE) current else ReturnSessionPhase.NODE_CYCLE_ACTIVE
+        }
+        if (previousPhase == ReturnSessionPhase.NODE_CYCLE_ACTIVE) {
             notifyCommandFailure("This key return is already being monitored.", onFailure)
             return
         }
@@ -1596,7 +1629,7 @@ class CabinetHardwareController(
                     ),
                 )
 
-                while (returnMonitoring.get() && transport.isOpen) {
+                while (returnSessionPhase.get() == ReturnSessionPhase.NODE_CYCLE_ACTIVE && transport.isOpen) {
                     val data = activeLink.testMicroSwitchAndCard(nodeAddress).data
                     val returnedUid = data.takeIf { isReadableFobData(it) }?.toCompactHex()
 
@@ -1607,7 +1640,7 @@ class CabinetHardwareController(
                     ) {
                         activeLink.releaseElectromagnet(nodeAddress)
                         activeLink.redLightOff(nodeAddress)
-                        returnMonitoring.set(false)
+                        returnSessionPhase.set(ReturnSessionPhase.CLOSED)
                         publish(
                             currentState.copy(
                                 busy = false,
@@ -1645,7 +1678,7 @@ class CabinetHardwareController(
                     ),
                 )
             } catch (error: Exception) {
-                returnMonitoring.set(false)
+                returnSessionPhase.set(ReturnSessionPhase.CLOSED)
                 reportCommandFailure("Unable to secure the returned fob at node $nodeAddress", error, onFailure)
             }
         }
@@ -1812,11 +1845,14 @@ class CabinetHardwareController(
 
     /**
      * Stops whichever return monitor is running — enrollment's
-     * [waitForReturnedKeyFob] or retrieval/return's [waitForKeyInserted] —
-     * without itself changing a peg state.
+     * [waitForReturnedKeyFob] or retrieval/return's [waitForKeyInserted] (both confirmed dead
+     * code with zero call sites as of the Tier 1 rewrite — see that report) — plus, since
+     * [returnSessionPhase] is shared with the live [beginReturnNodeCycle]/[pollForKeyInsertion]
+     * path, a defensive hard-stop of a real return session too, without itself changing a peg
+     * state.
      */
     fun stopMonitoring() {
-        returnMonitoring.set(false)
+        returnSessionPhase.set(ReturnSessionPhase.CLOSED)
         takeMonitoring.set(false)
         attachmentMonitoring.set(false)
         if (currentState.keyReturnMonitoring) {
@@ -2025,8 +2061,8 @@ class CabinetHardwareController(
     }
 
     fun close() {
-        returnMonitoring.set(false)
-        returnSessionMonitoring.set(false)
+        returnSessionPhase.set(ReturnSessionPhase.CLOSED)
+        returnSessionDoorMonitorRunning.set(false)
         activeReturnNodeAddress = null
         takeMonitoring.set(false)
         transport.close()
@@ -2038,7 +2074,7 @@ class CabinetHardwareController(
         startingMessage: String,
         command: (KeyCabinetLink) -> CabinetHardwareState,
     ) {
-        if (returnMonitoring.get() || returnSessionMonitoring.get()) {
+        if (returnSessionPhase.get() != ReturnSessionPhase.CLOSED) {
             publish(currentState.copy(message = "A key return session is active. Wait until it finishes."))
             return
         }
@@ -2078,7 +2114,7 @@ class CabinetHardwareController(
 
     private fun canStartEnrollmentCommand(onFailure: (String) -> Unit): Boolean {
         val problem = when {
-            returnMonitoring.get() || returnSessionMonitoring.get() -> "A key return session is active."
+            returnSessionPhase.get() != ReturnSessionPhase.CLOSED -> "A key return session is active."
             currentState.busy -> "Wait for the current cabinet action to finish."
             !currentState.connected || link == null || !transport.isOpen ->
                 "Open the key-enrolment session before operating a node."
@@ -2100,16 +2136,16 @@ class CabinetHardwareController(
     private fun canStartOperatorCommand(
         onFailure: (String) -> Unit,
         checkTakeMonitoring: Boolean = true,
-        allowReturnSessionReentry: Boolean = false,
+        // Return Flow rewrite (Tier 1): replaces the old allowReturnSessionReentry boolean escape
+        // hatch with an ordinal-tolerance comparison against the single returnSessionPhase value.
+        // Every caller except beginReturnNodeCycle keeps the default (CLOSED) — proceed only if no
+        // return activity at all is happening. beginReturnNodeCycle's own call passes
+        // SESSION_OPEN_IDLE — proceed if the session is open-but-idle (its own next node cycle,
+        // the "reentry" case), reject only if another node is genuinely NODE_CYCLE_ACTIVE.
+        maxTolerableReturnPhase: ReturnSessionPhase = ReturnSessionPhase.CLOSED,
     ): Boolean {
         val problem = when {
-            // allowReturnSessionReentry (beginReturnNodeCycle's own reentry on a session's 2nd+
-            // scan) skips the returnSessionMonitoring half — that flag stays true for the whole
-            // open session by design (beginReturnSessionDoorMonitor), so checking it here would
-            // reject the session's own next node cycle. returnMonitoring (a genuinely active
-            // node cycle) still blocks regardless, for every caller.
-            returnMonitoring.get() -> "A key return session is active."
-            !allowReturnSessionReentry && returnSessionMonitoring.get() -> "A key return session is active."
+            returnSessionPhase.get().ordinal > maxTolerableReturnPhase.ordinal -> "A key return session is active."
             // Skipped for a queued take's continuation nodes (see beginQueuedKeyTake's
             // isContinuingSession) — takeMonitoring is deliberately still true there, held for
             // the whole multi-key session, not per node; it isn't "someone else's take."

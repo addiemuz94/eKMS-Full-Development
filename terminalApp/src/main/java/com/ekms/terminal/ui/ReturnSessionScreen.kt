@@ -12,6 +12,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import com.ekms.terminal.ui.returnflow.ReturnSessionController
 
 /**
  * Continuous multi-key return session (CLAUDE.md "Terminal App UX Baseline (Production)" §2 —
@@ -19,37 +20,45 @@ import androidx.compose.ui.unit.dp
  * logic, not layered on top of it): shown between key returns — after success, failure, or
  * abandonment all count — instead of dropping straight back to standby, so the operator can
  * scan the next fob immediately. Door-close is now the session's **sole** ending trigger
- * (`CabinetHardwareController.beginReturnSessionDoorMonitor`, owned by `TerminalAdminApp`, not
- * this screen) — there is no Done button and no idle timeout any more. The old
- * `SESSION_IDLE_TIMEOUT_MILLIS`/Done-button model this superseded is documented as such in
- * `CLAUDE_TERMINAL.md`, not silently dropped from history.
+ * (`CabinetHardwareController.beginReturnSessionDoorMonitor`, owned by
+ * `ReturnSessionController`, not this screen) — there is no Done button and no idle timeout any
+ * more. The old `SESSION_IDLE_TIMEOUT_MILLIS`/Done-button model this superseded is documented as
+ * such in `CLAUDE_TERMINAL.md`, not silently dropped from history.
  *
- * **Multi-key Return hard-block (found via ad hoc hardware testing, this rework):**
- * [blockedWrongSlotNodes] is non-empty exactly when
+ * **Return Flow rewrite, Tier 3: takes [controller] directly instead of three loose params**
+ * (`returnedKeyNames`/`blockedWrongSlotNodes`/`sessionComplete`, each previously an independent
+ * `TerminalAdminApp`-local `remember` this screen was handed piecemeal) — those three are now
+ * properties on the one [ReturnSessionController] instance that already owns every other piece
+ * of Return Flow state, so this screen reads them off it directly rather than the caller having
+ * to keep three separate vars in sync with the same underlying session.
+ *
+ * **Multi-key Return hard-block (found via ad hoc hardware testing):**
+ * [ReturnSessionController.wrongSlotBlockedNodes] is non-empty exactly when
  * `CabinetHardwareController.beginReturnSessionWrongSlotSweep` currently has one or more nodes
- * flagged wrong — a hard block, not just an alarm: `TerminalAdminApp`'s own gate rejects a new
- * scan while this set is non-empty, so this screen's own "scan the next key" instruction would be
- * actively misleading while blocked, and is replaced entirely by the block card below. This
- * intentionally moved out of `TerminalKeyReturnScreen` (formerly rendered wrong-slot state on
- * whichever node's own screen was active) — the sweep is now session-scoped, not tied to any one
- * node's cycle, so it surfaces here, on the session's own idle/listening screen, instead. A
- * concurrently-active `NodeActive` cycle at an unrelated node is unaffected either way; this
- * screen only renders during [ReturnFlow.Waiting], never alongside one.
+ * flagged wrong — a hard block, not just an alarm: `ReturnSessionController.onKeyCardScanned`'s
+ * own gate rejects a new scan while this set is non-empty, so this screen's own "scan the next
+ * key" instruction would be actively misleading while blocked, and is replaced entirely by the
+ * block card below. This intentionally moved out of `TerminalKeyReturnScreen` (formerly rendered
+ * wrong-slot state on whichever node's own screen was active) — the sweep is session-scoped, not
+ * tied to any one node's cycle, so it surfaces here, on the session's own idle/listening screen,
+ * instead. A concurrently-active `AwaitingInsertion` cycle at an unrelated node is unaffected
+ * either way; this screen only renders during [ReturnSession.Waiting][com.ekms.terminal.ui.returnflow.ReturnSession.Waiting],
+ * never alongside one.
  */
 @Composable
 fun ReturnSessionScreen(
     padding: PaddingValues,
-    returnedKeyNames: List<String>,
-    blockedWrongSlotNodes: Set<Int> = emptySet(),
-    /** Auto-return-to-login pass: true for a brief window right after the door is confirmed
-     * closed (the session's sole ending trigger, regardless of what happened inside it), before
-     * `TerminalAdminApp` tears the session down and returns to login — see
-     * `returnSessionCompletionMessageActive`. Takes priority over the wrong-slot block card
-     * (moot by definition: the door can't be closed while a wrong-slot block is active, since
-     * that's a hard block on ending the session, but this keeps the two states mutually
-     * exclusive on-screen regardless). */
-    sessionComplete: Boolean = false,
+    controller: ReturnSessionController,
 ) {
+    val returnedKeyNames = controller.returnedKeyNames
+    val blockedWrongSlotNodes = controller.wrongSlotBlockedNodes
+    // Auto-return-to-login pass: true for a brief window right after the door is confirmed
+    // closed (the session's sole ending trigger, regardless of what happened inside it), before
+    // the controller tears the session down and its onSessionEnded callback returns to login.
+    // Takes priority over the wrong-slot block card (moot by definition: the door can't be
+    // closed while a wrong-slot block is active, since that's a hard block on ending the
+    // session, but this keeps the two states mutually exclusive on-screen regardless).
+    val sessionComplete = controller.sessionComplete
     TerminalPage(padding) {
         if (sessionComplete) {
             HeaderCard(
