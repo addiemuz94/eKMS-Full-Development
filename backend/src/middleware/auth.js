@@ -138,8 +138,9 @@ const REGIONAL_ADMIN_ALLOWED_ROUTES = [
   // vendor-passkey-requests above, not a replacement (see the design-choice note at the top of
   // 009_regions_and_key_access_requests.sql): list/get/create/approve/reject.
   // Route-reachability only — keyAccessRequests.js additionally scopes every one of these to
-  // the Regional Admin's own assigned REGIONS (via each request's site's region_id), not
-  // assigned Sites, per isRegionAssignedToUser in util.js.
+  // the Regional Admin's own assigned SITES (via isSiteAssignedToUser in util.js). Was
+  // region-based (site's region_id via isRegionAssignedToUser) before the "regional confusion"
+  // Tier 1 rework; now the same site-based pattern as every other Regional Admin route below.
   { method: 'GET', pattern: /^\/key-access-requests$/ },
   { method: 'GET', pattern: /^\/key-access-requests\/[^/]+$/ },
   { method: 'POST', pattern: /^\/key-access-requests$/ },

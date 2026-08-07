@@ -76,12 +76,21 @@ export function CabinetUnitPeoplePanel({ terminal, unitName, onChanged }: Props)
     setBusy(true)
     setError(null)
     try {
+      // REGIONAL_ADMIN can cover multiple locations (Tier 2b) — attaching them to this cabinet's
+      // location must ADD to their existing assignedSiteIds, not replace the whole array (that
+      // would silently wipe out every other location they cover). Technician/Vendor keep the
+      // original replace behavior exactly as-is — one physical work site, moving them here is
+      // meant to replace, not accumulate (see the dialog copy below, also made role-conditional).
+      const nextSiteIds =
+        person.role === 'REGIONAL_ADMIN'
+          ? Array.from(new Set([...(person.assignedSiteIds ?? []), terminal.siteId]))
+          : [terminal.siteId]
       await api.updateUser(person.id, {
         displayName: person.displayName,
         email: person.email,
         role: person.role,
         staffId: person.staffId ?? null,
-        assignedSiteIds: [terminal.siteId],
+        assignedSiteIds: nextSiteIds,
         expectedRevision: person.revision,
       })
       setAssignOpen(false)
@@ -101,6 +110,21 @@ export function CabinetUnitPeoplePanel({ terminal, unitName, onChanged }: Props)
   }
 
   async function removeFromUnit(person: UserDto) {
+    // Independent, pre-existing bug found while fixing the above (not part of the multi-site
+    // ask): this used to unconditionally send `assignedSiteIds: []`, which users.js's PATCH
+    // schema always rejects for any non-SUPER_ADMIN role ("...require at least one assigned
+    // site") — so "Remove from location" 400'd for every Technician/Vendor/Regional Admin, every
+    // time, before this fix. Now removes only this cabinet's site from the person's existing
+    // list (a no-op-turned-correct change for a multi-site Regional Admin; for a single-site
+    // Technician/Vendor it still empties their list, so the same "must keep one location" rule
+    // is checked client-side first, with an actionable message, instead of hitting that 400 blind.
+    const nextSiteIds = (person.assignedSiteIds ?? []).filter((id) => id !== terminal.siteId)
+    if (person.role !== 'SUPER_ADMIN' && nextSiteIds.length === 0) {
+      setError(
+        `${person.displayName} only has ${unitName} assigned. ${ROLE_LABELS[person.role] ?? person.role} accounts require at least one location — reassign them to a different location in User Management, or delete the account instead.`,
+      )
+      return
+    }
     if (
       !(await confirmAction({
         message: `Remove ${person.displayName} from ${unitName}?`,
@@ -117,7 +141,7 @@ export function CabinetUnitPeoplePanel({ terminal, unitName, onChanged }: Props)
         email: person.email,
         role: person.role,
         staffId: person.staffId ?? null,
-        assignedSiteIds: [],
+        assignedSiteIds: nextSiteIds,
         expectedRevision: person.revision,
       })
       await reload()
@@ -243,8 +267,10 @@ export function CabinetUnitPeoplePanel({ terminal, unitName, onChanged }: Props)
           <form className="dialog" onSubmit={assignExisting}>
             <h2>Assign existing personnel</h2>
             <p className="dialog-copy">
-              Assign an account to <strong>{unitName}</strong>. This replaces their current location
-              assignment.
+              Assign an account to <strong>{unitName}</strong>.{' '}
+              {people.find((p) => p.id === assignUserId)?.role === 'REGIONAL_ADMIN'
+                ? 'This adds it to their assigned locations, alongside any others they already cover.'
+                : 'This replaces their current location assignment.'}
             </p>
             <div className="field">
               <label>Personnel</label>

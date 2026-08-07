@@ -81,6 +81,25 @@ export async function assignedSiteIdsForUser(userId) {
 }
 
 /**
+ * Site-based counterpart of [isSiteAssignedToUser]/[assignedSiteIdsForUser], the OTHER
+ * direction: every REGIONAL_ADMIN whose own `user_site_assignments` includes this site.
+ * Added by the "regional confusion" Tier 1 rework to replace region-indirected RA routing
+ * (site -> region -> user_region_assignments) with direct site -> user_site_assignments
+ * lookup, mirroring the same INNER JOIN shape notifyRegionalAdminsForSite (keyAccessRequests.js)
+ * and the site-pics route already used for the equivalent Technician-by-site lookup — not a new
+ * join pattern, the site-scoped twin of one that already existed for regions.
+ */
+export async function raIdsForSite(siteId) {
+  const [rows] = await pool.execute(
+    `SELECT u.id FROM users u
+     INNER JOIN user_site_assignments usa ON usa.user_id = u.id
+     WHERE usa.site_id = :siteId AND u.role = 'REGIONAL_ADMIN' AND u.lifecycle_state = 'ACTIVE'`,
+    { siteId },
+  );
+  return rows.map((r) => r.id);
+}
+
+/**
  * Region-scoped counterpart of [isSiteAssignedToUser], added for key-access-request routing
  * (migration 009). Deliberately checks `user_region_assignments`, NOT `user_site_assignments` —
  * a Regional Admin may approve a key-access request for any Site inside a Region they're
@@ -89,6 +108,12 @@ export async function assignedSiteIdsForUser(userId) {
  * 009_regions_and_key_access_requests.sql). Same two-layer model as every other Regional Admin
  * route: this is the row-level half, REGIONAL_ADMIN_ALLOWED_ROUTES in middleware/auth.js is the
  * route-level half.
+ *
+ * UNUSED as of the "regional confusion" Tier 1 rework — RA row-level authorization moved to
+ * [raIdsForSite]/[isSiteAssignedToUser] (site-based). Left defined, not deleted: `regions` and
+ * `user_region_assignments` are explicitly kept live for this tier (region survives as a
+ * cosmetic map-grouping label — see TerminalsMap.tsx), and dropping this function ahead of that
+ * table's own removal is a separate, later cleanup tier, not this one.
  */
 export async function isRegionAssignedToUser(userId, regionId) {
   if (!regionId) return false;
@@ -100,7 +125,10 @@ export async function isRegionAssignedToUser(userId, regionId) {
 }
 
 /** All region ids a user is assigned to — used to scope a Regional Admin's key-access-request
- * list view down to their own regions when no specific `?siteId=` filter is given. */
+ * list view down to their own regions when no specific `?siteId=` filter is given.
+ *
+ * UNUSED as of the "regional confusion" Tier 1 rework — see [isRegionAssignedToUser]'s doc for
+ * why this stays defined rather than deleted in this tier. */
 export async function assignedRegionIdsForUser(userId) {
   const [rows] = await pool.execute(
     `SELECT region_id FROM user_region_assignments WHERE user_id = :userId`,
@@ -110,8 +138,14 @@ export async function assignedRegionIdsForUser(userId) {
 }
 
 /** A site's region, or `null` if the site has no region assigned yet (region_id is nullable —
- * see migration 009). A request tied to a regionless site cannot be routed to any Regional
- * Admin until a Super Admin assigns that site to a region. */
+ * see migration 009).
+ *
+ * UNUSED as of the "regional confusion" max_key_access_duration_minutes migration (015) — its one
+ * remaining caller, keyAccessRequests.js's `GET /site-policy/:siteId`, was the last real consumer
+ * of a site's region and now reads sites.max_key_access_duration_minutes directly instead. Left
+ * defined, not deleted, for the same reason as [isRegionAssignedToUser]/[assignedRegionIdsForUser]
+ * above — `regions`/`sites.region_id` are still live columns/tables, just no longer read by any
+ * app-layer code path. */
 export async function regionIdForSite(siteId) {
   const [rows] = await pool.execute(`SELECT region_id FROM sites WHERE id = :id LIMIT 1`, { id: siteId });
   return rows[0]?.region_id ?? null;

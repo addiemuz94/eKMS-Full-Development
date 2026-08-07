@@ -41,6 +41,9 @@ export function PersonnelPage() {
   const [staffId, setStaffId] = useState('')
   const [role, setRole] = useState('TECHNICIAN')
   const [siteId, setSiteId] = useState('')
+  // Multi-site picker, REGIONAL_ADMIN only — Technician/Vendor keep the single `siteId` select
+  // above exactly as-is (one physical work site each, not a role-agnostic change).
+  const [selectedSiteIds, setSelectedSiteIds] = useState<string[]>([])
   const [password, setPassword] = useState('')
 
   const reload = useCallback(async () => {
@@ -116,6 +119,7 @@ export function PersonnelPage() {
     setStaffId('')
     setPassword('')
     setRole('TECHNICIAN')
+    setSelectedSiteIds([])
   }
 
   function openEdit(person: UserDto) {
@@ -125,6 +129,7 @@ export function PersonnelPage() {
     setStaffId(person.staffId ?? '')
     setRole(person.role)
     setSiteId(person.assignedSiteIds?.[0] ?? sites[0]?.id ?? '')
+    setSelectedSiteIds(person.assignedSiteIds ?? [])
     setPassword('')
     setError(null)
     setOpen(true)
@@ -136,7 +141,12 @@ export function PersonnelPage() {
       setError('Enter a valid account email.')
       return
     }
-    if (role !== 'SUPER_ADMIN' && !siteId) {
+    if (role === 'REGIONAL_ADMIN') {
+      if (selectedSiteIds.length === 0) {
+        setError('Assign at least one location for this role.')
+        return
+      }
+    } else if (role !== 'SUPER_ADMIN' && !siteId) {
       setError('Assign at least one location for this role.')
       return
     }
@@ -148,7 +158,14 @@ export function PersonnelPage() {
         email: email.trim(),
         role,
         staffId: staffId.trim() || null,
-        assignedSiteIds: role === 'SUPER_ADMIN' ? [] : siteId ? [siteId] : [],
+        assignedSiteIds:
+          role === 'SUPER_ADMIN'
+            ? []
+            : role === 'REGIONAL_ADMIN'
+              ? selectedSiteIds
+              : siteId
+                ? [siteId]
+                : [],
       }
       if (editingPerson) {
         await api.updateUser(editingPerson.id, {
@@ -350,7 +367,7 @@ export function PersonnelPage() {
                   <option value="SUPER_ADMIN">Super Admin</option>
                 </select>
               </div>
-              {role !== 'SUPER_ADMIN' && (
+              {role === 'TECHNICIAN' || role === 'VENDOR' ? (
                 <div className="field">
                   <label>Assigned location</label>
                   <select value={siteId} onChange={(e) => setSiteId(e.target.value)} required>
@@ -361,8 +378,36 @@ export function PersonnelPage() {
                     ))}
                   </select>
                 </div>
-              )}
+              ) : null}
             </div>
+            {role === 'REGIONAL_ADMIN' && (
+              <div className="field">
+                <label>Assigned locations</label>
+                <p className="muted" style={{ margin: '0 0 8px', fontSize: '0.82rem' }}>
+                  A Regional Admin can cover more than one location — select all that apply.
+                </p>
+                <div className="toggle-list" role="group" aria-label="Assigned locations">
+                  {sites.map((s) => (
+                    <label key={s.id} className="toggle-row">
+                      <input
+                        type="checkbox"
+                        checked={selectedSiteIds.includes(s.id)}
+                        onChange={(e) =>
+                          setSelectedSiteIds((current) =>
+                            e.target.checked
+                              ? [...current, s.id]
+                              : current.filter((id) => id !== s.id),
+                          )
+                        }
+                      />
+                      <span>
+                        <strong>{s.name}</strong>
+                      </span>
+                    </label>
+                  ))}
+                </div>
+              </div>
+            )}
             {role === 'SUPER_ADMIN' && (
               <p className="muted" style={{ margin: '0 0 12px', fontSize: '0.88rem' }}>
                 Super Admin has org-wide access; location assignment is not required.

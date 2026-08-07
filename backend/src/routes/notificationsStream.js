@@ -6,7 +6,7 @@ import {
   registerAdminConnection,
   unregisterAdminConnection,
 } from '../notifications.js';
-import { assignedRegionIdsForUser } from '../util.js';
+import { assignedSiteIdsForUser } from '../util.js';
 
 const router = Router();
 
@@ -19,9 +19,9 @@ const router = Router();
 // and passkey-login already are, not an oversight.
 router.post('/stream/ticket', requireAuth, requireSuperAdminOrRegionalAdmin, async (req, res) => {
   const role = req.auth.role;
-  const regionIds =
-    role === 'REGIONAL_ADMIN' ? await assignedRegionIdsForUser(req.auth.sub) : null;
-  const ticket = mintStreamTicket(req.auth.sub, { role, regionIds });
+  const siteIds =
+    role === 'REGIONAL_ADMIN' ? await assignedSiteIdsForUser(req.auth.sub) : null;
+  const ticket = mintStreamTicket(req.auth.sub, { role, siteIds });
   res.json({ ticket });
 });
 
@@ -43,7 +43,7 @@ router.get('/stream', (req, res) => {
   res.write(': connected\n\n');
   registerAdminConnection(identity.userId, res, {
     role: identity.role,
-    regionIds: identity.regionIds,
+    siteIds: identity.siteIds,
   });
 
   // Periodic comment line, not a real event — keeps the connection demonstrably active against

@@ -5,16 +5,14 @@ import pool from '../db.js';
 import { sendPushToUser } from '../fcm.js';
 import { signKeyAccessSessionToken } from '../middleware/auth.js';
 import {
-  assignedRegionIdsForUser,
   assignedSiteIdsForUser,
   badRequest,
   conflict,
-  isRegionAssignedToUser,
   isSiteAssignedToUser,
   newId,
   notFound,
   nowMs,
-  regionIdForSite,
+  raIdsForSite,
   writeAudit,
 } from '../util.js';
 
@@ -55,32 +53,26 @@ async function expireOverdueRequests() {
   );
 }
 
-// Exported (Aug 2026, checkout-deadline notifications) — deadlineMonitor.js reuses this as-is
-// for the same "resolve site -> region -> covering Regional Admins" logic, not a reimplementation.
+// Exported (Aug 2026, checkout-deadline notifications) — deadlineMonitor.js reuses this as-is.
+// "Regional confusion" Tier 1 rework: resolves site -> covering Regional Admins directly via
+// raIdsForSite (user_site_assignments), not the old site -> region -> user_region_assignments
+// indirection.
 export async function notifyRegionalAdminsForSite(siteId, title, body, data = {}) {
-  const regionId = await regionIdForSite(siteId);
-  if (!regionId) return;
-  const [rows] = await pool.execute(
-    `SELECT u.id FROM users u
-     INNER JOIN user_region_assignments ura ON ura.user_id = u.id
-     WHERE ura.region_id = :regionId AND u.role = 'REGIONAL_ADMIN'
-       AND u.lifecycle_state = 'ACTIVE'`,
-    { regionId },
-  );
-  for (const row of rows) {
-    await sendPushToUser(row.id, title, body, data);
+  const raIds = await raIdsForSite(siteId);
+  for (const raId of raIds) {
+    await sendPushToUser(raId, title, body, data);
   }
 }
 
 // Same two-layer model as every other Regional-Admin-scoped route (sites.js/accessGrants.js/
 // vendorPasskeyRequests.js) — this is the row-level half; REGIONAL_ADMIN_ALLOWED_ROUTES in
-// middleware/auth.js is the route-level half. Routes via the request's Site's REGION, not the
-// Site itself — a Regional Admin need not be individually Site-assigned to approve this.
+// middleware/auth.js is the route-level half. "Regional confusion" Tier 1 rework: routes via the
+// request's Site directly (assignedSiteIds/user_site_assignments), same mechanism as every other
+// Regional-Admin-scoped route in the codebase — no longer via the Site's Region.
 async function assertMayAccessRequestSite(req, siteId) {
   if (req.auth?.role === 'SUPER_ADMIN') return true;
   if (req.auth?.role === 'REGIONAL_ADMIN') {
-    const regionId = await regionIdForSite(siteId);
-    return isRegionAssignedToUser(req.auth.sub, regionId);
+    return isSiteAssignedToUser(req.auth.sub, siteId);
   }
   return false;
 }
@@ -184,6 +176,11 @@ router.get('/exception-sites/:siteId/keys', async (req, res) => {
 /**
  * GET /key-access-requests/site-policy/:siteId — legacy duration ceiling read. Only B no longer
  * clamps to this value; kept for older clients. Caller must still be allowed to create for the site.
+ * "Regional confusion" rework: reads sites.max_key_access_duration_minutes directly — the value
+ * now lives on the site itself (migration 015, backfilled from the site's former region at the
+ * time of that migration), not derived through regionIdForSite/the regions table at request time.
+ * `regionId` stays in the response (still a real, if now purely cosmetic, sites.region_id column)
+ * for backward compatibility with any client still reading that field off this response.
  */
 router.get('/site-policy/:siteId', async (req, res) => {
   const { siteId } = req.params;
@@ -192,22 +189,18 @@ router.get('/site-policy/:siteId', async (req, res) => {
   }
 
   const [sites] = await pool.execute(
-    `SELECT id FROM sites WHERE id = :id AND lifecycle_state = 'ACTIVE' LIMIT 1`,
+    `SELECT region_id, max_key_access_duration_minutes FROM sites
+     WHERE id = :id AND lifecycle_state = 'ACTIVE' LIMIT 1`,
     { id: siteId },
   );
   if (!sites[0]) return notFound(res, 'Site not found');
 
-  const regionId = await regionIdForSite(siteId);
-  let maxKeyAccessDurationMinutes = null;
-  if (regionId) {
-    const [[region]] = await pool.execute(
-      `SELECT max_key_access_duration_minutes FROM regions WHERE id = :id LIMIT 1`,
-      { id: regionId },
-    );
-    if (region) maxKeyAccessDurationMinutes = Number(region.max_key_access_duration_minutes);
-  }
+  const maxKeyAccessDurationMinutes =
+    sites[0].max_key_access_duration_minutes == null
+      ? null
+      : Number(sites[0].max_key_access_duration_minutes);
 
-  return res.json({ siteId, regionId, maxKeyAccessDurationMinutes });
+  return res.json({ siteId, regionId: sites[0].region_id ?? null, maxKeyAccessDurationMinutes });
 });
 
 async function requestKeyIds(requestId) {
@@ -354,18 +347,17 @@ router.get('/', async (req, res) => {
     conditions.push(`site_id = :siteId`);
     params.siteId = siteId;
   } else if (req.auth?.role === 'REGIONAL_ADMIN') {
-    // No specific siteId requested — scope the list down to every site inside the Regional
-    // Admin's own assigned regions, rather than 403ing (same semantics as the old
-    // vendorPasskeyRequests.js list route, generalized from Site to Region).
-    const regionIds = await assignedRegionIdsForUser(req.auth.sub);
-    if (regionIds.length === 0) return res.json({ items: [] });
-    const placeholders = regionIds.map((_, i) => `:region${i}`).join(', ');
-    regionIds.forEach((id, i) => {
-      params[`region${i}`] = id;
+    // No specific siteId requested — scope the list down to the Regional Admin's own assigned
+    // sites directly, rather than 403ing (same semantics as the old vendorPasskeyRequests.js
+    // list route). "Regional confusion" Tier 1 rework: site-based (assignedSiteIdsForUser),
+    // no longer routed through the site's region.
+    const siteIds = await assignedSiteIdsForUser(req.auth.sub);
+    if (siteIds.length === 0) return res.json({ items: [] });
+    const placeholders = siteIds.map((_, i) => `:site${i}`).join(', ');
+    siteIds.forEach((id, i) => {
+      params[`site${i}`] = id;
     });
-    conditions.push(
-      `site_id IN (SELECT id FROM sites WHERE region_id IN (${placeholders}))`,
-    );
+    conditions.push(`site_id IN (${placeholders})`);
   }
   if (status !== 'ALL') {
     // SA/RA "PENDING" queue includes Vendor stage-2 PENDING_RA (and Technician PENDING).

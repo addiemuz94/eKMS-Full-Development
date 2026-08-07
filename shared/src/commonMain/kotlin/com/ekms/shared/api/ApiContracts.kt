@@ -80,9 +80,11 @@ object ApiPaths {
     const val ADMIN_KEY_ACCESS_REQUEST_DOCUMENT_DOWNLOAD =
         "/v1/admin/key-access-requests/{id}/documents/{documentId}"
     const val ADMIN_MOBILE_PUSH_TOKENS = "/v1/admin/mobile-push-tokens"
-    /** Resolves a single site's Region-derived [SiteKeyAccessPolicyDto.maxKeyAccessDurationMinutes]
-     * ceiling — a narrow, purpose-built read so a requester's mobile form can bound its duration
-     * picker without needing broader Region visibility (regions.js itself stays Super-Admin-only). */
+    /** Resolves a single site's [SiteKeyAccessPolicyDto.maxKeyAccessDurationMinutes] ceiling — a
+     * narrow, purpose-built read so a requester's mobile form can bound its duration picker.
+     * Was Region-derived (via regions.js's Super-Admin-only table) before the "regional confusion"
+     * rework (migration 015); the value now lives directly on the site (sites.max_key_access_
+     * duration_minutes), backfilled from each site's former region at migration time. */
     const val ADMIN_KEY_ACCESS_REQUEST_SITE_POLICY = "/v1/admin/key-access-requests/site-policy/{siteId}"
     /** Sites the caller may request as exception access (ACTIVE sites not in their standing assignments). */
     const val ADMIN_KEY_ACCESS_EXCEPTION_SITES = "/v1/admin/key-access-requests/exception-sites"
@@ -1339,10 +1341,14 @@ data class TerminalPasskeyLoginResponse(
 /**
  * Response for [ApiPaths.ADMIN_KEY_ACCESS_REQUEST_SITE_POLICY] — the one derived value a
  * requester's mobile form needs before submitting a [CreateKeyAccessRequestRequest]:
- * [maxKeyAccessDurationMinutes] bounds the duration picker client-side for UX only. The real
- * enforcement point stays server-side, at approve time (`POST .../{id}/approve` clamps down to
- * this same ceiling regardless of what the client sent) — never trust this value as security.
- * `null` if the site has no Region assigned yet (no ceiling to enforce; see [SiteDto.regionId]).
+ * [maxKeyAccessDurationMinutes] bounds the duration picker client-side for UX only — never trust
+ * this value as security (nothing server-side currently clamps to it at approve time either;
+ * flagged as a pre-existing doc/code mismatch, not something this DTO enforces).
+ * As of the "regional confusion" rework (migration 015), this is read directly off the site
+ * (`sites.max_key_access_duration_minutes`), no longer derived through the site's Region —
+ * [regionId] is still returned (sites.region_id survives as a cosmetic field) but no longer
+ * determines [maxKeyAccessDurationMinutes]. `null` if the site has no policy value set (no
+ * ceiling to enforce) — same meaning as before, just no longer tied to having a Region assigned.
  */
 @Serializable
 data class SiteKeyAccessPolicyDto(
