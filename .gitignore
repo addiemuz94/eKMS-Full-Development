@@ -25,3 +25,11 @@ web/dist/
 secrets/
 **/fcm-service-account.json
 **/*-firebase-adminsdk-*.json
+
+# Local signing keystores/credentials — never commit (see terminalApp/mobileApp
+# build.gradle.kts release signingConfig, loaded from keystore.properties)
+*.jks
+*.keystore
+mobileApp/keystore/
+terminalApp/keystore/
+keystore.properties
