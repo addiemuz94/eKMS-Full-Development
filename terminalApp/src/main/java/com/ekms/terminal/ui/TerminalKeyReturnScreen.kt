@@ -143,8 +143,6 @@ fun TerminalKeyReturnScreen(
     val videoRecorder = remember { VideoRecordingController() }
     val audio = remember { AudioFeedbackController(context) }
     var stage by remember { mutableStateOf<ReturnStage>(ReturnStage.OpeningDoor) }
-    var beeping by remember { mutableStateOf(false) }
-    var beepLoud by remember { mutableStateOf(false) }
     var wrongKeyPresent by remember { mutableStateOf(false) }
     var wrongKeyName by remember { mutableStateOf<String?>(null) }
 
@@ -169,7 +167,6 @@ fun TerminalKeyReturnScreen(
         onBeginNodeCycle(
             nodeAddress,
             {
-                beeping = true
                 stage = ReturnStage.WaitingForInsertion
                 onPollInsertion(
                     nodeAddress,
@@ -181,8 +178,6 @@ fun TerminalKeyReturnScreen(
                         // node's cycle ending now — no more per-node door-close wait. The
                         // electromagnet/light are already released by this point (moved into
                         // CabinetHardwareController.pollForKeyInsertion's own insertion branch).
-                        beeping = false
-                        beepLoud = false
                         Log.d("ReturnFlowDiag", "TerminalKeyReturnScreen: inserted, Success -> onEvent then onNodeCycleComplete")
                         onEvent(ReturnFlowOutcome.Success(key, slot))
                         onNodeCycleComplete("SUCCESS")
@@ -198,17 +193,22 @@ fun TerminalKeyReturnScreen(
                         Log.d("ReturnFlowDiag", "TerminalKeyReturnScreen: node=$nodeAddress attemptId=$attemptId wrong key removed, abandonment window reset")
                     },
                     {
-                        beepLoud = true
-                        audio.playVoiceLine(VoiceLine.PLEASE_INSERT_THE_KEY)
+                        // Cyclic take/return/close-door audio pattern: this 5s hardware-layer
+                        // threshold (CabinetHardwareController.pollForKeyInsertion's own timer,
+                        // untouched) no longer drives any audio — Phase 1's cyclic player
+                        // (below) already started playing/repeating "please insert the key"
+                        // immediately at unlock, with no grace period, and the plain (non-alarm)
+                        // beep-gets-louder escalation this threshold used to trigger is
+                        // intentionally dropped (user-confirmed) now that a grace period no
+                        // longer exists for it to attach to. The wrong-key alarm's own forced-
+                        // loud beep (below) is untouched and completely separate from this.
                     },
                     {
-                        beeping = false
                         stage = ReturnStage.Abandoned
                         Log.d("ReturnFlowDiag", "TerminalKeyReturnScreen: node=$nodeAddress attemptId=$attemptId NODE ABANDONED (20s ceiling)")
                         onEvent(ReturnFlowOutcome.Abandoned(key, slot))
                     },
                     { message ->
-                        beeping = false
                         stage = ReturnStage.Failed(message)
                         onEvent(ReturnFlowOutcome.Failed(key, slot, message))
                     },
@@ -221,19 +221,29 @@ fun TerminalKeyReturnScreen(
         )
     }
 
-    // Keyed on `beeping` alone — neither `beepLoud` nor `wrongKeyPresent` may restart this loop.
-    // Same bug as the Take Flow screen: changing beepLoud used to be a LaunchedEffect key, so the
-    // 5s-escalation callback (which flips beepLoud and fires the voice line together) cancelled
-    // and relaunched this coroutine right at that moment. rememberUpdatedState lets each
-    // iteration read the live values without that cancel/relaunch; a wrong-key alarm forces full
-    // volume on top of the normal 5s-from-unlock escalation, same shape the old cross-node
-    // wrong-slot alarm used before Part B moved that concern to session scope.
-    val currentBeepLoud by rememberUpdatedState(beepLoud)
+    // Cyclic take/return/close-door audio pattern: this screen only ever drives Phase 1
+    // (insert the key) — Phase 2 (session-level door-close) is owned by TerminalAdminApp's
+    // returnSessionAudio now, per the Return Flow session rebuild, so there is no
+    // WaitingForDoorClose-equivalent stage here to derive a second phase from.
+    val audioPhase = if (stage == ReturnStage.WaitingForInsertion) {
+        ReturnAudioPhase.INSERT_THE_KEY
+    } else {
+        ReturnAudioPhase.NONE
+    }
+    // Belt-and-suspenders alongside LaunchedEffect(audioPhase)'s own cancel-on-rekey, same
+    // reasoning as the Take Flow screen's twin of this. The wrong-key alarm's forced-loud
+    // beep is untouched and layers on top via `loud`, read fresh per beep so it can turn on/
+    // off mid-cycle without restarting it — same shape the old continuous loop's
+    // `currentBeepLoud || currentWrongKeyPresent` used, minus the now-dropped beepLoud half.
+    val currentAudioPhase by rememberUpdatedState(audioPhase)
     val currentWrongKeyPresent by rememberUpdatedState(wrongKeyPresent)
-    LaunchedEffect(beeping) {
-        while (beeping) {
-            audio.beep(loud = currentBeepLoud || currentWrongKeyPresent)
-            delay(BEEP_INTERVAL_MILLIS)
+    LaunchedEffect(audioPhase) {
+        if (audioPhase == ReturnAudioPhase.INSERT_THE_KEY) {
+            audio.playCyclicUntil(
+                voiceLine = VoiceLine.PLEASE_INSERT_THE_KEY,
+                loud = { currentWrongKeyPresent },
+                until = { currentAudioPhase != ReturnAudioPhase.INSERT_THE_KEY },
+            )
         }
     }
 
@@ -341,8 +351,15 @@ fun TerminalKeyReturnScreen(
 }
 
 private const val NO_NODE_AUTO_COMPLETE_MILLIS = 2_500L
-private const val BEEP_INTERVAL_MILLIS = 1_000L
 private const val EXIT_AUTO_RETURN_MILLIS = 3_000L
+
+/** Which cyclic take/return/close-door audio phase (if any) should be playing right now —
+ * this screen only ever drives [INSERT_THE_KEY] (Phase 2/door-close is session-level, owned
+ * by `TerminalAdminApp`'s `returnSessionAudio`), but it's still a dedicated enum rather than
+ * reading [ReturnStage] directly so the audio driver's `LaunchedEffect` key stays obviously
+ * scoped to "audio-relevant phase" if `ReturnStage` ever grows a field that shouldn't restart
+ * it, same reasoning as the Take Flow screen's twin of this. */
+private enum class ReturnAudioPhase { NONE, INSERT_THE_KEY }
 
 private sealed interface ReturnStage {
     data object OpeningDoor : ReturnStage

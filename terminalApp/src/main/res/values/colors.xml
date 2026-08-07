@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- App icon adaptive-icon background (see mipmap-anydpi-v26/ic_launcher.xml) — from
+         ekms_logo_assets.zip's colors_ic_launcher.xml. No colors.xml existed for this module
+         before this file. -->
+    <color name="ic_launcher_background">#141A24</color>
+</resources>

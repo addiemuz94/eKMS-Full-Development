@@ -12,10 +12,12 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
@@ -112,9 +114,12 @@ fun SoftBrandHeader(
         horizontalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         Box(
+            // Readability pass: 48dp -> 58dp, corner 16dp -> 19dp (both x1.2, see
+            // TERMINAL_TEXT_SCALE's doc in Typography.kt for the same multiplier applied to
+            // icon/logo sizing across the app, not just text).
             modifier = Modifier
-                .size(48.dp)
-                .clip(RoundedCornerShape(16.dp))
+                .size(58.dp)
+                .clip(RoundedCornerShape(19.dp))
                 .background(
                     Brush.linearGradient(
                         listOf(colors.primary.copy(alpha = 0.95f), colors.primaryDark),
@@ -196,6 +201,16 @@ fun SoftScanTile(
     selected: Boolean = false,
     onClick: (() -> Unit)? = null,
     modifier: Modifier = Modifier,
+    /**
+     * Full-width single-column rows (TerminalLoginScreen's v3 rework) run far taller than
+     * the compact grid tiles this composable was originally sized for — `false` (the
+     * default, used by every pre-existing call site, e.g. TerminalKeyMenuScreen's
+     * multi-select key tiles) renders pixel-identical to before. `true` scales up the icon
+     * / icon-container / title+description typography and centers the whole icon+text
+     * block vertically in the tile instead of pinning it to the top, so a tall row doesn't
+     * read as an oversized, mostly-empty box around a small icon.
+     */
+    expanded: Boolean = false,
 ) {
     val colors = LocalEkmsColors.current
     val pulseScale = if (listening) {
@@ -213,6 +228,10 @@ fun SoftScanTile(
     } else {
         1f
     }
+    // expanded=false sizing is completely independent of expanded=true's — no constant
+    // below is shared between the two branches — so TerminalKeyMenuScreen's compact grid
+    // tiles (expanded=false, the default) render pixel-identical to before this fix.
+    val contentPadding = 16.dp
 
     SoftCard(
         modifier = modifier.scale(pulseScale),
@@ -222,7 +241,7 @@ fun SoftScanTile(
         } else {
             restingContainerColorFor(colors, MaterialTheme.colorScheme)
         },
-        contentPadding = 16.dp,
+        contentPadding = contentPadding,
         elevation = 3.dp,
         border = if (selected) {
             BorderStroke(2.dp, colors.primary)
@@ -230,24 +249,144 @@ fun SoftScanTile(
             BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
         },
     ) {
+        if (expanded) {
+            // Root cause of the subtitle-clipping bug (confirmed via hardware photo): the
+            // v4 pass sized the icon/title/subtitle up (64dp icon + titleLarge + bodyLarge)
+            // without checking that against the tile's actual assigned height — v3's
+            // TerminalLoginScreen arrangement gives each of 5 stacked tiles an equal,
+            // fairly short share of the screen (Column/weight, untouched by this fix), and
+            // that fixed content sizing simply didn't fit inside it. SoftCard's Surface
+            // clips to its own shape (it has elevation), so the overflowing subtitle got
+            // silently cut off at the tile's bottom edge instead of visibly overflowing.
+            //
+            // Fix: measure the tile's real available content height via
+            // BoxWithConstraints (this is exactly "available tile height" from the task,
+            // not a guess) and choose between two fully-independent size tiers instead of
+            // one fixed oversized one — COMFORTABLE when there's room, or FALLBACK
+            // (identical to the expanded=false sizing below, already proven to fit
+            // wherever that's used) otherwise. Either tier's icon+title+subtitle block is
+            // then centered as a group via fillMaxHeight() + Arrangement.Center, same as
+            // the v4 pass intended.
+            BoxWithConstraints(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .fillMaxHeight(),
+            ) {
+                // Readability pass (recalculated from scratch, NOT the old numbers carried
+                // forward — the prior threshold's margin was already near-zero, and every
+                // input to this math just grew ~20%, so reusing it would very likely
+                // reintroduce the subtitle-clipping bug this fix exists to prevent):
+                // Comfortable tier's worst-case content height at the new sizes below —
+                // 67 (icon) + 17 (gap) + 29 (titleMedium line height, TERMINAL_TEXT_SCALE-
+                // scaled 24sp -> ~28.8sp) + 24 (bodyMedium line height, scaled 20sp ->
+                // ~24sp) = 137dp, plus 2 * contentPadding (32dp, unscaled — this pass is
+                // font/icon size only, not spacing) = 169dp actual worst-case need.
+                // Threshold set to 190dp, not just-above-169dp: the old ~4dp margin (146
+                // needed vs. 150 threshold) was flagged as "near-zero" even before this
+                // pass, so this deliberately keeps a real ~21dp cushion instead of
+                // preserving that same thin margin at the new, larger scale.
+                val useComfortableTier = maxHeight >= 190.dp
+                val iconBoxSize = if (useComfortableTier) 67.dp else 53.dp
+                val iconBoxCorner = if (useComfortableTier) 19.dp else 17.dp
+                val iconGlyphSize = if (useComfortableTier) 36.dp else 29.dp
+                val iconTextGap = if (useComfortableTier) 17.dp else 12.dp
+                val titleStyle = if (useComfortableTier) {
+                    MaterialTheme.typography.titleMedium
+                } else {
+                    MaterialTheme.typography.titleSmall
+                }
+                val descriptionStyle = if (useComfortableTier) {
+                    MaterialTheme.typography.bodyMedium
+                } else {
+                    MaterialTheme.typography.bodySmall
+                }
+                SoftScanTileContent(
+                    icon = icon,
+                    title = title,
+                    description = description,
+                    iconBoxSize = iconBoxSize,
+                    iconBoxCorner = iconBoxCorner,
+                    iconGlyphSize = iconGlyphSize,
+                    iconTextGap = iconTextGap,
+                    titleStyle = titleStyle,
+                    descriptionStyle = descriptionStyle,
+                    iconTint = colors.primary,
+                    columnModifier = Modifier
+                        .fillMaxWidth()
+                        .fillMaxHeight(),
+                    verticalArrangement = Arrangement.Center,
+                )
+            }
+        } else {
+            // Readability pass: same x1.2 scale as the expanded/comfortable tier above
+            // (44/14/24/10 -> 53/17/29/12) — this tier backs both the expanded=true
+            // fallback (new worst-case content ~140dp incl. padding, still comfortably
+            // under the 190dp comfortable threshold above) and every expanded=false call
+            // site (TerminalKeyMenuScreen's key-selection tiles), which sit in a
+            // self-sizing LazyVerticalGrid (GridCells.Adaptive), not a fixed-height
+            // container — no clipping risk there regardless of size.
+            SoftScanTileContent(
+                icon = icon,
+                title = title,
+                description = description,
+                iconBoxSize = 53.dp,
+                iconBoxCorner = 17.dp,
+                iconGlyphSize = 29.dp,
+                iconTextGap = 12.dp,
+                titleStyle = MaterialTheme.typography.titleSmall,
+                descriptionStyle = MaterialTheme.typography.bodySmall,
+                iconTint = colors.primary,
+                columnModifier = Modifier.fillMaxWidth(),
+                verticalArrangement = Arrangement.Top,
+            )
+        }
+    }
+}
+
+/**
+ * Shared icon+title+description block for [SoftScanTile]'s two branches — pulled out only
+ * to avoid duplicating the `Box`/`Icon`/`Text`/`Text` structure between the `expanded` and
+ * non-`expanded` paths; every actual size/style value is still passed in by the caller, so
+ * this holds no sizing constants of its own and the two branches remain fully independent.
+ */
+@Composable
+private fun SoftScanTileContent(
+    icon: ImageVector,
+    title: String,
+    description: String,
+    iconBoxSize: Dp,
+    iconBoxCorner: Dp,
+    iconGlyphSize: Dp,
+    iconTextGap: Dp,
+    titleStyle: androidx.compose.ui.text.TextStyle,
+    descriptionStyle: androidx.compose.ui.text.TextStyle,
+    iconTint: Color,
+    columnModifier: Modifier,
+    verticalArrangement: Arrangement.Vertical,
+) {
+    Column(
+        modifier = columnModifier,
+        verticalArrangement = verticalArrangement,
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
         Box(
             modifier = Modifier
-                .size(44.dp)
-                .clip(RoundedCornerShape(14.dp))
-                .background(MaterialTheme.colorScheme.primaryContainer)
-                .align(Alignment.CenterHorizontally),
+                .size(iconBoxSize)
+                .clip(RoundedCornerShape(iconBoxCorner))
+                .background(MaterialTheme.colorScheme.primaryContainer),
             contentAlignment = Alignment.Center,
         ) {
             Icon(
                 imageVector = icon,
                 contentDescription = null,
-                tint = colors.primary,
+                tint = iconTint,
+                modifier = Modifier.size(iconGlyphSize),
             )
         }
-        Spacer(modifier = Modifier.height(10.dp))
+        Spacer(modifier = Modifier.height(iconTextGap))
         Text(
             text = title,
-            style = MaterialTheme.typography.titleSmall,
+            style = titleStyle,
             // Explicit rather than relying on Card's contentColorFor(containerColor)
             // auto-resolution: that only matches when containerColor is exactly one of
             // ColorScheme's named roles (e.g. the literal `surface` dark mode still passes),
@@ -262,7 +401,7 @@ fun SoftScanTile(
         )
         Text(
             text = description,
-            style = MaterialTheme.typography.bodySmall,
+            style = descriptionStyle,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             textAlign = TextAlign.Center,
             modifier = Modifier.fillMaxWidth(),
@@ -294,8 +433,10 @@ fun SoftPrimaryButton(
         ),
     ) {
         if (loading) {
+            // Readability pass: 18dp -> 22dp (x1.2). The trailing Spacer is general layout
+            // spacing, not icon sizing, and stays untouched per this pass's scope.
             CircularProgressIndicator(
-                modifier = Modifier.size(18.dp),
+                modifier = Modifier.size(22.dp),
                 strokeWidth = 2.dp,
                 color = MaterialTheme.colorScheme.onPrimary,
             )
@@ -389,10 +530,11 @@ fun SoftNavTile(
         onClick = onClick,
         contentPadding = 16.dp,
     ) {
+        // Readability pass: 40dp -> 48dp box, corner 14dp -> 17dp (both x1.2).
         Box(
             modifier = Modifier
-                .size(40.dp)
-                .clip(RoundedCornerShape(14.dp))
+                .size(48.dp)
+                .clip(RoundedCornerShape(17.dp))
                 .background(MaterialTheme.colorScheme.primaryContainer),
             contentAlignment = Alignment.Center,
         ) {
@@ -460,8 +602,9 @@ fun SoftWaitPanel(
             verticalArrangement = Arrangement.spacedBy(14.dp),
         ) {
             if (showProgress) {
+                // Readability pass: 48dp -> 58dp (x1.2).
                 CircularProgressIndicator(
-                    modifier = Modifier.size(48.dp),
+                    modifier = Modifier.size(58.dp),
                     strokeWidth = 4.dp,
                     color = when (tone) {
                         StatusTone.ALARM -> colors.danger

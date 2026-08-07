@@ -783,60 +783,49 @@ export function RegistrationPage() {
   const [unit, setUnit] = useState<SiteDto | null>(null)
   const [issuedPairings, setIssuedPairings] = useState<Record<string, PairingBanner>>({})
   const [cabinetCount, setCabinetCount] = useState(0)
-  const [keyCount, setKeyCount] = useState(0)
   const [gateMessage, setGateMessage] = useState<string | null>(null)
 
   function rememberPairing(pairing: PairingBanner) {
     setIssuedPairings((prev) => ({ ...prev, [pairing.terminalId]: pairing }))
   }
 
-  async function refreshCounts(siteId: string): Promise<{ cabinets: number; keys: number }> {
+  async function refreshCounts(siteId: string): Promise<{ cabinets: number }> {
     try {
-      const [terms, keys] = await Promise.all([api.listTerminals(), api.listKeys()])
+      const terms = await api.listTerminals()
       const cabinets = terms.filter((t) => t.siteId === siteId).length
-      const keyTotal = keys.filter((k) => k.siteId === siteId).length
       setCabinetCount(cabinets)
-      setKeyCount(keyTotal)
-      return { cabinets, keys: keyTotal }
+      return { cabinets }
     } catch {
-      return { cabinets: cabinetCount, keys: keyCount }
+      return { cabinets: cabinetCount }
     }
   }
 
   useEffect(() => {
     if (!unit) {
       setCabinetCount(0)
-      setKeyCount(0)
       return
     }
     void refreshCounts(unit.id)
   }, [unit, step])
 
-  function stepBlockedReason(
-    target: number,
-    cabinets = cabinetCount,
-    keys = keyCount,
-  ): string | null {
+  function stepBlockedReason(target: number, cabinets = cabinetCount): string | null {
     if (target <= 0) return null
     if (!unit) return 'Register a location in step 1 first.'
     if (target >= 2 && cabinets < 1) {
       return 'Register at least one key cabinet before continuing to Keys or Setup Code.'
     }
-    if (target >= 3 && keys < 1) {
-      return 'Register at least one key before continuing to Key Permission.'
-    }
+    // Zero keys is allowed — Keys, Key Permission, and Setup Code are never gated on key count
+    // (product decision, confirmed).
     return null
   }
 
   async function tryGoToStep(target: number) {
     let cabinets = cabinetCount
-    let keys = keyCount
     if (unit && target > 0) {
       const counts = await refreshCounts(unit.id)
       cabinets = counts.cabinets
-      keys = counts.keys
     }
-    const reason = stepBlockedReason(target, cabinets, keys)
+    const reason = stepBlockedReason(target, cabinets)
     if (reason) {
       setGateMessage(reason)
       return
@@ -866,7 +855,6 @@ export function RegistrationPage() {
     setUnit(null)
     setIssuedPairings({})
     setCabinetCount(0)
-    setKeyCount(0)
     setGateMessage(null)
   }
 

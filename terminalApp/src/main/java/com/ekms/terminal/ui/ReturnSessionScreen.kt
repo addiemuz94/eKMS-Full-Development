@@ -41,9 +41,22 @@ fun ReturnSessionScreen(
     padding: PaddingValues,
     returnedKeyNames: List<String>,
     blockedWrongSlotNodes: Set<Int> = emptySet(),
+    /** Auto-return-to-login pass: true for a brief window right after the door is confirmed
+     * closed (the session's sole ending trigger, regardless of what happened inside it), before
+     * `TerminalAdminApp` tears the session down and returns to login — see
+     * `returnSessionCompletionMessageActive`. Takes priority over the wrong-slot block card
+     * (moot by definition: the door can't be closed while a wrong-slot block is active, since
+     * that's a hard block on ending the session, but this keeps the two states mutually
+     * exclusive on-screen regardless). */
+    sessionComplete: Boolean = false,
 ) {
     TerminalPage(padding) {
-        if (blockedWrongSlotNodes.isNotEmpty()) {
+        if (sessionComplete) {
+            HeaderCard(
+                title = "Session complete",
+                description = "The door is closed. Returning to login…",
+            )
+        } else if (blockedWrongSlotNodes.isNotEmpty()) {
             HeaderCard(
                 title = "Wrong key detected",
                 description = "Scanning is paused until the wrong key is removed.",

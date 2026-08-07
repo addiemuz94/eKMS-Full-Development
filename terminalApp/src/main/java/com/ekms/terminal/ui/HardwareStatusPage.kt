@@ -76,8 +76,9 @@ fun HardwareStatusPage(
             )
 
             if (connecting) {
+                // Readability pass: 28dp -> 34dp (x1.2).
                 CircularProgressIndicator(
-                    modifier = Modifier.size(28.dp),
+                    modifier = Modifier.size(34.dp),
                     strokeWidth = 3.dp,
                     color = MaterialTheme.colorScheme.primary,
                     trackColor = MaterialTheme.colorScheme.primaryContainer,

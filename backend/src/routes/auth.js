@@ -129,7 +129,9 @@ async function refreshTerminalToken(refreshToken, payload, res) {
   }
 
   const [terminals] = await pool.execute(
-    `SELECT * FROM terminals WHERE id = :id AND lifecycle_state = 'ACTIVE' LIMIT 1`,
+    `SELECT t.*, s.name AS site_name FROM terminals t
+     LEFT JOIN sites s ON s.id = t.site_id
+     WHERE t.id = :id AND t.lifecycle_state = 'ACTIVE' LIMIT 1`,
     { id: payload.sub },
   );
   const terminal = terminals[0];

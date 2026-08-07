@@ -99,12 +99,17 @@ private const val CAVOTEC_LOGO_ASPECT_RATIO = 839f / 147f
  *
  * Runs the same [startupDiagnosticChecks] silently underneath the animation — the checks
  * themselves are untouched, only how/when their results are surfaced changes here. Navigates
- * forward ([onContinue]) once BOTH: every check is [HintSeverity.OK], AND at least
- * [MIN_SPLASH_DURATION_MILLIS] (~3s) has elapsed since this screen first appeared — so a
- * fast-passing cabinet never flashes the splash for one frame, and a slow-connecting one never
- * cuts the animation short; if checks take longer than the floor, the loop simply keeps running
- * until they finish, same as before. On any [HintSeverity.FAIL], the loop stops and
- * [BootWarningCard] replaces the animation instead of navigating.
+ * forward ([onContinue]) once ALL THREE hold: every check is [HintSeverity.OK], at least
+ * [MIN_SPLASH_DURATION_MILLIS] (~3s) has elapsed since this screen first appeared, AND
+ * [nodeSelfTestComplete] (the boot-time key-node visual self-test, driven entirely by
+ * `TerminalAdminApp`/`CabinetHardwareController.runBootKeyNodeSelfTest` — this screen only reads
+ * the flag, it owns no hardware-command logic of its own) — so a fast-passing cabinet never
+ * flashes the splash for one frame, and a slow-connecting one (or a cabinet with many key nodes
+ * still cycling through the self-test) never cuts the animation short; if any of the three takes
+ * longer than the others, the loop simply keeps running until all catch up, same as before. On
+ * any [HintSeverity.FAIL], the loop stops and [BootWarningCard] replaces the animation instead of
+ * navigating — the node self-test keeps running regardless (it never blocks on one bad node, see
+ * its own doc), it just can't finish gating [onContinue] while a FAIL is also blocking it.
  *
  * Displayed mode (splash vs. warning) is derived fresh from the live check results on every
  * recomposition rather than latched into separate state — so a successful [onRetryHardware] (or
@@ -124,6 +129,11 @@ fun TerminalBootSplashScreen(
     cameraAvailable: Boolean,
     publicCardReaderState: PublicCardReaderState,
     networkStatus: NetworkStatus,
+    /** Boot-time key-node self-test gate (see `CabinetHardwareController.runBootKeyNodeSelfTest`'s
+     * doc and `TerminalAdminApp`'s own trigger `LaunchedEffect`) — an additional, independent
+     * condition on [onContinue] alongside [allHealthy]/[minDurationElapsed] below, not a
+     * replacement for either. Owned entirely by the caller; this screen only reads it. */
+    nodeSelfTestComplete: Boolean,
     onRetryHardware: () -> Unit,
     onContinue: () -> Unit,
 ) {
@@ -147,8 +157,8 @@ fun TerminalBootSplashScreen(
         minDurationElapsed = true
     }
 
-    LaunchedEffect(allHealthy, minDurationElapsed) {
-        if (allHealthy && minDurationElapsed) onContinue()
+    LaunchedEffect(allHealthy, minDurationElapsed, nodeSelfTestComplete) {
+        if (allHealthy && minDurationElapsed && nodeSelfTestComplete) onContinue()
     }
 
     // Auto-recheck on resume (e.g. returning from Settings.ACTION_WIFI_SETTINGS) instead of
@@ -335,8 +345,9 @@ private fun BootSplashAnimation() {
                     .offset(y = 8.dp * (1f - tagEntrance))
                     .alpha(tagEntrance),
             )
+            // Readability pass: 28dp -> 34dp (x1.2).
             CircularProgressIndicator(
-                modifier = Modifier.size(28.dp).alpha(logoEntrance),
+                modifier = Modifier.size(34.dp).alpha(logoEntrance),
                 strokeWidth = 3.dp,
                 color = primary,
                 trackColor = MaterialTheme.colorScheme.primaryContainer,

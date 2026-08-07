@@ -8,4 +8,7 @@
          app-level theme preference (only the OS's own day/night resource qualifiers, which don't
          track this app's separate MobileThemeMode), so this stays one fixed color either way. -->
     <color name="splash_background">#0055A5</color>
+    <!-- App icon adaptive-icon background (see mipmap-anydpi-v26/ic_launcher.xml) — from
+         ekms_logo_assets.zip's colors_ic_launcher.xml. -->
+    <color name="ic_launcher_background">#141A24</color>
 </resources>

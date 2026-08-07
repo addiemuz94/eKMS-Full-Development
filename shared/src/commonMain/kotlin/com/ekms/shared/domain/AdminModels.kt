@@ -74,6 +74,13 @@ data class Site(
 data class Terminal(
     val id: String,
     val siteId: String,
+    /**
+     * The owning [Site]'s human-readable name, joined server-side for display convenience
+     * (e.g. the terminal-app top bar) — not persisted anywhere on this record itself, and
+     * never authoritative; [siteId] remains the real reference. Null on older servers or if
+     * the site lookup failed, so callers must have a display fallback.
+     */
+    val siteName: String? = null,
     val name: String,
     val boxAddress: Int,
     val serialNumber: String? = null,

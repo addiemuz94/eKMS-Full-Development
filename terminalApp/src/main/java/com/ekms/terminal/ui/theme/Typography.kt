@@ -5,6 +5,7 @@ import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.Font
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.times
 import com.ekms.terminal.R
 
 /**
@@ -26,8 +27,22 @@ val PlexMonoFontFamily = FontFamily(
 
 private val base = Typography()
 
+/** Readability pass: every terminal screen reads through [EkmsTypography]'s tokens with no
+ * hardcoded `.sp` literal anywhere in `terminalApp` (confirmed via grep before this change) —
+ * so this one multiplier is the single change point for a ~20% size bump across the whole app,
+ * for legibility at <1m standing viewing distance on the kiosk. Applied to both [TextStyle.fontSize]
+ * and [TextStyle.lineHeight] (not `letterSpacing` — out of this pass's scope) via [TextUnit.times],
+ * computed from Material3's own live [base] defaults rather than transcribed literal sp values, so
+ * this stays correct if the M3 baseline scale itself ever changes in a future dependency bump. */
+private const val TERMINAL_TEXT_SCALE = 1.2f
+
 private fun TextStyle.outfit(weight: FontWeight? = null): TextStyle =
-    copy(fontFamily = OutfitFontFamily, fontWeight = weight ?: fontWeight)
+    copy(
+        fontFamily = OutfitFontFamily,
+        fontWeight = weight ?: fontWeight,
+        fontSize = fontSize * TERMINAL_TEXT_SCALE,
+        lineHeight = lineHeight * TERMINAL_TEXT_SCALE,
+    )
 
 val EkmsTypography = Typography(
     displayLarge = base.displayLarge.outfit(),

@@ -6,20 +6,27 @@ import android.media.AudioManager
 import android.media.MediaPlayer
 import android.util.Log
 import com.ekms.terminal.R
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.suspendCancellableCoroutine
 
 /**
  * Real audio playback for the Key Take Flow's and Key Return Flow's
- * feedback — continuous beep and one-shot voice lines — behind
- * CLAUDE.md's "Terminal App UX Baseline (Production)" §1/§2.
+ * feedback behind CLAUDE.md's "Terminal App UX Baseline (Production)" §1/§2.
+ *
+ * [beep]/[playVoiceLine] remain the raw one-shot primitives; the cyclic take/return/
+ * close-door audio pattern ([playCyclicUntil]) is built on top of them (plus
+ * [playVoiceLineAwaitingCompletion], a completion-aware sibling of [playVoiceLine]) and is
+ * what every Take/Return flow screen actually drives its phase audio through now — see
+ * [playCyclicUntil]'s own doc for the pattern itself, and CLAUDE_TERMINAL.md for the full
+ * before/after (it replaced the old "continuous 1s-interval beep the whole phase through,
+ * plus a one-shot voice line at some trigger point" behavior).
  *
  * The F7G18P has confirmed speaker hardware (8Ω/10W amp, PH2.0-4P SPK
  * connector) that plays back through standard Android audio APIs with no
  * special driver/EnjoySDK call. Both the beep and the voice lines are
  * played the same way — one-shot [MediaPlayer] instances, same pattern for
  * both — [beep]'s `loud` parameter only changes playback volume via
- * [MediaPlayer.setVolume], never swaps files, and the 1-second repeat
- * interval is owned by the caller via a `while (beeping) { beep(...);
- * delay(1_000) }` loop, same as before. Beep previously used [SoundPool]
+ * [MediaPlayer.setVolume], never swaps files. Beep previously used [SoundPool]
  * (chosen for its zero-latency pre-decoded playback, a better fit for a
  * tight repeat loop); switched to `MediaPlayer` to match the voice lines'
  * playback path exactly — note this reintroduces a real per-call decode/
@@ -29,10 +36,13 @@ import com.ekms.terminal.R
  *
  * Neither playback path requests audio focus: this is a dedicated kiosk
  * terminal with no other app ever competing for the speaker, so skipping
- * focus requests is deliberate — it guarantees the beep loop and a voice
- * line never duck or pause each other, which is required, since the
- * Key Take/Return Flow screens fire both concurrently (e.g. the 5s
- * louder-beep threshold and its voice line share one callback).
+ * focus requests is deliberate — it guarantees a beep and a voice line
+ * never duck or pause each other, which matters even within one
+ * [playCyclicUntil] cycle (a beep firing right as the next cycle's voice
+ * line starts, at the caller's phase boundary) let alone across the two
+ * fully separate cyclic players that can run concurrently in a return
+ * session (this node's own Phase 1 insert-cycle plus the session-level
+ * Phase 2 close-door cycle from a different node's completed cycle).
  *
  * Even with both now on `MediaPlayer`, [beepAudioAttributes] and
  * [voiceLineAudioAttributes] remain deliberately distinct instances, and
@@ -127,11 +137,17 @@ class AudioFeedbackController(context: Context) {
     }
 
     /**
-     * Plays a voice line once. A new call interrupts and replaces any
-     * still-playing voice line from a *previous* call (voice lines never
-     * need to overlap each other — only the concurrently-running beep
-     * loop, which is a fully separate [MediaPlayer] instance ([beepPlayer])
-     * and unaffected by this).
+     * Plays a voice line once, fire-and-forget. A new call interrupts and replaces any
+     * still-playing voice line from a *previous* call (voice lines never need to overlap each
+     * other — only a concurrently-running [beep], a fully separate [MediaPlayer] instance
+     * ([beepPlayer]), and unaffected by this).
+     *
+     * Currently has no call sites — every Take/Return flow screen now drives its voice lines
+     * through [playCyclicUntil] (via [playVoiceLineAwaitingCompletion]) instead, since all of
+     * them need the cyclic take/return/close-door pattern, not a bare one-shot. Kept as a
+     * public primitive (same reasoning as [beep] remaining public) for a genuine future
+     * one-shot need, since its exact `MediaPlayer` setup order below is a real, hard-won
+     * hardware lesson worth preserving rather than re-deriving later.
      *
      * Deliberately built as `MediaPlayer()` + [MediaPlayer.setAudioAttributes]
      * + `setDataSource` + `prepareAsync()`, NOT the `MediaPlayer.create(...)`
@@ -150,6 +166,8 @@ class AudioFeedbackController(context: Context) {
             VoiceLine.PLEASE_TAKE_THE_KEY -> R.raw.please_take_the_key
             VoiceLine.PLEASE_INSERT_THE_KEY -> R.raw.please_insert_the_key
             VoiceLine.PLEASE_CLOSE_THE_DOOR -> R.raw.please_close_the_door
+            VoiceLine.MORE_KEY_RETURN -> R.raw.more_key_return
+            VoiceLine.PLEASE_TAKE_YOUR_NEXT_KEY -> R.raw.please_take_your_next_key
         }
         Log.d(LOG_TAG, "playVoiceLine($line) requested")
         releaseVoiceLinePlayer()
@@ -180,6 +198,110 @@ class AudioFeedbackController(context: Context) {
             Log.w(LOG_TAG, "Unable to prepare voice line $line", error)
             player.release()
             if (voiceLinePlayer === player) voiceLinePlayer = null
+        }
+    }
+
+    /**
+     * The take/return/close-door cyclic audio pattern: plays [voiceLine] to completion, then
+     * [beepCount] beeps [BEEP_INTERVAL_MILLIS] apart (the same cadence the old continuous
+     * loop used), then repeats — until [until] returns true. Replaces the old "continuous
+     * 1s-interval beep the whole phase through, plus a one-shot voice line at some trigger
+     * point" behavior across all 4 Take/Return flow variants (single/multi-key Take,
+     * single/multi-key Return) — see CLAUDE_TERMINAL.md for the full before/after.
+     *
+     * [until] is checked between every unit of work — right after the voice line finishes,
+     * and before/after each individual beep — not just at whole-cycle boundaries, so playback
+     * stops as soon as possible once the condition is met rather than finishing out a lap.
+     * [loud] is invoked fresh before every beep (not captured once at call time) so a live
+     * escalation — e.g. the wrong-key/wrong-slot alarm's forced full volume, which stays
+     * completely separate from and untouched by this cyclic pattern itself — can change the
+     * next beep's volume without needing to cancel/restart the cycle.
+     *
+     * The other half of "cancellable/restartable" (needed for e.g. the multi-key return
+     * session's per-scan Door-Close Warning Time reset) is ordinary structured concurrency:
+     * callers run this inside a `LaunchedEffect` keyed on whatever should restart the cycle —
+     * cancelling that coroutine (a new key value, or the composable leaving composition) stops
+     * this immediately at its current suspension point (mid voice-line playback included, via
+     * [playVoiceLineAwaitingCompletion]'s cancellation handling), and a fresh call starts a
+     * brand new cycle from the voice line.
+     */
+    suspend fun playCyclicUntil(
+        voiceLine: VoiceLine,
+        beepCount: Int = DEFAULT_CYCLE_BEEP_COUNT,
+        loud: () -> Boolean = { false },
+        until: () -> Boolean,
+    ) {
+        while (!until()) {
+            playVoiceLineAwaitingCompletion(voiceLine)
+            if (until()) return
+            for (i in 0 until beepCount) {
+                if (until()) return
+                beep(loud = loud())
+                if (until()) return
+                delay(BEEP_INTERVAL_MILLIS)
+            }
+        }
+    }
+
+    /**
+     * Same [MediaPlayer] setup/ordering as [playVoiceLine] — see that method's KDoc for why
+     * `setAudioAttributes` must precede `setDataSource`/`prepareAsync` on this device's vendor
+     * pipeline, unchanged and duplicated here rather than shared, to avoid touching that
+     * already hardware-verified method — but suspends until playback actually completes (or
+     * errors; either way this resumes, it never hangs the caller) instead of firing and
+     * forgetting. Backs [playCyclicUntil], which needs to know exactly when the voice line
+     * finishes before starting its beeps. Same single-instance "cut off and replace" ownership
+     * of [voiceLinePlayer] as [playVoiceLine] — a stray previous call (cyclic or one-shot) is
+     * always interrupted first. Cancellation (the cyclic loop stopping mid-line) stops and
+     * releases the player immediately rather than letting it finish out loud after the caller
+     * has moved on.
+     */
+    private suspend fun playVoiceLineAwaitingCompletion(line: VoiceLine) = suspendCancellableCoroutine<Unit> { cont ->
+        val resId = when (line) {
+            VoiceLine.PLEASE_TAKE_THE_KEY -> R.raw.please_take_the_key
+            VoiceLine.PLEASE_INSERT_THE_KEY -> R.raw.please_insert_the_key
+            VoiceLine.PLEASE_CLOSE_THE_DOOR -> R.raw.please_close_the_door
+            VoiceLine.MORE_KEY_RETURN -> R.raw.more_key_return
+            VoiceLine.PLEASE_TAKE_YOUR_NEXT_KEY -> R.raw.please_take_your_next_key
+        }
+        Log.d(LOG_TAG, "playVoiceLineAwaitingCompletion($line) requested")
+        releaseVoiceLinePlayer()
+        val player = MediaPlayer()
+        fun finish() {
+            player.release()
+            if (voiceLinePlayer === player) voiceLinePlayer = null
+            if (cont.isActive) cont.resume(Unit) { _, _, _ -> }
+        }
+        try {
+            player.setAudioAttributes(voiceLineAudioAttributes)
+            appContext.resources.openRawResourceFd(resId).use { afd ->
+                player.setDataSource(afd.fileDescriptor, afd.startOffset, afd.length)
+            }
+            player.setOnPreparedListener { prepared ->
+                Log.d(LOG_TAG, "playVoiceLineAwaitingCompletion($line) prepared -> starting")
+                prepared.start()
+            }
+            player.setOnCompletionListener {
+                Log.d(LOG_TAG, "playVoiceLineAwaitingCompletion($line) completed")
+                finish()
+            }
+            player.setOnErrorListener { _, what, extra ->
+                Log.w(LOG_TAG, "playVoiceLineAwaitingCompletion($line) playback error (what=$what, extra=$extra)")
+                finish()
+                true
+            }
+            voiceLinePlayer = player
+            cont.invokeOnCancellation {
+                runCatching { if (player.isPlaying) player.stop() }
+                player.release()
+                if (voiceLinePlayer === player) voiceLinePlayer = null
+            }
+            player.prepareAsync()
+        } catch (error: Exception) {
+            Log.w(LOG_TAG, "Unable to prepare voice line $line (cyclic)", error)
+            player.release()
+            if (voiceLinePlayer === player) voiceLinePlayer = null
+            if (cont.isActive) cont.resume(Unit) { _, _, _ -> }
         }
     }
 
@@ -232,6 +354,12 @@ class AudioFeedbackController(context: Context) {
         const val LOG_TAG = "AudioFeedbackController"
         const val NORMAL_VOLUME = 0.6f
         const val LOUD_VOLUME = 1.0f
+        // Centralized here (was duplicated as a private constant in both
+        // TerminalKeyTakeScreen.kt and TerminalKeyReturnScreen.kt's own continuous-beep
+        // loops before the cyclic take/return/close-door audio pattern) — same 1s cadence,
+        // now the single source of truth for playCyclicUntil's inter-beep gap.
+        const val BEEP_INTERVAL_MILLIS = 1_000L
+        const val DEFAULT_CYCLE_BEEP_COUNT = 3
     }
 }
 
@@ -239,4 +367,12 @@ enum class VoiceLine {
     PLEASE_TAKE_THE_KEY,
     PLEASE_INSERT_THE_KEY,
     PLEASE_CLOSE_THE_DOOR,
+    /** One-shot only (via [AudioFeedbackController.playVoiceLine], never [AudioFeedbackController.playCyclicUntil])
+     * — played once on every confirmed Return insertion, ahead of the 5-second scan-or-close-door
+     * check. See `TerminalAdminApp.kt`'s `pendingMoreKeyReturnCheckId`. */
+    MORE_KEY_RETURN,
+    /** One-shot only, same reasoning as [MORE_KEY_RETURN] — played once per key taken in a
+     * multi-key Take queue, except the last one. See `TerminalAdminApp.kt`'s
+     * `MultiKeyTakeQueue` advance site (`onKeyRemoved`). */
+    PLEASE_TAKE_YOUR_NEXT_KEY,
 }

@@ -21,6 +21,10 @@ export function mapTerminal(row) {
   return {
     id: row.id,
     siteId: row.site_id,
+    // Present only when the row came from a query that LEFT JOINs sites (see call sites
+    // below and auth.js's refreshTerminalToken) — undefined/null otherwise, which the
+    // Kotlin TerminalDto.siteName default (null) already tolerates.
+    siteName: row.site_name ?? null,
     name: row.name,
     boxAddress: Number(row.box_address),
     serialNumber: row.serial_number,
@@ -184,7 +188,12 @@ export async function pairWithCode(req, res) {
       entityId: terminal.id,
     });
 
-    const [refreshed] = await pool.execute(`SELECT * FROM terminals WHERE id = :id`, { id: terminal.id });
+    const [refreshed] = await pool.execute(
+      `SELECT t.*, s.name AS site_name FROM terminals t
+       LEFT JOIN sites s ON s.id = t.site_id
+       WHERE t.id = :id`,
+      { id: terminal.id },
+    );
     return res.json({
       accessToken,
       refreshToken,

@@ -238,6 +238,9 @@ data class SiteDto(
 data class TerminalDto(
     val id: String,
     val siteId: String,
+    /** Owning [SiteDto]'s human-readable name, joined server-side for display (e.g. the
+     * terminal-app top bar) — not authoritative, [siteId] is. Null on older servers. */
+    val siteName: String? = null,
     val name: String,
     val boxAddress: Int,
     val serialNumber: String? = null,
