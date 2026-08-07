@@ -1,10 +1,31 @@
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
+import java.io.FileInputStream
+import java.util.Properties
 
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.android)
     alias(libs.plugins.compose.compiler)
     alias(libs.plugins.kotlin.serialization)
+}
+
+// Real production release signing. Credentials live in a root-level keystore.properties
+// (never committed — see .gitignore) rather than in this file. That file, and the .jks
+// it points at, are Adi's sole responsibility to back up securely outside this repo —
+// losing either blocks all future updates to whatever's already installed on client
+// devices (side-loaded via EnjoyKit, so there's no Play Store re-issue safety net).
+val terminalKeystorePropertiesFile = rootProject.file("keystore.properties")
+val terminalKeystoreProperties = Properties().apply {
+    if (terminalKeystorePropertiesFile.exists()) {
+        FileInputStream(terminalKeystorePropertiesFile).use { load(it) }
+    } else {
+        throw GradleException(
+            "Missing ${terminalKeystorePropertiesFile.path} — required for terminalApp release " +
+                "signing (TERMINAL_STORE_FILE/TERMINAL_STORE_PASSWORD/TERMINAL_KEY_ALIAS/" +
+                "TERMINAL_KEY_PASSWORD). This file is gitignored and never committed; ask Adi " +
+                "for the production keystore.properties + matching .jks file."
+        )
+    }
 }
 
 android {
@@ -27,6 +48,21 @@ android {
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
+    }
+
+    signingConfigs {
+        create("release") {
+            storeFile = rootProject.file(terminalKeystoreProperties.getProperty("TERMINAL_STORE_FILE"))
+            storePassword = terminalKeystoreProperties.getProperty("TERMINAL_STORE_PASSWORD")
+            keyAlias = terminalKeystoreProperties.getProperty("TERMINAL_KEY_ALIAS")
+            keyPassword = terminalKeystoreProperties.getProperty("TERMINAL_KEY_PASSWORD")
+        }
+    }
+
+    buildTypes {
+        release {
+            signingConfig = signingConfigs.getByName("release")
+        }
     }
 }
 

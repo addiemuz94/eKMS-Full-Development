@@ -20,3 +20,11 @@ web/dist/
 
 # Firebase app config (per-project API keys) — never commit
 **/google-services.json
+
+# Local signing keystores/credentials — never commit (see terminalApp/mobileApp
+# build.gradle.kts release signingConfig, loaded from keystore.properties)
+*.jks
+*.keystore
+mobileApp/keystore/
+terminalApp/keystore/
+keystore.properties

@@ -1,4 +1,6 @@
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
+import java.io.FileInputStream
+import java.util.Properties
 
 plugins {
     alias(libs.plugins.android.application)
@@ -6,6 +8,25 @@ plugins {
     alias(libs.plugins.compose.compiler)
     alias(libs.plugins.kotlin.serialization)
     alias(libs.plugins.google.services)
+}
+
+// Real production release signing. Credentials live in a root-level keystore.properties
+// (never committed — see .gitignore) rather than in this file. That file, and the .jks
+// it points at, are Adi's sole responsibility to back up securely outside this repo —
+// losing either blocks all future updates to whatever's already installed on client
+// devices.
+val mobileKeystorePropertiesFile = rootProject.file("keystore.properties")
+val mobileKeystoreProperties = Properties().apply {
+    if (mobileKeystorePropertiesFile.exists()) {
+        FileInputStream(mobileKeystorePropertiesFile).use { load(it) }
+    } else {
+        throw GradleException(
+            "Missing ${mobileKeystorePropertiesFile.path} — required for mobileApp release " +
+                "signing (MOBILE_STORE_FILE/MOBILE_STORE_PASSWORD/MOBILE_KEY_ALIAS/" +
+                "MOBILE_KEY_PASSWORD). This file is gitignored and never committed; ask Adi " +
+                "for the production keystore.properties + matching .jks file."
+        )
+    }
 }
 
 android {
@@ -28,6 +49,21 @@ android {
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
+    }
+
+    signingConfigs {
+        create("release") {
+            storeFile = rootProject.file(mobileKeystoreProperties.getProperty("MOBILE_STORE_FILE"))
+            storePassword = mobileKeystoreProperties.getProperty("MOBILE_STORE_PASSWORD")
+            keyAlias = mobileKeystoreProperties.getProperty("MOBILE_KEY_ALIAS")
+            keyPassword = mobileKeystoreProperties.getProperty("MOBILE_KEY_PASSWORD")
+        }
+    }
+
+    buildTypes {
+        release {
+            signingConfig = signingConfigs.getByName("release")
+        }
     }
 }
 
