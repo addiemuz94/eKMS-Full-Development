@@ -495,7 +495,7 @@ fun KeyAttachmentScreen(
     }
 
     TerminalPage(padding) {
-        BackButton(onBack = ::attemptExit, enabled = !exitFlowActive, label = "Back to Super Admin dashboard")
+        BackButton(onBack = ::attemptExit, enabled = !exitFlowActive)
         HeaderCard(
             title = "Key Attachment",
             description = "Blue nodes are assigned a key but have no fob attached yet. Red nodes " +

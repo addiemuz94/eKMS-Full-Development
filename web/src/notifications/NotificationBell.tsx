@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { AlertTriangle, Bell, BellOff, Clock3, X } from 'lucide-react'
 import { useAuth } from '../auth/AuthContext'
+import { useCapabilities } from '../auth/CapabilitiesContext'
 import { Button } from '../components/ui'
 import { useNotifications, type StoredNotification } from './NotificationsContext'
 
@@ -38,6 +39,7 @@ function NotificationRow({ item }: { item: StoredNotification }) {
 /** Top-right bell + dropdown. Super Admin and Regional Admin only — other roles render nothing. */
 export function NotificationBell() {
   const { session } = useAuth()
+  const { hasCapability } = useCapabilities()
   const { notifications, unreadCount, markAllRead, clearAll } = useNotifications()
   const [open, setOpen] = useState(false)
   const wrapRef = useRef<HTMLDivElement>(null)
@@ -61,7 +63,9 @@ export function NotificationBell() {
   }, [open])
 
   const role = session?.role
-  if (role !== 'SUPER_ADMIN' && role !== 'REGIONAL_ADMIN') return null
+  const canSeeBell =
+    role === 'SUPER_ADMIN' || (role === 'REGIONAL_ADMIN' && hasCapability('api.notifications'))
+  if (!canSeeBell) return null
 
   return (
     <div className="notif-bell-wrap" ref={wrapRef}>

@@ -184,3 +184,23 @@ export type NotificationStreamPayload = {
   keyDisplayName?: string
   terminalName?: string
 }
+
+export type RoleCapabilityCatalogEntry = {
+  key: string
+  label: string
+  description: string
+  group: string
+  superAdminOnly?: boolean
+}
+
+export type RoleCapabilitiesMatrixResponse = {
+  catalog: RoleCapabilityCatalogEntry[]
+  editableRoles: string[]
+  ceilings: Record<string, string[]>
+  matrix: Record<string, Record<string, boolean>>
+}
+
+export type RoleCapabilitiesMeResponse = {
+  role: string
+  capabilities: string[]
+}

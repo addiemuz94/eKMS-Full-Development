@@ -544,6 +544,8 @@ specific code stays Android-only in terminalApp.
 
 - **Passkey login no longer requires local personnel cache (Haikal, Jul 2026).** See `CLAUDE_MOBILE.md` — builds session from passkey-login response profile so Only B exception techs work at cabinets outside standing assignments.
 
+- **Regional Admin admin-shell labelled as Super Admin (Haikal, Aug 2026).** Landing chooser already showed the correct role, but `SuperAdminDashboardScreen` hard-coded the eyebrow as `"Super Admin"` for every admin-tier session. Fixed: `TerminalSession.roleLabel` (`role.label`) is threaded into the dashboard and landing. Default `BackButton` copy is now role-neutral (`Back to Admin dashboard`). Rebuild terminal APK to verify on hardware.
+
 - **Standing login blocked off-site (Haikal, Jul 2026).** Technician/Vendor password/NFC/fingerprint/face must match `retrievalTerminal.siteId` ∈ `assignedSiteIds`. Passkey login remains the Only B exception path (server site check). Rebuild terminal APK.
 
 - **Key/slot/grant binding gap — investigation (Jul 2026, Phase G).** Terminal take requires a synced `KeySlot.nodeAddress` (standing Key Menu filters out unslotted authorized keys; passkey `beginPasskeyKeyTake` same). Fob UID enrollment is separate and not required for unlock. Full root-cause + recommended fixes: see `CLAUDE_WEB.md` Completed “Key/slot/grant binding gap”. No terminal code change in that investigation pass.

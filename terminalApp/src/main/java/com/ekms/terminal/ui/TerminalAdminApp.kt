@@ -1474,7 +1474,7 @@ fun TerminalAdminApp() {
                     } else {
                         TerminalLandingChoiceScreen(
                             padding = padding,
-                            roleLabel = if (activeSession.isSuperAdmin) "Super Admin" else "Regional Admin",
+                            roleLabel = activeSession.roleLabel,
                             onTakeKey = {
                                 openAdmin(
                                     if (activeSession.isSuperAdmin) {
@@ -1502,6 +1502,7 @@ fun TerminalAdminApp() {
                     } else {
                         SuperAdminDashboardScreen(
                             padding = padding,
+                            roleLabel = activeSession.roleLabel,
                             snapshot = snapshot,
                             notice = notice,
                             onOpenPersonnel = { openAdmin(SuperAdminRoute.PERSONNEL_LIST) },
@@ -2577,6 +2578,7 @@ private fun ChangePasswordScreen(
 @Composable
 private fun SuperAdminDashboardScreen(
     padding: PaddingValues,
+    roleLabel: String,
     snapshot: TerminalAdminSnapshot,
     notice: String?,
     onOpenPersonnel: () -> Unit,
@@ -2595,7 +2597,7 @@ private fun SuperAdminDashboardScreen(
         // dashboard-only copy of it.
         Column {
             Text(
-                text = "Super Admin",
+                text = roleLabel,
                 style = MaterialTheme.typography.labelMedium,
                 color = MaterialTheme.colorScheme.primary,
                 fontWeight = FontWeight.Medium,
@@ -3483,7 +3485,8 @@ private fun PasswordField(
 internal fun BackButton(
     onBack: () -> Unit,
     enabled: Boolean = true,
-    label: String = "Back to Super Admin dashboard",
+    // Role-neutral: shared by Super Admin and Regional Admin admin-shell screens.
+    label: String = "Back to Admin dashboard",
 ) {
     OutlinedButton(
         onClick = onBack,

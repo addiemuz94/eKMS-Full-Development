@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import type { SiteDto, TerminalDto } from '../api/types'
 import { api } from '../api/client'
 import { useAuth } from '../auth/AuthContext'
+import { useCapabilities } from '../auth/CapabilitiesContext'
 import { CabinetIdentityForm } from './CabinetIdentityForm'
 import { CabinetSettingsForm } from './CabinetSettingsForm'
 import { UnitSettingsForm } from './UnitSettingsForm'
@@ -26,14 +27,14 @@ type Props = {
   onCabinetSaved?: (terminal: TerminalDto) => void
 }
 
-const ALL_TABS: { value: SettingsTab; label: string; roles?: string[] }[] = [
+const ALL_TABS: { value: SettingsTab; label: string; roles?: string[]; capability?: string }[] = [
   { value: 'cabinet', label: 'Cabinet', roles: ['SUPER_ADMIN'] },
   { value: 'unit', label: 'Location', roles: ['SUPER_ADMIN'] },
-  { value: 'behavior', label: 'Timers & video' },
+  { value: 'behavior', label: 'Timers & video', capability: 'cabinet.timers' },
   { value: 'personnel', label: 'Assign User', roles: ['SUPER_ADMIN'] },
-  { value: 'keys', label: 'Keys' },
-  { value: 'permissions', label: 'Key Permission' },
-  { value: 'key-access', label: 'Key Access' },
+  { value: 'keys', label: 'Keys', capability: 'cabinet.keys' },
+  { value: 'permissions', label: 'Key Permission', capability: 'cabinet.key_permission' },
+  { value: 'key-access', label: 'Key Access', capability: 'cabinet.key_access' },
 ]
 
 /**
@@ -41,11 +42,16 @@ const ALL_TABS: { value: SettingsTab; label: string; roles?: string[] }[] = [
  */
 export function CabinetSettingsPanel({ terminal, unitName, onUnitSaved, onCabinetSaved }: Props) {
   const { session } = useAuth()
+  const { hasCapability } = useCapabilities()
   const role = session?.role
   const visibleTabs = useMemo(
     () =>
-      ALL_TABS.filter((tab) => !tab.roles || (role != null && tab.roles.includes(role))),
-    [role],
+      ALL_TABS.filter((tab) => {
+        if (tab.roles && !(role != null && tab.roles.includes(role))) return false
+        if (tab.capability && role !== 'SUPER_ADMIN' && !hasCapability(tab.capability)) return false
+        return true
+      }),
+    [role, hasCapability],
   )
   const [tab, setTab] = useState<SettingsTab>(visibleTabs[0]?.value ?? 'behavior')
   const [liveUnitName, setLiveUnitName] = useState(unitName)

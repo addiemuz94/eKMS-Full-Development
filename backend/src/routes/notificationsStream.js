@@ -1,14 +1,31 @@
 import { Router } from 'express';
-import { requireAuth, requireSuperAdminOrRegionalAdmin } from '../middleware/auth.js';
+import { requireAuth } from '../middleware/auth.js';
 import {
   consumeStreamTicket,
   mintStreamTicket,
   registerAdminConnection,
   unregisterAdminConnection,
 } from '../notifications.js';
+import { isCapabilityEnabled } from '../roleCapabilitiesCatalog.js';
 import { assignedSiteIdsForUser } from '../util.js';
 
 const router = Router();
+
+/** SA always; RA only when api.notifications capability is enabled (narrow-only matrix). */
+async function requireSaOrRaNotifications(req, res, next) {
+  const role = req.auth?.role;
+  if (role === 'SUPER_ADMIN') return next();
+  if (role === 'REGIONAL_ADMIN') {
+    if (!(await isCapabilityEnabled('REGIONAL_ADMIN', 'api.notifications'))) {
+      return res.status(403).json({
+        error: 'FORBIDDEN',
+        message: 'This capability is disabled for Regional Admin',
+      });
+    }
+    return next();
+  }
+  return res.status(403).json({ error: 'FORBIDDEN', message: 'Super Admin or Regional Admin required' });
+}
 
 // Deliberately NOT mounted behind a blanket requireAuth (unlike every other admin router) —
 // the two routes below need genuinely different auth handling, so each states its own:
@@ -17,7 +34,7 @@ const router = Router();
 // notifications.js's own doc for the full reasoning. This is the same class of deliberate,
 // explicitly-reasoned exception to "every route sits behind requireAuth" that pair-with-code
 // and passkey-login already are, not an oversight.
-router.post('/stream/ticket', requireAuth, requireSuperAdminOrRegionalAdmin, async (req, res) => {
+router.post('/stream/ticket', requireAuth, requireSaOrRaNotifications, async (req, res) => {
   const role = req.auth.role;
   const siteIds =
     role === 'REGIONAL_ADMIN' ? await assignedSiteIdsForUser(req.auth.sub) : null;

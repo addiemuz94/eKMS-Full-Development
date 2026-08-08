@@ -3,6 +3,7 @@ import { createRoot } from 'react-dom/client'
 import { BrowserRouter } from 'react-router-dom'
 import App from './App'
 import { AuthProvider } from './auth/AuthContext'
+import { CapabilitiesProvider } from './auth/CapabilitiesContext'
 import { ErrorBoundary } from './components/ErrorBoundary'
 import { NotificationsProvider } from './notifications/NotificationsContext'
 import { ThemeProvider } from './theme/ThemeContext'
@@ -18,9 +19,11 @@ if (!rootEl) {
         <ThemeProvider>
           <BrowserRouter>
             <AuthProvider>
-              <NotificationsProvider>
-                <App />
-              </NotificationsProvider>
+              <CapabilitiesProvider>
+                <NotificationsProvider>
+                  <App />
+                </NotificationsProvider>
+              </CapabilitiesProvider>
             </AuthProvider>
           </BrowserRouter>
         </ThemeProvider>

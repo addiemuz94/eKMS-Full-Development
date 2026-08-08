@@ -264,6 +264,8 @@ enum class AuditEventType {
      * `handleReturnFlowOutcome`. Distinct from KEY_CHECKOUT_CREATED/UPDATED/RETURNED, which imply success. */
     KEY_CHECKOUT_SYNC_FAILED,
     SITE_OFFICE_HOURS_UPDATED,
+    /** Super Admin updated the role capability matrix (which features RA/Tech/Vendor may use). */
+    ROLE_CAPABILITIES_UPDATED,
     /** Still emitted by the live, deployed vendor_passkey_requests flow (Phase 7) — unchanged. */
     VENDOR_PASSKEY_REQUESTED,
     VENDOR_PASSKEY_APPROVED,

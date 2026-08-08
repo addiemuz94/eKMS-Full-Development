@@ -945,6 +945,10 @@ data class TerminalSession(
     val isSuperAdmin: Boolean
         get() = role == TerminalUserRole.SUPER_ADMIN
 
+    /** Eyebrow / landing label — must not hardcode "Super Admin" for Regional Admin sessions. */
+    val roleLabel: String
+        get() = role.label
+
     /**
      * Phase 3: Super Admin and Regional Admin route to, and may use, the same admin shell for
      * now — Phase 7's 17-item permission matrix is what eventually differentiates what Regional

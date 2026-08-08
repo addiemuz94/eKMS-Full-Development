@@ -9,6 +9,8 @@ import type {
   LoginResponse,
   RegeneratePairingCodeResponse,
   RegionDto,
+  RoleCapabilitiesMatrixResponse,
+  RoleCapabilitiesMeResponse,
   SiteDto,
   TerminalCabinetSettingsDto,
   TerminalDto,
@@ -654,4 +656,13 @@ export const api = {
   // stream connection itself must open immediately after. See notifications.js/notificationsStream.js.
   mintNotificationStreamTicket: () =>
     request<{ ticket: string }>('POST', '/v1/notifications/stream/ticket', {}),
+
+  getRoleCapabilitiesMatrix: () =>
+    request<RoleCapabilitiesMatrixResponse>('GET', '/v1/admin/role-capabilities'),
+  getMyRoleCapabilities: () =>
+    request<RoleCapabilitiesMeResponse>('GET', '/v1/admin/role-capabilities/me'),
+  updateRoleCapabilities: (payload: { role: string; capabilities: Record<string, boolean> }) =>
+    request<RoleCapabilitiesMatrixResponse>('PUT', '/v1/admin/role-capabilities', payload, {
+      idempotent: true,
+    }),
 }

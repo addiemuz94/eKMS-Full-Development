@@ -143,6 +143,8 @@ Full admin/report path catalog (portal-only and unused by terminal yet) is still
 
   Verify: `node --check` clean on every touched backend file at each tier; `npm run build`/`npm run lint` clean on `web/` at each tier (only pre-existing warnings). **Not deployed** — this entire rework is local-only pending the usual redeploy.
 
+- **Super Admin role capability matrix (Haikal, Aug 2026).** Migration `016_role_capabilities.sql` + `roleCapabilitiesCatalog.js` + `routes/roleCapabilities.js` (`GET /`, `GET /me`, `PUT /`). Static allowlists in `auth.js` remain the ceiling; after an allowlist hit for RA/Tech/Vendor, the DB capability must also be enabled (narrow-only). SSE ticket mint for RA checks `api.notifications`. Audit event `ROLE_CAPABILITIES_UPDATED`. Portal UI: see `CLAUDE_WEB.md`. **Deployed** (API rebuild + migration `016` + `web/dist`).
+
 ### Known issues / not yet resolved
 
 - **Live-audit tiers 1–4 are deployed (incl. migration `014`); click verification of Flush / Recycle edge cases still outstanding.** Follow-ups still open from Tier 2/3 scope: `recycleBin.js`'s `purgeKeyDependents()`/`purgeTerminalDependents()` may still carry the pre-Tier-3 `key_checkout_notifications` swallowed-`.catch()` gap that `flush.js` no longer has; `hardDeleteUsers()`'s existing (`.catch()`-guarded) `key_access_requests` delete doesn't clean `key_access_request_keys`/`_documents` first, so it can still silently no-op.

@@ -1,5 +1,10 @@
 import crypto from 'crypto';
 import jwt from 'jsonwebtoken';
+import {
+  capabilityForAdminRoute,
+  capabilityForAuditOrReports,
+  isCapabilityEnabled,
+} from '../roleCapabilitiesCatalog.js';
 
 export function requireAuth(req, res, next) {
   const header = req.headers.authorization || '';
@@ -25,8 +30,28 @@ export function requireSuperAdmin(req, res, next) {
 
 /** Super Admin unrestricted; Regional Admin may reach audit/reports (row-scoped in handlers). */
 export function requireSuperAdminOrRegionalAdmin(req, res, next) {
-  if (req.auth?.role === 'SUPER_ADMIN' || req.auth?.role === 'REGIONAL_ADMIN') {
+  if (req.auth?.role === 'SUPER_ADMIN') {
     return next();
+  }
+  if (req.auth?.role === 'REGIONAL_ADMIN') {
+    // Narrow-only: capability for this mount (audit vs reports) must still be enabled.
+    // req.baseUrl is e.g. /v1/audit or /v1/reports when mounted as a sub-router.
+    const mount = String(req.baseUrl || '');
+    const prefix = mount.endsWith('/audit')
+      ? 'audit'
+      : mount.endsWith('/reports')
+        ? 'reports'
+        : null;
+    const cap = prefix ? capabilityForAuditOrReports(prefix, req.path || '') : 'portal.activity_report';
+    return void isCapabilityEnabled('REGIONAL_ADMIN', cap).then((ok) => {
+      if (!ok) {
+        return res.status(403).json({
+          error: 'FORBIDDEN',
+          message: 'This capability is disabled for Regional Admin',
+        });
+      }
+      return next();
+    });
   }
   return res.status(403).json({ error: 'FORBIDDEN', message: 'Super Admin or Regional Admin required' });
 }
@@ -170,6 +195,8 @@ const REGIONAL_ADMIN_ALLOWED_ROUTES = [
   { method: 'GET', pattern: /^\/keys\/[^/]+$/ },
   { method: 'GET', pattern: /^\/key-slots$/ },
   { method: 'GET', pattern: /^\/key-slots\/[^/]+$/ },
+  // Super Admin permission matrix — self-read only (full GET/PUT stay Super-Admin-only).
+  { method: 'GET', pattern: /^\/role-capabilities\/me$/ },
 ];
 
 /**
@@ -211,6 +238,8 @@ const TECHNICIAN_VENDOR_ALLOWED_ROUTES = [
   { method: 'GET', pattern: /^\/sites\/[^/]+$/ },
   { method: 'GET', pattern: /^\/terminals$/ },
   { method: 'GET', pattern: /^\/terminals\/[^/]+$/ },
+  // Super Admin permission matrix — self-read only.
+  { method: 'GET', pattern: /^\/role-capabilities\/me$/ },
 ];
 
 /**
@@ -231,6 +260,9 @@ const GOD_ADMIN_ALLOWED_ROUTES = [
  * GOD_ADMIN token only passes for GOD_ADMIN_ALLOWED_ROUTES. Everything else under `/v1/admin`
  * — remains 403. `/v1/audit` and `/v1/reports` use `requireSuperAdminOrRegionalAdmin`
  * (RA results are site-scoped in those handlers).
+ *
+ * After an allowlist hit for RA/Tech/Vendor, the role-capability matrix (migration 016) may
+ * still deny the request — capabilities only narrow the static ceiling, never widen it.
  */
 export function requireSuperAdminOrAllowlistedRole(req, res, next) {
   if (req.auth?.role === 'SUPER_ADMIN') {
@@ -255,24 +287,39 @@ export function requireSuperAdminOrAllowlistedRole(req, res, next) {
     if (allowed) {
       return next();
     }
+    return res.status(403).json({ error: 'FORBIDDEN', message: 'Super Admin required' });
   }
-  if (req.auth?.role === 'REGIONAL_ADMIN') {
-    const allowed = REGIONAL_ADMIN_ALLOWED_ROUTES.some(
-      (route) => route.method === req.method && route.pattern.test(req.path),
-    );
-    if (allowed) {
-      return next();
+
+  const role = req.auth?.role;
+  let list = null;
+  if (role === 'REGIONAL_ADMIN') list = REGIONAL_ADMIN_ALLOWED_ROUTES;
+  else if (role === 'TECHNICIAN' || role === 'VENDOR') list = TECHNICIAN_VENDOR_ALLOWED_ROUTES;
+
+  if (!list) {
+    return res.status(403).json({ error: 'FORBIDDEN', message: 'Super Admin required' });
+  }
+
+  const allowed = list.some(
+    (route) => route.method === req.method && route.pattern.test(req.path),
+  );
+  if (!allowed) {
+    return res.status(403).json({ error: 'FORBIDDEN', message: 'Super Admin required' });
+  }
+
+  const cap = capabilityForAdminRoute(role, req.method, req.path);
+  if (!cap) {
+    return next();
+  }
+
+  return void isCapabilityEnabled(role, cap).then((ok) => {
+    if (!ok) {
+      return res.status(403).json({
+        error: 'FORBIDDEN',
+        message: 'This capability is disabled for your role',
+      });
     }
-  }
-  if (req.auth?.role === 'TECHNICIAN' || req.auth?.role === 'VENDOR') {
-    const allowed = TECHNICIAN_VENDOR_ALLOWED_ROUTES.some(
-      (route) => route.method === req.method && route.pattern.test(req.path),
-    );
-    if (allowed) {
-      return next();
-    }
-  }
-  return res.status(403).json({ error: 'FORBIDDEN', message: 'Super Admin required' });
+    return next();
+  });
 }
 
 export function signAccessToken(user) {

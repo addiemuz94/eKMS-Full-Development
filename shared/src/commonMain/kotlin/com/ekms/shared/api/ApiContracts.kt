@@ -114,6 +114,8 @@ object ApiPaths {
     /** Super Admin only. Permanent data wipe preview + execute (not Recycle Bin). */
     const val ADMIN_FLUSH_PREVIEW = "/v1/admin/flush/preview"
     const val ADMIN_FLUSH = "/v1/admin/flush"
+    const val ADMIN_ROLE_CAPABILITIES = "/v1/admin/role-capabilities"
+    const val ADMIN_ROLE_CAPABILITIES_ME = "/v1/admin/role-capabilities/me"
     const val SYNC_BOOTSTRAP = "/v1/terminal/sync/bootstrap"
     const val SYNC_PUSH = "/v1/terminal/sync/push"
     const val TERMINAL_DATA_READ = "/v1/terminal/sync/read"

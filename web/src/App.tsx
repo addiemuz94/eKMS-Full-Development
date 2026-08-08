@@ -48,6 +48,9 @@ const FlushDataPage = lazy(() =>
 const WebsiteSettingsPage = lazy(() =>
   import('./pages/WebsiteSettingsPage').then((m) => ({ default: m.WebsiteSettingsPage })),
 )
+const RolePermissionsPage = lazy(() =>
+  import('./pages/RolePermissionsPage').then((m) => ({ default: m.RolePermissionsPage })),
+)
 
 function RequireAuth({ children }: { children: React.ReactNode }) {
   const { session } = useAuth()
@@ -201,6 +204,14 @@ export default function App() {
           element={
             <Suspense fallback={<PageFallback />}>
               <FlushDataPage />
+            </Suspense>
+          }
+        />
+        <Route
+          path="role-permissions"
+          element={
+            <Suspense fallback={<PageFallback />}>
+              <RolePermissionsPage />
             </Suspense>
           }
         />

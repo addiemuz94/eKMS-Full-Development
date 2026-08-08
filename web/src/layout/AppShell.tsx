@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { LogOut } from 'lucide-react'
 import { NavLink, Outlet, useLocation } from 'react-router-dom'
 import { useAuth } from '../auth/AuthContext'
+import { useCapabilities } from '../auth/CapabilitiesContext'
 import { Button } from '../components/ui'
 import { NotificationBell } from '../notifications/NotificationBell'
 import { NAV_ICONS, type NavIconName } from './NavIcons'
@@ -14,6 +15,8 @@ type NavItem = {
   end?: boolean
   /** When set, only these roles see the item. Omitted = all authenticated roles. */
   roles?: string[]
+  /** When set, non-SA users also need this capability enabled (role matrix). */
+  capability?: string
 }
 
 type NavGroup = { kind: 'group'; title: string; items: NavItem[] }
@@ -47,6 +50,7 @@ const NAV: NavEntry[] = [
         label: 'Cabinet Management',
         description: 'Configure location, cabinet, keys, and access',
         icon: 'terminals',
+        capability: 'portal.cabinet_management',
       },
       {
         to: '/personnel',
@@ -67,6 +71,7 @@ const NAV: NavEntry[] = [
         label: 'Activity Report',
         description: 'Key pickup, return, and registration events',
         icon: 'keyRecords',
+        capability: 'portal.activity_report',
       },
       {
         to: '/activity-archive',
@@ -80,12 +85,14 @@ const NAV: NavEntry[] = [
         label: 'Pickup & Return',
         description: 'Key pickup and return history',
         icon: 'keyRecords',
+        capability: 'portal.logs',
       },
       {
         to: '/operation-logs',
         label: 'Operation Log',
         description: 'Cabinet operator action history',
         icon: 'operationLogs',
+        capability: 'portal.logs',
       },
     ],
   },
@@ -98,12 +105,14 @@ const NAV: NavEntry[] = [
         label: 'System Log',
         description: 'Portal and system events',
         icon: 'systemLogs',
+        capability: 'portal.logs',
       },
       {
         to: '/equipment-logs',
         label: 'Equipment Log',
         description: 'Hardware and equipment events',
         icon: 'equipmentLogs',
+        capability: 'portal.logs',
       },
     ],
   },
@@ -126,6 +135,13 @@ const NAV: NavEntry[] = [
         roles: ['SUPER_ADMIN'],
       },
       {
+        to: '/role-permissions',
+        label: 'Role permissions',
+        description: 'Enable or disable what each role can do',
+        icon: 'permissions',
+        roles: ['SUPER_ADMIN'],
+      },
+      {
         to: '/settings',
         label: 'Website settings',
         description: 'Appearance preferences and sign out',
@@ -135,9 +151,18 @@ const NAV: NavEntry[] = [
   },
 ]
 
-function itemVisibleToRole(item: NavItem, role: string | undefined) {
-  if (!item.roles || item.roles.length === 0) return true
-  return Boolean(role && item.roles.includes(role))
+function itemVisibleToRole(
+  item: NavItem,
+  role: string | undefined,
+  hasCapability: (key: string) => boolean,
+) {
+  if (item.roles && item.roles.length > 0) {
+    if (!role || !item.roles.includes(role)) return false
+  }
+  if (item.capability && role !== 'SUPER_ADMIN') {
+    if (!hasCapability(item.capability)) return false
+  }
+  return true
 }
 
 function NavItemLink({ item }: { item: NavItem }) {
@@ -161,6 +186,7 @@ function NavItemLink({ item }: { item: NavItem }) {
 export function AppShell() {
   const location = useLocation()
   const { logout, session } = useAuth()
+  const { hasCapability } = useCapabilities()
   const [navOpen, setNavOpen] = useState(false)
   const role = session?.role
 
@@ -177,9 +203,9 @@ export function AppShell() {
 
   const visibleNav = NAV.map((entry) => {
     if (entry.kind === 'link') {
-      return itemVisibleToRole(entry.item, role) ? entry : null
+      return itemVisibleToRole(entry.item, role, hasCapability) ? entry : null
     }
-    const items = entry.items.filter((item) => itemVisibleToRole(item, role))
+    const items = entry.items.filter((item) => itemVisibleToRole(item, role, hasCapability))
     if (items.length === 0) return null
     return { ...entry, items }
   }).filter((entry): entry is NavEntry => entry != null)

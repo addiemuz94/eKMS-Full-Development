@@ -11,6 +11,7 @@ import {
 import { api } from '../api/client'
 import type { NotificationStreamEventType, NotificationStreamPayload } from '../api/types'
 import { useAuth } from '../auth/AuthContext'
+import { useCapabilities } from '../auth/CapabilitiesContext'
 import { useToastQueue } from '../components/ui'
 
 const STORAGE_KEY_PREFIX = 'ekms_web_notifications'
@@ -115,19 +116,25 @@ const EMPTY_STATE: NotificationsState = {
 
 const NotificationsContext = createContext<NotificationsState | null>(null)
 
-function mayReceiveCheckoutNotifications(role: string | undefined) {
-  return role === 'SUPER_ADMIN' || role === 'REGIONAL_ADMIN'
+function mayReceiveCheckoutNotifications(
+  role: string | undefined,
+  hasCapability: (key: string) => boolean,
+) {
+  if (role === 'SUPER_ADMIN') return true
+  if (role === 'REGIONAL_ADMIN') return hasCapability('api.notifications')
+  return false
 }
 
 /**
  * Live checkout-deadline notifications for Super Admin and Regional Admin — connects an SSE
  * stream after login, disconnects on logout/role change. Regional Admin events are already
- * region-filtered server-side (see broadcastCheckoutDeadline). Backend contract:
+ * site-filtered server-side (see broadcastCheckoutDeadline). Backend contract:
  * POST /v1/notifications/stream/ticket then GET /v1/notifications/stream?ticket=...
  */
 export function NotificationsProvider({ children }: { children: ReactNode }) {
   const { session } = useAuth()
-  const canReceive = mayReceiveCheckoutNotifications(session?.role)
+  const { hasCapability } = useCapabilities()
+  const canReceive = mayReceiveCheckoutNotifications(session?.role, hasCapability)
   const userId = session?.userId ?? ''
   const [notifications, setNotifications] = useState<StoredNotification[]>([])
   const hydratedForUser = useRef<string | null>(null)
