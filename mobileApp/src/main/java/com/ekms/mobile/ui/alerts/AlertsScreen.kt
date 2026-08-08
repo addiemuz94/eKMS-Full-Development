@@ -28,8 +28,8 @@ import com.ekms.shared.api.KeyAccessRequestStatus
 import com.ekms.shared.domain.UserRole
 
 /**
- * Alerts tab — interim wiring until FCM push (Phase 3).
- * Shows key access request status from the live API (pending for approvers; own requests for others).
+ * Alerts tab — pending decisions for SA/RA/PIC, plus own request status for Tech/Vendor.
+ * Live FCM push (when registered) opens this tab; polling remains the in-app fallback.
  */
 @Composable
 fun AlertsScreen(
@@ -45,8 +45,9 @@ fun AlertsScreen(
     var items by remember { mutableStateOf<List<KeyAccessRequestDto>>(emptyList()) }
     var hasData by remember { mutableStateOf(false) }
 
-    val isApprover =
+    val isAdminApprover =
         profile?.role == UserRole.SUPER_ADMIN || profile?.role == UserRole.REGIONAL_ADMIN
+    val isPic = profile?.role == UserRole.TECHNICIAN
 
     LaunchedEffect(profile?.id, refreshEpoch) {
         val showSpinner = !hasData
@@ -54,15 +55,25 @@ fun AlertsScreen(
         onLiveStatus(true, true)
         loadError = null
         try {
-            val all = apiClient.listKeyAccessRequests(status = "ALL")
-            items = if (isApprover) {
-                all.filter {
-                    it.status == KeyAccessRequestStatus.PENDING ||
-                        it.status == KeyAccessRequestStatus.PENDING_RA ||
-                        it.status == KeyAccessRequestStatus.PENDING_PIC
+            items = when {
+                isAdminApprover -> {
+                    apiClient.listKeyAccessRequests(status = "ALL").filter {
+                        it.status == KeyAccessRequestStatus.PENDING ||
+                            it.status == KeyAccessRequestStatus.PENDING_RA ||
+                            it.status == KeyAccessRequestStatus.PENDING_PIC
+                    }
                 }
-            } else {
-                all.sortedByDescending { it.requestedAtEpochMillis }
+                isPic -> {
+                    val picInbox = apiClient.listPicInbox()
+                    val own = apiClient.listKeyAccessRequests(status = "ALL")
+                    (picInbox + own)
+                        .distinctBy { it.id }
+                        .sortedByDescending { it.requestedAtEpochMillis }
+                }
+                else -> {
+                    apiClient.listKeyAccessRequests(status = "ALL")
+                        .sortedByDescending { it.requestedAtEpochMillis }
+                }
             }
             hasData = true
             onLiveStatus(true, false)
@@ -83,10 +94,13 @@ fun AlertsScreen(
     ) {
         Text("Alerts", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
         Text(
-            if (isApprover) {
-                "Pending key access requests that need your decision. Updates automatically while Connected."
-            } else {
-                "Status of your key access requests. Updates automatically while Connected."
+            when {
+                isAdminApprover ->
+                    "Pending key access requests that need your decision. Updates automatically while Connected."
+                isPic ->
+                    "Vendor requests waiting for your PIC approval, plus status of your own requests."
+                else ->
+                    "Status of your key access requests. Updates automatically while Connected."
             },
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,

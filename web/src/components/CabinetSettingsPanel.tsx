@@ -28,10 +28,10 @@ type Props = {
 }
 
 const ALL_TABS: { value: SettingsTab; label: string; roles?: string[]; capability?: string }[] = [
-  { value: 'cabinet', label: 'Cabinet', roles: ['SUPER_ADMIN'] },
-  { value: 'unit', label: 'Location', roles: ['SUPER_ADMIN'] },
+  { value: 'cabinet', label: 'Cabinet', capability: 'cabinet.identity' },
+  { value: 'unit', label: 'Location', capability: 'cabinet.identity' },
   { value: 'behavior', label: 'Timers & video', capability: 'cabinet.timers' },
-  { value: 'personnel', label: 'Assign User', roles: ['SUPER_ADMIN'] },
+  { value: 'personnel', label: 'Assign User', capability: 'cabinet.assign_user' },
   { value: 'keys', label: 'Keys', capability: 'cabinet.keys' },
   { value: 'permissions', label: 'Key Permission', capability: 'cabinet.key_permission' },
   { value: 'key-access', label: 'Key Access', capability: 'cabinet.key_access' },

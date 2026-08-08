@@ -3,6 +3,7 @@ import { Router } from 'express';
 import { z } from 'zod';
 import pool from '../db.js';
 import { sendPushToUser } from '../fcm.js';
+import { broadcastKeyAccess } from '../notifications.js';
 import { signKeyAccessSessionToken } from '../middleware/auth.js';
 import {
   assignedSiteIdsForUser,
@@ -54,13 +55,31 @@ async function expireOverdueRequests() {
 }
 
 // Exported (Aug 2026, checkout-deadline notifications) — deadlineMonitor.js reuses this as-is.
-// "Regional confusion" Tier 1 rework: resolves site -> covering Regional Admins directly via
-// raIdsForSite (user_site_assignments), not the old site -> region -> user_region_assignments
-// indirection.
-export async function notifyRegionalAdminsForSite(siteId, title, body, data = {}) {
+// Resolves site -> covering Regional Admins via raIdsForSite (direct site assignment OR the
+// site's region). Also fans out portal SSE (SA + covering RAs) when eventType is provided.
+// When no RA covers the site, Super Admins still get FCM so the request isn't silently stuck.
+export async function notifyRegionalAdminsForSite(siteId, title, body, data = {}, eventType = null) {
   const raIds = await raIdsForSite(siteId);
   for (const raId of raIds) {
     await sendPushToUser(raId, title, body, data);
+  }
+  if (raIds.length === 0) {
+    console.warn(
+      `[key-access] no Regional Admin covers site=${siteId} — notifying Super Admins instead (${title})`,
+    );
+    const [sas] = await pool.execute(
+      `SELECT id FROM users WHERE role = 'SUPER_ADMIN' AND lifecycle_state = 'ACTIVE'`,
+    );
+    for (const row of sas) {
+      await sendPushToUser(row.id, title, `${body} (no Regional Admin assigned to this location)`, data);
+    }
+  }
+  if (eventType) {
+    broadcastKeyAccess(
+      eventType,
+      { ...data, siteId, title, body },
+      { siteId, targetUserIds: [] },
+    );
   }
 }
 
@@ -671,15 +690,26 @@ router.post('/', async (req, res) => {
   });
 
   if (initialStatus === 'PENDING_PIC' && picUserId) {
-    await sendPushToUser(picUserId, 'Vendor access — PIC review', 'A vendor request needs your approval', {
-      requestId: id,
-      stage: 'PENDING_PIC',
-    });
+    const payload = { requestId: id, stage: 'PENDING_PIC', siteId: parsed.data.siteId };
+    await sendPushToUser(picUserId, 'Vendor access — PIC review', 'A vendor request needs your approval', payload);
+    // SA + assigned PIC only — Regional Admin must wait until PENDING_RA.
+    broadcastKeyAccess(
+      'KEY_ACCESS_PENDING_PIC',
+      {
+        ...payload,
+        title: 'Vendor access — PIC review',
+        body: 'A vendor request needs your approval',
+      },
+      { siteId: null, targetUserIds: [picUserId] },
+    );
   } else if (initialStatus === 'PENDING') {
-    await notifyRegionalAdminsForSite(parsed.data.siteId, 'Key access request', 'A technician request awaits approval', {
-      requestId: id,
-      stage: 'PENDING',
-    });
+    await notifyRegionalAdminsForSite(
+      parsed.data.siteId,
+      'Key access request',
+      'A technician request awaits approval',
+      { requestId: id, stage: 'PENDING' },
+      'KEY_ACCESS_PENDING',
+    );
   }
 
   const [rows] = await pool.execute(`SELECT * FROM key_access_requests WHERE id = :id`, { id });
@@ -742,6 +772,17 @@ router.post('/:id/approve', async (req, res) => {
     `Your PIN is ready (valid until return window).`,
     { requestId: req.params.id, stage: 'APPROVED' },
   );
+  broadcastKeyAccess(
+    'KEY_ACCESS_APPROVED',
+    {
+      requestId: req.params.id,
+      stage: 'APPROVED',
+      siteId: existing[0].site_id,
+      title: 'Key access approved',
+      body: 'Your PIN is ready (valid until return window).',
+    },
+    { siteId: existing[0].site_id, targetUserIds: [existing[0].requester_user_id] },
+  );
 
   return res.json({
     id: req.params.id,
@@ -792,6 +833,7 @@ router.post('/:id/pic-approve', async (req, res) => {
     'Vendor access — RA review',
     'A vendor request passed PIC and needs Regional Admin approval',
     { requestId: req.params.id, stage: 'PENDING_RA' },
+    'KEY_ACCESS_PENDING_RA',
   );
 
   const [rows] = await pool.execute(`SELECT * FROM key_access_requests WHERE id = :id`, {
@@ -853,6 +895,17 @@ router.post('/:id/reject', async (req, res) => {
     requestId: req.params.id,
     stage: 'REJECTED',
   });
+  broadcastKeyAccess(
+    'KEY_ACCESS_REJECTED',
+    {
+      requestId: req.params.id,
+      stage: 'REJECTED',
+      siteId: existing[0].site_id,
+      title: 'Key access rejected',
+      body: 'Your request was rejected. Submit a new one if needed.',
+    },
+    { siteId: existing[0].site_id, targetUserIds: [existing[0].requester_user_id] },
+  );
 
   const [rows] = await pool.execute(`SELECT * FROM key_access_requests WHERE id = :id`, {
     id: req.params.id,
@@ -899,6 +952,17 @@ router.post('/:id/revoke', async (req, res) => {
     requestId: req.params.id,
     stage: 'REVOKED',
   });
+  broadcastKeyAccess(
+    'KEY_ACCESS_REVOKED',
+    {
+      requestId: req.params.id,
+      stage: 'REVOKED',
+      siteId: existing[0].site_id,
+      title: 'Key access revoked',
+      body: 'Your passkey was revoked.',
+    },
+    { siteId: existing[0].site_id, targetUserIds: [existing[0].requester_user_id] },
+  );
 
   const [rows] = await pool.execute(`SELECT * FROM key_access_requests WHERE id = :id`, {
     id: req.params.id,

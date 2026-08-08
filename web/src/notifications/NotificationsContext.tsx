@@ -59,13 +59,42 @@ function saveStored(userId: string, items: StoredNotification[]) {
 }
 
 /**
- * Prefer server-provided key/terminal names (same text as FCM). Fall back to the older
- * checkout-id synthesis for any event that predates those fields.
+ * Prefer server-provided title/body (key-access FCM twin). Else key/terminal names for
+ * checkout. Fall back to checkout-id synthesis for older events.
  */
 function describeEvent(
   eventType: NotificationStreamEventType,
   payload: NotificationStreamPayload,
 ): { title: string; body: string } {
+  if (payload.title?.trim() && payload.body?.trim()) {
+    return { title: payload.title.trim(), body: payload.body.trim() }
+  }
+
+  if (eventType.startsWith('KEY_ACCESS_')) {
+    switch (eventType) {
+      case 'KEY_ACCESS_PENDING_PIC':
+        return {
+          title: 'Vendor access — PIC review',
+          body: 'A vendor request needs your approval',
+        }
+      case 'KEY_ACCESS_PENDING':
+        return { title: 'Key access request', body: 'A technician request awaits approval' }
+      case 'KEY_ACCESS_PENDING_RA':
+        return {
+          title: 'Vendor access — RA review',
+          body: 'A vendor request passed PIC and needs Regional Admin approval',
+        }
+      case 'KEY_ACCESS_APPROVED':
+        return { title: 'Key access approved', body: 'Your PIN is ready.' }
+      case 'KEY_ACCESS_REJECTED':
+        return { title: 'Key access rejected', body: 'Your request was rejected.' }
+      case 'KEY_ACCESS_REVOKED':
+        return { title: 'Key access revoked', body: 'Your passkey was revoked.' }
+      default:
+        return { title: 'Key access update', body: 'A key access request was updated.' }
+    }
+  }
+
   const keyLabel = payload.keyDisplayName?.trim() || null
   const terminalLabel = payload.terminalName?.trim() || null
   if (keyLabel && terminalLabel) {
@@ -81,12 +110,13 @@ function describeEvent(
     }
   }
 
-  const dueLabel = Number.isFinite(payload.dueAtEpochMillis)
-    ? new Date(payload.dueAtEpochMillis).toLocaleString(undefined, {
-        dateStyle: 'medium',
-        timeStyle: 'short',
-      })
-    : 'an unknown time'
+  const dueLabel =
+    payload.dueAtEpochMillis != null && Number.isFinite(payload.dueAtEpochMillis)
+      ? new Date(payload.dueAtEpochMillis).toLocaleString(undefined, {
+          dateStyle: 'medium',
+          timeStyle: 'short',
+        })
+      : 'an unknown time'
   const checkoutLabel = payload.checkoutId ? payload.checkoutId.slice(0, 8) : 'unknown'
   if (eventType === 'CHECKOUT_OVERDUE') {
     return {
@@ -116,31 +146,43 @@ const EMPTY_STATE: NotificationsState = {
 
 const NotificationsContext = createContext<NotificationsState | null>(null)
 
-function mayReceiveCheckoutNotifications(
+function mayReceivePortalNotifications(
   role: string | undefined,
   hasCapability: (key: string) => boolean,
 ) {
   if (role === 'SUPER_ADMIN') return true
-  if (role === 'REGIONAL_ADMIN') return hasCapability('api.notifications')
+  if (role === 'REGIONAL_ADMIN' || role === 'TECHNICIAN' || role === 'VENDOR') {
+    return hasCapability('api.notifications')
+  }
   return false
 }
 
+const SSE_EVENT_TYPES: NotificationStreamEventType[] = [
+  'CHECKOUT_WARNING_15MIN',
+  'CHECKOUT_OVERDUE',
+  'KEY_ACCESS_PENDING_PIC',
+  'KEY_ACCESS_PENDING',
+  'KEY_ACCESS_PENDING_RA',
+  'KEY_ACCESS_APPROVED',
+  'KEY_ACCESS_REJECTED',
+  'KEY_ACCESS_REVOKED',
+]
+
 /**
- * Live checkout-deadline notifications for Super Admin and Regional Admin — connects an SSE
- * stream after login, disconnects on logout/role change. Regional Admin events are already
- * site-filtered server-side (see broadcastCheckoutDeadline). Backend contract:
+ * Live portal notifications for Super Admin, Regional Admin, Technician (PIC), and Vendor —
+ * connects an SSE stream after login when `api.notifications` is enabled. Backend contract:
  * POST /v1/notifications/stream/ticket then GET /v1/notifications/stream?ticket=...
  */
 export function NotificationsProvider({ children }: { children: ReactNode }) {
   const { session } = useAuth()
   const { hasCapability } = useCapabilities()
-  const canReceive = mayReceiveCheckoutNotifications(session?.role, hasCapability)
+  const canReceive = mayReceivePortalNotifications(session?.role, hasCapability)
   const userId = session?.userId ?? ''
   const [notifications, setNotifications] = useState<StoredNotification[]>([])
   const hydratedForUser = useRef<string | null>(null)
   const { push: pushToast, stack: toastStack } = useToastQueue()
 
-  // Hydrate per-user so SA and RA sessions on the same browser never share each other's list.
+  // Hydrate per-user so different roles on the same browser never share each other's list.
   useEffect(() => {
     if (!canReceive || !userId) {
       hydratedForUser.current = null
@@ -170,7 +212,15 @@ export function NotificationsProvider({ children }: { children: ReactNode }) {
         payload,
       }
       setNotifications((prev) => [entry, ...prev].slice(0, MAX_STORED))
-      pushToast({ title, body, tone: eventType === 'CHECKOUT_OVERDUE' ? 'danger' : 'warning' })
+      const tone =
+        eventType === 'CHECKOUT_OVERDUE' ||
+        eventType === 'KEY_ACCESS_REJECTED' ||
+        eventType === 'KEY_ACCESS_REVOKED'
+          ? 'danger'
+          : eventType.startsWith('KEY_ACCESS_')
+            ? 'info'
+            : 'warning'
+      pushToast({ title, body, tone })
     },
     [pushToast],
   )
@@ -215,8 +265,9 @@ export function NotificationsProvider({ children }: { children: ReactNode }) {
         // Named SSE events only — EventSource has no catch-all listener for custom `event:`
         // names (onmessage only fires for the unnamed default "message" event), so a new
         // eventType added server-side needs a matching addEventListener call here too.
-        stream.addEventListener('CHECKOUT_WARNING_15MIN', onEvent('CHECKOUT_WARNING_15MIN'))
-        stream.addEventListener('CHECKOUT_OVERDUE', onEvent('CHECKOUT_OVERDUE'))
+        for (const eventType of SSE_EVENT_TYPES) {
+          stream.addEventListener(eventType, onEvent(eventType))
+        }
         stream.onopen = () => {
           backoffMs = BASE_RECONNECT_DELAY_MS
         }

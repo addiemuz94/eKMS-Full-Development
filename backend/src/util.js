@@ -58,45 +58,68 @@ export async function writeAudit({
  * Row-level half of Regional Admin's two-layer access control — the other half is the
  * REGIONAL_ADMIN_ALLOWED_ROUTES allowlist in middleware/auth.js, which controls *which
  * routes* are reachable at all. This controls *which rows* within those routes: a Regional
- * Admin may only act on records tied to one of their own `user_site_assignments`. Both layers
- * are required together; neither alone is sufficient. Super Admin callers should check
- * `req.auth.role === 'SUPER_ADMIN'` first and skip this entirely (unrestricted, as before).
+ * Admin may act on records tied to their `user_site_assignments`, OR (legacy / dual coverage)
+ * any active site whose `region_id` is in their `user_region_assignments`. Super Admin callers
+ * should check `req.auth.role === 'SUPER_ADMIN'` first and skip this entirely.
  */
 export async function isSiteAssignedToUser(userId, siteId) {
-  const [rows] = await pool.execute(
+  if (!userId || !siteId) return false;
+  const [direct] = await pool.execute(
     `SELECT 1 FROM user_site_assignments WHERE user_id = :userId AND site_id = :siteId LIMIT 1`,
     { userId, siteId },
   );
-  return Boolean(rows[0]);
+  if (direct[0]) return true;
+  const [viaRegion] = await pool.execute(
+    `SELECT 1 FROM sites s
+     INNER JOIN user_region_assignments ura ON ura.region_id = s.region_id
+     WHERE ura.user_id = :userId AND s.id = :siteId
+       AND s.lifecycle_state = 'ACTIVE' AND s.region_id IS NOT NULL
+     LIMIT 1`,
+    { userId, siteId },
+  );
+  return Boolean(viaRegion[0]);
 }
 
-/** All site ids a user is assigned to — used to scope a Regional Admin's list views down to
- * their own region when no specific `?siteId=` filter is given. */
+/**
+ * Effective site ids for a user — direct `user_site_assignments` plus sites in any region
+ * they still hold via `user_region_assignments`. Used to scope RA lists, SSE tickets, and
+ * key-access queues. Region half is deliberate dual coverage so RAs who were only ever
+ * region-assigned (before site-based Assign User) still receive PENDING_RA work.
+ */
 export async function assignedSiteIdsForUser(userId) {
-  const [rows] = await pool.execute(
+  const [direct] = await pool.execute(
     `SELECT site_id FROM user_site_assignments WHERE user_id = :userId`,
     { userId },
   );
-  return rows.map((r) => r.site_id);
+  const [viaRegion] = await pool.execute(
+    `SELECT s.id AS site_id FROM sites s
+     INNER JOIN user_region_assignments ura ON ura.region_id = s.region_id
+     WHERE ura.user_id = :userId AND s.lifecycle_state = 'ACTIVE' AND s.region_id IS NOT NULL`,
+    { userId },
+  );
+  return [...new Set([...direct.map((r) => r.site_id), ...viaRegion.map((r) => r.site_id)])];
 }
 
 /**
  * Site-based counterpart of [isSiteAssignedToUser]/[assignedSiteIdsForUser], the OTHER
- * direction: every REGIONAL_ADMIN whose own `user_site_assignments` includes this site.
- * Added by the "regional confusion" Tier 1 rework to replace region-indirected RA routing
- * (site -> region -> user_region_assignments) with direct site -> user_site_assignments
- * lookup, mirroring the same INNER JOIN shape notifyRegionalAdminsForSite (keyAccessRequests.js)
- * and the site-pics route already used for the equivalent Technician-by-site lookup — not a new
- * join pattern, the site-scoped twin of one that already existed for regions.
+ * direction: every REGIONAL_ADMIN covering this site via direct assignment OR the site's region.
  */
 export async function raIdsForSite(siteId) {
-  const [rows] = await pool.execute(
+  const [direct] = await pool.execute(
     `SELECT u.id FROM users u
      INNER JOIN user_site_assignments usa ON usa.user_id = u.id
      WHERE usa.site_id = :siteId AND u.role = 'REGIONAL_ADMIN' AND u.lifecycle_state = 'ACTIVE'`,
     { siteId },
   );
-  return rows.map((r) => r.id);
+  const [viaRegion] = await pool.execute(
+    `SELECT u.id FROM users u
+     INNER JOIN user_region_assignments ura ON ura.user_id = u.id
+     INNER JOIN sites s ON s.region_id = ura.region_id
+     WHERE s.id = :siteId AND s.lifecycle_state = 'ACTIVE' AND s.region_id IS NOT NULL
+       AND u.role = 'REGIONAL_ADMIN' AND u.lifecycle_state = 'ACTIVE'`,
+    { siteId },
+  );
+  return [...new Set([...direct.map((r) => r.id), ...viaRegion.map((r) => r.id)])];
 }
 
 /**
@@ -199,7 +222,8 @@ export function parseCabinetScope(value, defaultScope = undefined) {
  * If `requestedSiteId` is set and not in the assignment set, also empty.
  */
 export async function resolveRegionalAdminSiteScope(req, requestedSiteId = null) {
-  if (req?.auth?.role !== 'REGIONAL_ADMIN') {
+  const role = req?.auth?.role;
+  if (role !== 'REGIONAL_ADMIN' && role !== 'TECHNICIAN' && role !== 'VENDOR') {
     return { siteIds: null, empty: false };
   }
   const assigned = await assignedSiteIdsForUser(req.auth.sub);

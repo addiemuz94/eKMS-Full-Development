@@ -51,6 +51,9 @@ const WebsiteSettingsPage = lazy(() =>
 const RolePermissionsPage = lazy(() =>
   import('./pages/RolePermissionsPage').then((m) => ({ default: m.RolePermissionsPage })),
 )
+const KeyAccessPage = lazy(() =>
+  import('./pages/KeyAccessPage').then((m) => ({ default: m.KeyAccessPage })),
+)
 
 function RequireAuth({ children }: { children: React.ReactNode }) {
   const { session } = useAuth()
@@ -129,7 +132,14 @@ export default function App() {
         />
         <Route path="keys" element={<Navigate to="/terminals" replace />} />
         <Route path="permissions" element={<Navigate to="/terminals" replace />} />
-        <Route path="key-access" element={<Navigate to="/terminals" replace />} />
+        <Route
+          path="key-access"
+          element={
+            <Suspense fallback={<PageFallback />}>
+              <KeyAccessPage />
+            </Suspense>
+          }
+        />
         <Route path="events" element={<Navigate to="/terminals" replace />} />
         <Route path="schedules" element={<Navigate to="/terminals" replace />} />
         <Route path="multi-auth" element={<Navigate to="/terminals" replace />} />

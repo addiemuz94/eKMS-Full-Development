@@ -21,10 +21,16 @@ const router = Router();
 const nodeCountSchema = z.number().int().min(1).max(127);
 
 /** Same two-layer model as sites.js's office-hours check — see isSiteAssignedToUser's doc.
- * Regional Admin may read/write cabinet-settings only for terminals at their assigned sites. */
+ * Site-assigned portal roles may read/write cabinet-settings only for their assigned sites. */
 async function assertMayAccessCabinetSettings(req, siteId) {
   if (req.auth?.role === 'SUPER_ADMIN') return true;
-  if (req.auth?.role === 'REGIONAL_ADMIN') return isSiteAssignedToUser(req.auth.sub, siteId);
+  if (
+    req.auth?.role === 'REGIONAL_ADMIN' ||
+    req.auth?.role === 'TECHNICIAN' ||
+    req.auth?.role === 'VENDOR'
+  ) {
+    return isSiteAssignedToUser(req.auth.sub, siteId);
+  }
   return false;
 }
 

@@ -334,7 +334,13 @@ async function loadOfficeHours(siteId) {
  */
 async function assertMayAccessOfficeHours(req, siteId) {
   if (req.auth?.role === 'SUPER_ADMIN') return true;
-  if (req.auth?.role === 'REGIONAL_ADMIN') return isSiteAssignedToUser(req.auth.sub, siteId);
+  if (
+    req.auth?.role === 'REGIONAL_ADMIN' ||
+    req.auth?.role === 'TECHNICIAN' ||
+    req.auth?.role === 'VENDOR'
+  ) {
+    return isSiteAssignedToUser(req.auth.sub, siteId);
+  }
   return false;
 }
 

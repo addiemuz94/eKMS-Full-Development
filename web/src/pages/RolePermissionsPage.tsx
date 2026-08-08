@@ -76,7 +76,7 @@ export function RolePermissionsPage() {
     const ok = await confirmAction({
       title: `Save ${ROLE_COLUMNS.find((c) => c.id === role)?.label ?? role} permissions?`,
       message:
-        'Disabled capabilities take effect immediately for that role. You cannot grant Super Admin-only tools from this page.',
+        'Disabled capabilities take effect immediately for that role. Newly unlocked Admin tools stay off until you enable them here.',
       confirmLabel: 'Save',
     })
     if (!ok) return
@@ -108,7 +108,6 @@ export function RolePermissionsPage() {
     roleId: string,
   ): 'on' | 'off' | 'locked-on' | 'locked-off' {
     if (roleId === 'SUPER_ADMIN') return 'locked-on'
-    if (entry.superAdminOnly) return 'locked-off'
     const ceiling = data?.ceilings[roleId] || []
     if (!ceiling.includes(entry.key)) return 'locked-off'
     return draft[roleId]?.[entry.key] ? 'on' : 'off'
@@ -137,8 +136,8 @@ export function RolePermissionsPage() {
           <h1>Role permissions</h1>
           <p className="muted">
             Enable or disable what Regional Admin, Technician, and Vendor can do. Super Admin stays
-            unrestricted. Capabilities can only remove access that a role already has — they cannot
-            grant Super Admin-only tools such as Registration, Deleted items, or Erase data.
+            unrestricted. Admin tools (Registration, User Management, Deleted items, Erase data, and
+            more) start off — tick a cell and Save to grant that role access.
           </p>
         </div>
       </div>

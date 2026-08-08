@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { api, ApiError } from '../api/client'
 import type { KeyAccessRequestDto, KeyDto, SiteDto, UserDto } from '../api/types'
+import { useAuth } from '../auth/AuthContext'
 import { Button, LinearProgress, useConfirm } from '../components/ui'
 
 function formatEpoch(ms?: number | null) {
@@ -46,7 +47,14 @@ type Props = {
   cabinetName?: string
 }
 
+function mergeById(a: KeyAccessRequestDto[], b: KeyAccessRequestDto[]) {
+  const map = new Map<string, KeyAccessRequestDto>()
+  for (const row of [...a, ...b]) map.set(row.id, row)
+  return [...map.values()]
+}
+
 export function KeyAccessPage({ lockedSiteId, embedded = false, cabinetName }: Props) {
+  const { session } = useAuth()
   const { confirmAction, dialog } = useConfirm()
   const [requests, setRequests] = useState<KeyAccessRequestDto[]>([])
   const [users, setUsers] = useState<UserDto[]>([])
@@ -59,17 +67,21 @@ export function KeyAccessPage({ lockedSiteId, embedded = false, cabinetName }: P
   const [busy, setBusy] = useState(false)
   const [busyId, setBusyId] = useState<string | null>(null)
 
+  const isTechnician = session?.role === 'TECHNICIAN'
+  const myUserId = session?.userId
+
   async function reload() {
     setBusy(true)
     setError(null)
     try {
-      const [rows, userRows, keyRows, siteRows] = await Promise.all([
+      const [ownOrScoped, picInbox, userRows, keyRows, siteRows] = await Promise.all([
         api.listKeyAccessRequests('ALL'),
-        api.listUsers(),
-        api.listKeys(),
-        api.listSites(),
+        isTechnician ? api.listPicInbox().catch(() => [] as KeyAccessRequestDto[]) : Promise.resolve([]),
+        api.listUsers().catch(() => [] as UserDto[]),
+        api.listKeys().catch(() => [] as KeyDto[]),
+        api.listSites().catch(() => [] as SiteDto[]),
       ])
-      setRequests(rows)
+      setRequests(mergeById(ownOrScoped, picInbox))
       setUsers(userRows)
       setKeys(keyRows)
       setSites(siteRows)
@@ -82,7 +94,7 @@ export function KeyAccessPage({ lockedSiteId, embedded = false, cabinetName }: P
 
   useEffect(() => {
     void reload()
-  }, [lockedSiteId])
+  }, [lockedSiteId, isTechnician])
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase()
@@ -129,6 +141,21 @@ export function KeyAccessPage({ lockedSiteId, embedded = false, cabinetName }: P
       await reload()
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'Approve failed')
+    } finally {
+      setBusyId(null)
+    }
+  }
+
+  async function picApprove(id: string) {
+    setBusyId(id)
+    setNotice(null)
+    setError(null)
+    try {
+      await api.picApproveKeyAccessRequest(id)
+      setNotice('PIC approved — request sent to Regional Admin.')
+      await reload()
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'PIC approve failed')
     } finally {
       setBusyId(null)
     }
@@ -182,6 +209,22 @@ export function KeyAccessPage({ lockedSiteId, embedded = false, cabinetName }: P
     (lockedSiteId && sites.find((s) => s.id === lockedSiteId)?.name) ||
     (lockedSiteId ? 'this location' : null)
 
+  function canPicAct(r: KeyAccessRequestDto) {
+    return (
+      isTechnician &&
+      r.status === 'PENDING_PIC' &&
+      Boolean(myUserId) &&
+      r.picUserId === myUserId
+    )
+  }
+
+  function canRaApprove(r: KeyAccessRequestDto) {
+    return (
+      !isTechnician &&
+      APPROVABLE_STATUSES.has(r.status) &&
+      (session?.role === 'SUPER_ADMIN' || session?.role === 'REGIONAL_ADMIN')
+    )
+  }
   return (
     <div className={embedded ? undefined : 'page'}>
       {dialog}
@@ -190,7 +233,8 @@ export function KeyAccessPage({ lockedSiteId, embedded = false, cabinetName }: P
           <div>
             <h1>Key Access</h1>
             <p className="muted">
-              Approve pending exception-access requests to issue a PIN, or revoke an active PIN so it
+              Approve pending exception-access requests (including Vendor requests that already
+              passed PIC review — status Pending RA) to issue a PIN, or revoke an active PIN so it
               no longer works at the cabinet. Standing location permissions are configured under
               Cabinet Management → Key Permission.
             </p>
@@ -254,7 +298,9 @@ export function KeyAccessPage({ lockedSiteId, embedded = false, cabinetName }: P
         <div className="empty-state">
           {lockedSiteId
             ? 'No key access requests for this location match this filter.'
-            : 'No key access requests match this filter.'}
+            : session?.role === 'REGIONAL_ADMIN'
+              ? 'No key access requests in your locations. If you expected a Pending RA item after PIC approval, confirm this Regional Admin is assigned to that location under Cabinet Management → Assign User, then Refresh.'
+              : 'No key access requests match this filter.'}
         </div>
       ) : (
         <div className="table-wrap">
@@ -312,7 +358,22 @@ export function KeyAccessPage({ lockedSiteId, embedded = false, cabinetName }: P
                     </td>
                     <td>
                       <div className="row-actions">
-                        {APPROVABLE_STATUSES.has(r.status) && (
+                        {canPicAct(r) && (
+                          <>
+                            <Button type="button" disabled={rowBusy} onClick={() => void picApprove(r.id)}>
+                              PIC approve
+                            </Button>
+                            <Button
+                              type="button"
+                              variant="outlined"
+                              disabled={rowBusy}
+                              onClick={() => void reject(r.id)}
+                            >
+                              Reject
+                            </Button>
+                          </>
+                        )}
+                        {canRaApprove(r) && (
                           <>
                             <Button type="button" disabled={rowBusy} onClick={() => void approve(r.id)}>
                               Approve
@@ -327,7 +388,8 @@ export function KeyAccessPage({ lockedSiteId, embedded = false, cabinetName }: P
                             </Button>
                           </>
                         )}
-                        {r.status === 'APPROVED' && (
+                        {r.status === 'APPROVED' &&
+                          (session?.role === 'SUPER_ADMIN' || session?.role === 'REGIONAL_ADMIN') && (
                           <Button
                             type="button"
                             variant="danger"
@@ -337,9 +399,12 @@ export function KeyAccessPage({ lockedSiteId, embedded = false, cabinetName }: P
                             Revoke PIN
                           </Button>
                         )}
-                        {!APPROVABLE_STATUSES.has(r.status) && r.status !== 'APPROVED' && (
-                          <span className="muted">—</span>
-                        )}
+                        {!canPicAct(r) &&
+                          !canRaApprove(r) &&
+                          !(
+                            r.status === 'APPROVED' &&
+                            (session?.role === 'SUPER_ADMIN' || session?.role === 'REGIONAL_ADMIN')
+                          ) && <span className="muted">—</span>}
                       </div>
                     </td>
                   </tr>

@@ -1,12 +1,15 @@
 /**
  * Curated role-capability catalog for the Super Admin permission matrix.
- * Capabilities only narrow each role's hardcoded allowlist ceiling — never widen it.
+ * Each editable role's ceiling is the full catalog; enabling a key grants that tool
+ * only when the matching route is also on the role's allowlist in middleware/auth.js.
+ * Defaults for newly unlocked keys are OFF (see migration 017) so behavior stays
+ * unchanged until a Super Admin explicitly ticks them.
  */
 import pool from './db.js';
 
 export const EDITABLE_ROLES = Object.freeze(['REGIONAL_ADMIN', 'TECHNICIAN', 'VENDOR']);
 
-/** Full catalog shown on the matrix page (including SA-only locked rows). */
+/** Full catalog shown on the matrix page. */
 export const CAPABILITY_CATALOG = Object.freeze([
   {
     key: 'portal.cabinet_management',
@@ -80,84 +83,56 @@ export const CAPABILITY_CATALOG = Object.freeze([
     description: 'Checkout-deadline SSE (RA) or FCM token registration',
     group: 'API',
   },
-  // Locked SA-only rows (shown greyed for non-SA — never toggleable).
   {
     key: 'portal.registration',
     label: 'Registration',
-    description: 'Location / cabinet registration wizard',
-    group: 'Super Admin only',
-    superAdminOnly: true,
+    description: 'Location / cabinet registration wizard and pairing codes',
+    group: 'Admin tools',
   },
   {
     key: 'portal.user_management',
     label: 'User Management',
     description: 'Create and manage personnel accounts',
-    group: 'Super Admin only',
-    superAdminOnly: true,
+    group: 'Admin tools',
   },
   {
     key: 'portal.deleted_items',
     label: 'Deleted items',
     description: 'Recycle Bin restore / purge',
-    group: 'Super Admin only',
-    superAdminOnly: true,
+    group: 'Admin tools',
   },
   {
     key: 'portal.erase_data',
     label: 'Erase data',
     description: 'Permanent flush by scope',
-    group: 'Super Admin only',
-    superAdminOnly: true,
+    group: 'Admin tools',
   },
   {
     key: 'cabinet.identity',
     label: 'Cabinet / Location identity',
     description: 'Cabinet Management → Cabinet and Location tabs',
-    group: 'Super Admin only',
-    superAdminOnly: true,
+    group: 'Admin tools',
   },
   {
     key: 'cabinet.assign_user',
     label: 'Assign User',
     description: 'Cabinet Management → Assign User tab',
-    group: 'Super Admin only',
-    superAdminOnly: true,
+    group: 'Admin tools',
   },
 ]);
 
-/** Keys each editable role may toggle (must stay inside auth.js allowlist ceiling). */
+const ALL_CATALOG_KEYS = Object.freeze(CAPABILITY_CATALOG.map((c) => c.key));
+
+/** Keys each editable role may toggle (full catalog — grant via matrix + allowlist). */
 export const ROLE_CEILINGS = Object.freeze({
-  REGIONAL_ADMIN: Object.freeze([
-    'portal.cabinet_management',
-    'portal.activity_report',
-    'portal.logs',
-    'cabinet.timers',
-    'cabinet.keys',
-    'cabinet.key_permission',
-    'cabinet.key_access',
-    'api.cabinet_settings',
-    'api.office_hours',
-    'api.access_grants',
-    'api.key_access_requests',
-    'api.notifications',
-  ]),
-  TECHNICIAN: Object.freeze([
-    'portal.cabinet_management',
-    'cabinet.key_access',
-    'api.key_access_requests',
-    'api.notifications',
-  ]),
-  VENDOR: Object.freeze([
-    'portal.cabinet_management',
-    'cabinet.key_access',
-    'api.key_access_requests',
-    'api.notifications',
-  ]),
+  REGIONAL_ADMIN: ALL_CATALOG_KEYS,
+  TECHNICIAN: ALL_CATALOG_KEYS,
+  VENDOR: ALL_CATALOG_KEYS,
 });
 
 /**
  * Map (method, path-inside-/v1/admin) → capability required after allowlist match.
- * First matching pattern wins.
+ * First matching pattern wins. Capability may be a string or an array (any one enabled).
  */
 const ADMIN_ROUTE_CAPABILITIES = [
   { method: 'GET', pattern: /^\/role-capabilities\/me$/, capability: null }, // always allowed if on allowlist
@@ -167,18 +142,70 @@ const ADMIN_ROUTE_CAPABILITIES = [
   { method: null, pattern: /^\/vendor-passkey-requests(\/|$)/, capability: 'api.key_access_requests' },
   { method: null, pattern: /^\/key-access-requests(\/|$)/, capability: 'api.key_access_requests' },
   { method: 'POST', pattern: /^\/mobile-push-tokens$/, capability: 'api.notifications' },
+  { method: null, pattern: /^\/recycle-bin(\/|$)/, capability: 'portal.deleted_items' },
+  { method: null, pattern: /^\/flush(\/|$)/, capability: 'portal.erase_data' },
+  { method: 'POST', pattern: /^\/terminals\/[^/]+\/pairing-code$/, capability: 'portal.registration' },
+  {
+    method: 'POST',
+    pattern: /^\/sites$/,
+    capability: ['portal.registration', 'cabinet.identity'],
+  },
+  {
+    method: 'PATCH',
+    pattern: /^\/sites\/[^/]+$/,
+    capability: ['portal.registration', 'cabinet.identity'],
+  },
+  {
+    method: 'DELETE',
+    pattern: /^\/sites\/[^/]+$/,
+    capability: ['portal.registration', 'cabinet.identity'],
+  },
+  {
+    method: 'POST',
+    pattern: /^\/terminals$/,
+    capability: ['portal.registration', 'cabinet.identity'],
+  },
+  {
+    method: 'PATCH',
+    pattern: /^\/terminals\/[^/]+$/,
+    capability: ['portal.registration', 'cabinet.identity'],
+  },
+  {
+    method: 'DELETE',
+    pattern: /^\/terminals\/[^/]+$/,
+    capability: ['portal.registration', 'cabinet.identity'],
+  },
+  { method: 'POST', pattern: /^\/users$/, capability: ['portal.user_management', 'cabinet.assign_user'] },
+  {
+    method: 'PATCH',
+    pattern: /^\/users\/[^/]+$/,
+    capability: ['portal.user_management', 'cabinet.assign_user'],
+  },
+  { method: 'DELETE', pattern: /^\/users\/[^/]+$/, capability: 'portal.user_management' },
+  {
+    method: 'GET',
+    pattern: /^\/users(\/|$)/,
+    capability: ['portal.cabinet_management', 'portal.user_management', 'cabinet.assign_user'],
+  },
   { method: null, pattern: /^\/keys(\/|$)/, capability: 'cabinet.keys' },
   { method: null, pattern: /^\/key-slots(\/|$)/, capability: 'cabinet.keys' },
-  { method: null, pattern: /^\/users(\/|$)/, capability: 'portal.cabinet_management' },
   { method: null, pattern: /^\/sites(\/|$)/, capability: 'portal.cabinet_management' },
   { method: null, pattern: /^\/terminals(\/|$)/, capability: 'portal.cabinet_management' },
 ];
 
-/** Tech/Vendor keys/access-grants reads support Key Access apply — use key_access_requests. */
+/** Tech/Vendor GET keys/grants — Key Access apply OR Keys / Key Permission tabs. */
 const TECH_VENDOR_ROUTE_OVERRIDES = [
-  { method: null, pattern: /^\/keys(\/|$)/, capability: 'api.key_access_requests' },
-  { method: null, pattern: /^\/access-grants(\/|$)/, capability: 'api.key_access_requests' },
-];
+  {
+    method: 'GET',
+    pattern: /^\/keys(\/|$)/,
+    capability: ['api.key_access_requests', 'cabinet.keys'],
+  },
+  {
+    method: 'GET',
+    pattern: /^\/access-grants(\/|$)/,
+    capability: ['api.key_access_requests', 'api.access_grants', 'cabinet.key_permission'],
+  },
+]
 
 let cacheByRole = null;
 
@@ -210,16 +237,23 @@ async function ensureCache() {
 export async function isCapabilityEnabled(role, capabilityKey) {
   if (!role || role === 'SUPER_ADMIN') return true;
   if (!capabilityKey) return true;
+  const keys = Array.isArray(capabilityKey) ? capabilityKey : [capabilityKey];
+  for (const key of keys) {
+    if (await isSingleCapabilityEnabled(role, key)) return true;
+  }
+  return false;
+}
+
+async function isSingleCapabilityEnabled(role, capabilityKey) {
   const ceiling = ROLE_CEILINGS[role];
   if (!ceiling) return true; // TERMINAL_DEVICE / GOD_ADMIN — no capability layer
   if (!ceiling.includes(capabilityKey)) {
-    // Outside ceiling = not grantable; treat as disabled for this check
     return false;
   }
   const cache = await ensureCache();
   const roleMap = cache.get(role);
   if (!roleMap || !roleMap.has(capabilityKey)) {
-    // Missing seed row: fail open to historical default (enabled)
+    // Missing seed row: fail open to historical default (enabled) for legacy ceiling keys
     return true;
   }
   return roleMap.get(capabilityKey) === true;

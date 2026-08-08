@@ -121,6 +121,7 @@ export type KeyAccessRequestDto = {
   requesterUserId: string
   requesterRole: string
   requesterDisplayName?: string | null
+  picUserId?: string | null
   siteId: string
   siteName?: string | null
   cabinetNames?: string[]
@@ -171,18 +172,31 @@ export type ActivitySummaryResponse = {
   byCategory: Partial<Record<ReportCategory, number>>
 }
 
-// Checkout-deadline live SSE events — see backend/src/deadlineMonitor.js. The wire payload only
-// ever carries these three fields (no title/body text — that's rendered client-side).
-export type NotificationStreamEventType = 'CHECKOUT_WARNING_15MIN' | 'CHECKOUT_OVERDUE'
+// Checkout-deadline + key-access live SSE events — see backend notifications.js / deadlineMonitor.js /
+// keyAccessRequests.js. Checkout payload carries checkout fields; key-access may carry title/body.
+export type NotificationStreamEventType =
+  | 'CHECKOUT_WARNING_15MIN'
+  | 'CHECKOUT_OVERDUE'
+  | 'KEY_ACCESS_PENDING_PIC'
+  | 'KEY_ACCESS_PENDING'
+  | 'KEY_ACCESS_PENDING_RA'
+  | 'KEY_ACCESS_APPROVED'
+  | 'KEY_ACCESS_REJECTED'
+  | 'KEY_ACCESS_REVOKED'
 
 export type NotificationStreamPayload = {
-  checkoutId: string
-  keyId: string
-  dueAtEpochMillis: number
+  checkoutId?: string
+  keyId?: string
+  dueAtEpochMillis?: number
   /** Present on events emitted after RA SSE support (Aug 2026). */
   siteId?: string
   keyDisplayName?: string
   terminalName?: string
+  /** Key-access events */
+  requestId?: string
+  stage?: string
+  title?: string
+  body?: string
 }
 
 export type RoleCapabilityCatalogEntry = {

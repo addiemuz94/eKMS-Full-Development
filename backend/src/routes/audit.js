@@ -18,8 +18,13 @@ router.get('/', async (req, res) => {
   const limit = Math.min(Number(req.query.limit || 100), 500);
   // Default ACTIVE — deleted-cabinet history belongs on Activity archive / Deleted items.
   let cabinetScope = parseCabinetScope(req.query.cabinetScope, 'ACTIVE');
-  // Regional Admin may not browse deleted-cabinet archive.
-  if (req.auth?.role === 'REGIONAL_ADMIN' && cabinetScope === 'DELETED') {
+  // Non–Super Admin may not browse deleted-cabinet archive (Activity archive stays SA-facing).
+  if (
+    (req.auth?.role === 'REGIONAL_ADMIN' ||
+      req.auth?.role === 'TECHNICIAN' ||
+      req.auth?.role === 'VENDOR') &&
+    cabinetScope === 'DELETED'
+  ) {
     return res.json({ items: [] });
   }
 

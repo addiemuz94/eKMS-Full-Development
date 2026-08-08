@@ -18,11 +18,17 @@ function relativeTime(epochMillis: number): string {
 }
 
 function NotificationRow({ item }: { item: StoredNotification }) {
-  const overdue = item.eventType === 'CHECKOUT_OVERDUE'
-  const Icon = overdue ? AlertTriangle : Clock3
+  const overdue =
+    item.eventType === 'CHECKOUT_OVERDUE' ||
+    item.eventType === 'KEY_ACCESS_REJECTED' ||
+    item.eventType === 'KEY_ACCESS_REVOKED'
+  const keyAccess = item.eventType.startsWith('KEY_ACCESS_')
+  const Icon = overdue ? AlertTriangle : keyAccess ? Bell : Clock3
   return (
     <article
-      className={`notif-item${item.read ? '' : ' unread'}${overdue ? ' notif-item-danger' : ' notif-item-warning'}`}
+      className={`notif-item${item.read ? '' : ' unread'}${
+        overdue ? ' notif-item-danger' : keyAccess ? ' notif-item-info' : ' notif-item-warning'
+      }`}
     >
       <span className="notif-item-icon" aria-hidden="true">
         <Icon size={16} />
@@ -36,7 +42,7 @@ function NotificationRow({ item }: { item: StoredNotification }) {
   )
 }
 
-/** Top-right bell + dropdown. Super Admin and Regional Admin only — other roles render nothing. */
+/** Top-right bell + dropdown — SA always; RA/Tech/Vendor when api.notifications is on. */
 export function NotificationBell() {
   const { session } = useAuth()
   const { hasCapability } = useCapabilities()
@@ -64,7 +70,9 @@ export function NotificationBell() {
 
   const role = session?.role
   const canSeeBell =
-    role === 'SUPER_ADMIN' || (role === 'REGIONAL_ADMIN' && hasCapability('api.notifications'))
+    role === 'SUPER_ADMIN' ||
+    ((role === 'REGIONAL_ADMIN' || role === 'TECHNICIAN' || role === 'VENDOR') &&
+      hasCapability('api.notifications'))
   if (!canSeeBell) return null
 
   return (
@@ -96,7 +104,7 @@ export function NotificationBell() {
               <h3>Notifications</h3>
               <p className="notif-panel-sub">
                 {notifications.length === 0
-                  ? 'Checkout deadline alerts'
+                  ? 'Checkout and key-access alerts'
                   : unreadCount > 0
                     ? `${unreadCount} unread`
                     : `${notifications.length} recent`}
@@ -116,7 +124,9 @@ export function NotificationBell() {
               <div className="notif-empty">
                 <BellOff size={28} strokeWidth={1.5} aria-hidden="true" />
                 <p className="notif-empty-title">You’re all caught up</p>
-                <p className="notif-empty-body">Key return warnings will show up here.</p>
+                <p className="notif-empty-body">
+                  Key return warnings and key-access requests will show up here.
+                </p>
               </div>
             ) : (
               notifications.map((item) => <NotificationRow item={item} key={item.id} />)

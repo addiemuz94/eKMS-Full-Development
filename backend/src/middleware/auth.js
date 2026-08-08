@@ -28,14 +28,16 @@ export function requireSuperAdmin(req, res, next) {
   return next();
 }
 
-/** Super Admin unrestricted; Regional Admin may reach audit/reports (row-scoped in handlers). */
+/**
+ * Super Admin unrestricted; Regional Admin / Technician / Vendor may reach audit/reports
+ * when the matching role-capability is enabled (row-scoped in handlers for site-assigned roles).
+ */
 export function requireSuperAdminOrRegionalAdmin(req, res, next) {
   if (req.auth?.role === 'SUPER_ADMIN') {
     return next();
   }
-  if (req.auth?.role === 'REGIONAL_ADMIN') {
-    // Narrow-only: capability for this mount (audit vs reports) must still be enabled.
-    // req.baseUrl is e.g. /v1/audit or /v1/reports when mounted as a sub-router.
+  const role = req.auth?.role;
+  if (role === 'REGIONAL_ADMIN' || role === 'TECHNICIAN' || role === 'VENDOR') {
     const mount = String(req.baseUrl || '');
     const prefix = mount.endsWith('/audit')
       ? 'audit'
@@ -43,17 +45,20 @@ export function requireSuperAdminOrRegionalAdmin(req, res, next) {
         ? 'reports'
         : null;
     const cap = prefix ? capabilityForAuditOrReports(prefix, req.path || '') : 'portal.activity_report';
-    return void isCapabilityEnabled('REGIONAL_ADMIN', cap).then((ok) => {
+    return void isCapabilityEnabled(role, cap).then((ok) => {
       if (!ok) {
         return res.status(403).json({
           error: 'FORBIDDEN',
-          message: 'This capability is disabled for Regional Admin',
+          message: 'This capability is disabled for your role',
         });
       }
       return next();
     });
   }
-  return res.status(403).json({ error: 'FORBIDDEN', message: 'Super Admin or Regional Admin required' });
+  return res.status(403).json({
+    error: 'FORBIDDEN',
+    message: 'Super Admin or an authorized portal role required',
+  });
 }
 
 /**
@@ -197,6 +202,31 @@ const REGIONAL_ADMIN_ALLOWED_ROUTES = [
   { method: 'GET', pattern: /^\/key-slots\/[^/]+$/ },
   // Super Admin permission matrix — self-read only (full GET/PUT stay Super-Admin-only).
   { method: 'GET', pattern: /^\/role-capabilities\/me$/ },
+  // Optional grants via Role permissions matrix (default OFF — migration 017). Capability
+  // middleware still requires the matching catalog key before these succeed.
+  { method: 'POST', pattern: /^\/sites$/ },
+  { method: 'PATCH', pattern: /^\/sites\/[^/]+$/ },
+  { method: 'DELETE', pattern: /^\/sites\/[^/]+$/ },
+  { method: 'POST', pattern: /^\/terminals$/ },
+  { method: 'PATCH', pattern: /^\/terminals\/[^/]+$/ },
+  { method: 'DELETE', pattern: /^\/terminals\/[^/]+$/ },
+  { method: 'POST', pattern: /^\/terminals\/[^/]+\/pairing-code$/ },
+  { method: 'POST', pattern: /^\/users$/ },
+  { method: 'PATCH', pattern: /^\/users\/[^/]+$/ },
+  { method: 'DELETE', pattern: /^\/users\/[^/]+$/ },
+  { method: 'POST', pattern: /^\/keys$/ },
+  { method: 'PATCH', pattern: /^\/keys\/[^/]+$/ },
+  { method: 'DELETE', pattern: /^\/keys\/[^/]+$/ },
+  { method: 'POST', pattern: /^\/key-slots$/ },
+  { method: 'PATCH', pattern: /^\/key-slots\/[^/]+$/ },
+  { method: 'DELETE', pattern: /^\/key-slots\/[^/]+$/ },
+  { method: 'DELETE', pattern: /^\/access-grants\/[^/]+$/ },
+  { method: 'GET', pattern: /^\/recycle-bin$/ },
+  { method: 'POST', pattern: /^\/recycle-bin\/restore$/ },
+  { method: 'POST', pattern: /^\/recycle-bin\/purge$/ },
+  { method: 'POST', pattern: /^\/recycle-bin\/purge-expired$/ },
+  { method: 'GET', pattern: /^\/flush\/preview$/ },
+  { method: 'POST', pattern: /^\/flush$/ },
 ];
 
 /**
@@ -240,6 +270,42 @@ const TECHNICIAN_VENDOR_ALLOWED_ROUTES = [
   { method: 'GET', pattern: /^\/terminals\/[^/]+$/ },
   // Super Admin permission matrix — self-read only.
   { method: 'GET', pattern: /^\/role-capabilities\/me$/ },
+  // Optional grants via Role permissions matrix (default OFF — migration 017).
+  { method: 'GET', pattern: /^\/terminals\/[^/]+\/cabinet-settings$/ },
+  { method: 'PATCH', pattern: /^\/terminals\/[^/]+\/cabinet-settings$/ },
+  { method: 'GET', pattern: /^\/sites\/[^/]+\/office-hours$/ },
+  { method: 'PATCH', pattern: /^\/sites\/[^/]+\/office-hours$/ },
+  { method: 'GET', pattern: /^\/access-grants\/[^/]+$/ },
+  { method: 'POST', pattern: /^\/access-grants$/ },
+  { method: 'PATCH', pattern: /^\/access-grants\/[^/]+$/ },
+  { method: 'DELETE', pattern: /^\/access-grants\/[^/]+$/ },
+  { method: 'GET', pattern: /^\/users$/ },
+  { method: 'GET', pattern: /^\/users\/[^/]+$/ },
+  { method: 'POST', pattern: /^\/users$/ },
+  { method: 'PATCH', pattern: /^\/users\/[^/]+$/ },
+  { method: 'DELETE', pattern: /^\/users\/[^/]+$/ },
+  { method: 'GET', pattern: /^\/keys\/[^/]+$/ },
+  { method: 'POST', pattern: /^\/keys$/ },
+  { method: 'PATCH', pattern: /^\/keys\/[^/]+$/ },
+  { method: 'DELETE', pattern: /^\/keys\/[^/]+$/ },
+  { method: 'GET', pattern: /^\/key-slots$/ },
+  { method: 'GET', pattern: /^\/key-slots\/[^/]+$/ },
+  { method: 'POST', pattern: /^\/key-slots$/ },
+  { method: 'PATCH', pattern: /^\/key-slots\/[^/]+$/ },
+  { method: 'DELETE', pattern: /^\/key-slots\/[^/]+$/ },
+  { method: 'POST', pattern: /^\/sites$/ },
+  { method: 'PATCH', pattern: /^\/sites\/[^/]+$/ },
+  { method: 'DELETE', pattern: /^\/sites\/[^/]+$/ },
+  { method: 'POST', pattern: /^\/terminals$/ },
+  { method: 'PATCH', pattern: /^\/terminals\/[^/]+$/ },
+  { method: 'DELETE', pattern: /^\/terminals\/[^/]+$/ },
+  { method: 'POST', pattern: /^\/terminals\/[^/]+\/pairing-code$/ },
+  { method: 'GET', pattern: /^\/recycle-bin$/ },
+  { method: 'POST', pattern: /^\/recycle-bin\/restore$/ },
+  { method: 'POST', pattern: /^\/recycle-bin\/purge$/ },
+  { method: 'POST', pattern: /^\/recycle-bin\/purge-expired$/ },
+  { method: 'GET', pattern: /^\/flush\/preview$/ },
+  { method: 'POST', pattern: /^\/flush$/ },
 ];
 
 /**
@@ -261,8 +327,9 @@ const GOD_ADMIN_ALLOWED_ROUTES = [
  * — remains 403. `/v1/audit` and `/v1/reports` use `requireSuperAdminOrRegionalAdmin`
  * (RA results are site-scoped in those handlers).
  *
- * After an allowlist hit for RA/Tech/Vendor, the role-capability matrix (migration 016) may
- * still deny the request — capabilities only narrow the static ceiling, never widen it.
+ * After an allowlist hit for RA/Tech/Vendor, the role-capability matrix may still deny the
+ * request. Ceiling keys that were historically SA-only default OFF (migration 017) until a
+ * Super Admin enables them on the Role permissions page.
  */
 export function requireSuperAdminOrAllowlistedRole(req, res, next) {
   if (req.auth?.role === 'SUPER_ADMIN') {

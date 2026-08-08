@@ -45,8 +45,9 @@ fun DashboardScreen(
     var loadError by remember { mutableStateOf<String?>(null) }
     var hasData by remember { mutableStateOf(false) }
 
-    val isApprover =
+    val isAdminApprover =
         profile?.role == UserRole.SUPER_ADMIN || profile?.role == UserRole.REGIONAL_ADMIN
+    val isPic = profile?.role == UserRole.TECHNICIAN
 
     LaunchedEffect(profile?.id, refreshEpoch) {
         val showSpinner = !hasData
@@ -55,13 +56,24 @@ fun DashboardScreen(
         loadError = null
         try {
             terminalCount = apiClient.listTerminals().size
-            val requests = apiClient.listKeyAccessRequests(status = "ALL")
-            pendingCount = requests.count {
-                it.status == KeyAccessRequestStatus.PENDING ||
-                    it.status == KeyAccessRequestStatus.PENDING_RA ||
-                    it.status == KeyAccessRequestStatus.PENDING_PIC
+            if (isAdminApprover) {
+                val requests = apiClient.listKeyAccessRequests(status = "ALL")
+                pendingCount = requests.count {
+                    it.status == KeyAccessRequestStatus.PENDING ||
+                        it.status == KeyAccessRequestStatus.PENDING_RA ||
+                        it.status == KeyAccessRequestStatus.PENDING_PIC
+                }
+                myRequestCount = requests.size
+            } else if (isPic) {
+                val picInbox = apiClient.listPicInbox()
+                val own = apiClient.listKeyAccessRequests(status = "ALL")
+                pendingCount = picInbox.size
+                myRequestCount = own.size
+            } else {
+                val requests = apiClient.listKeyAccessRequests(status = "ALL")
+                pendingCount = 0
+                myRequestCount = requests.size
             }
-            myRequestCount = requests.size
             hasData = true
             onLiveStatus(true, false)
         } catch (e: Exception) {
@@ -90,13 +102,13 @@ fun DashboardScreen(
             loading -> CircularProgressIndicator()
             loadError != null && !hasData -> Text(loadError!!, color = MaterialTheme.colorScheme.error)
             else -> {
-                if (isApprover) {
+                if (isAdminApprover || isPic) {
                     CompanionCard(
-                        title = "Pending access",
+                        title = if (isPic) "PIC inbox" else "Pending access",
                         description = when (pendingCount) {
-                            0 -> "No pending key access requests."
-                            1 -> "1 request waiting for approval."
-                            else -> "$pendingCount requests waiting for approval."
+                            0 -> if (isPic) "No vendor requests waiting for your PIC approval." else "No pending key access requests."
+                            1 -> if (isPic) "1 vendor request waiting for your PIC approval." else "1 request waiting for approval."
+                            else -> if (isPic) "$pendingCount vendor requests waiting for your PIC approval." else "$pendingCount requests waiting for approval."
                         },
                         actionLabel = "View",
                         onOpen = onOpenAccess,
@@ -111,6 +123,18 @@ fun DashboardScreen(
                         actionLabel = "View",
                         onOpen = onOpenAlerts,
                     )
+                    if (isPic) {
+                        CompanionCard(
+                            title = "My requests",
+                            description = when (myRequestCount) {
+                                0 -> "No key access requests of your own yet."
+                                1 -> "1 of your key access requests on file."
+                                else -> "$myRequestCount of your key access requests on file."
+                            },
+                            actionLabel = "Open",
+                            onOpen = onOpenAccess,
+                        )
+                    }
                 } else {
                     CompanionCard(
                         title = "Key access",

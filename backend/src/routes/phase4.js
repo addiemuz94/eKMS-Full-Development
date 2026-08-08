@@ -794,7 +794,12 @@ async function reportsSiteScope(req, siteId = null) {
 }
 
 function rejectDeletedScopeForRa(req, cabinetScope) {
-  return req.auth?.role === 'REGIONAL_ADMIN' && cabinetScope === 'DELETED';
+  return (
+    (req.auth?.role === 'REGIONAL_ADMIN' ||
+      req.auth?.role === 'TECHNICIAN' ||
+      req.auth?.role === 'VENDOR') &&
+    cabinetScope === 'DELETED'
+  );
 }
 
 const reportsRouter = Router();

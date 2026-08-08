@@ -11,20 +11,26 @@ import { assignedSiteIdsForUser } from '../util.js';
 
 const router = Router();
 
-/** SA always; RA only when api.notifications capability is enabled (narrow-only matrix). */
-async function requireSaOrRaNotifications(req, res, next) {
+/**
+ * SA always. RA / Technician / Vendor when `api.notifications` is enabled for that role.
+ * Technicians need this for PIC (Vendor Stage-1) alerts on the portal bell.
+ */
+async function requirePortalNotifications(req, res, next) {
   const role = req.auth?.role;
   if (role === 'SUPER_ADMIN') return next();
-  if (role === 'REGIONAL_ADMIN') {
-    if (!(await isCapabilityEnabled('REGIONAL_ADMIN', 'api.notifications'))) {
+  if (role === 'REGIONAL_ADMIN' || role === 'TECHNICIAN' || role === 'VENDOR') {
+    if (!(await isCapabilityEnabled(role, 'api.notifications'))) {
       return res.status(403).json({
         error: 'FORBIDDEN',
-        message: 'This capability is disabled for Regional Admin',
+        message: 'This capability is disabled for your role',
       });
     }
     return next();
   }
-  return res.status(403).json({ error: 'FORBIDDEN', message: 'Super Admin or Regional Admin required' });
+  return res.status(403).json({
+    error: 'FORBIDDEN',
+    message: 'Portal notifications are not available for this role',
+  });
 }
 
 // Deliberately NOT mounted behind a blanket requireAuth (unlike every other admin router) —
@@ -34,17 +40,19 @@ async function requireSaOrRaNotifications(req, res, next) {
 // notifications.js's own doc for the full reasoning. This is the same class of deliberate,
 // explicitly-reasoned exception to "every route sits behind requireAuth" that pair-with-code
 // and passkey-login already are, not an oversight.
-router.post('/stream/ticket', requireAuth, requireSaOrRaNotifications, async (req, res) => {
+router.post('/stream/ticket', requireAuth, requirePortalNotifications, async (req, res) => {
   const role = req.auth.role;
   const siteIds =
-    role === 'REGIONAL_ADMIN' ? await assignedSiteIdsForUser(req.auth.sub) : null;
+    role === 'REGIONAL_ADMIN' || role === 'TECHNICIAN'
+      ? await assignedSiteIdsForUser(req.auth.sub)
+      : null;
   const ticket = mintStreamTicket(req.auth.sub, { role, siteIds });
   res.json({ ticket });
 });
 
 // Ticket-authenticated, not JWT-authenticated — the ticket itself was only ever mintable by an
-// already-`requireAuth`+`requireSuperAdminOrRegionalAdmin`-checked caller, is single-use, and
-// expires in 30s, so consuming it here is the actual auth check for this connection.
+// already-authenticated + capability-checked caller, is single-use, and expires in 30s, so
+// consuming it here is the actual auth check for this connection.
 router.get('/stream', (req, res) => {
   const ticket = req.query.ticket;
   const identity = typeof ticket === 'string' ? consumeStreamTicket(ticket) : null;

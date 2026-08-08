@@ -443,8 +443,16 @@ export const api = {
       'GET',
       `/v1/admin/key-access-requests?status=${encodeURIComponent(status)}`,
     ).then((r) => r.items ?? []),
+  listPicInbox: () =>
+    request<ListResponse<KeyAccessRequestDto>>('GET', '/v1/admin/key-access-requests/pic-inbox').then(
+      (r) => r.items ?? [],
+    ),
   approveKeyAccessRequest: (id: string) =>
     request<Record<string, unknown>>('POST', `/v1/admin/key-access-requests/${id}/approve`, {}, {
+      idempotent: true,
+    }),
+  picApproveKeyAccessRequest: (id: string) =>
+    request<KeyAccessRequestDto>('POST', `/v1/admin/key-access-requests/${id}/pic-approve`, {}, {
       idempotent: true,
     }),
   rejectKeyAccessRequest: (id: string) =>

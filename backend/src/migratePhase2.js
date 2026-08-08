@@ -67,6 +67,7 @@ async function migrate() {
   await applySqlFile('014_users_original_email.sql', { ignoreDuplicates: true });
   await applySqlFile('015_site_key_access_duration.sql', { ignoreDuplicates: true });
   await applySqlFile('016_role_capabilities.sql', { ignoreDuplicates: true });
+  await applySqlFile('017_role_capabilities_unlock_admin_tools.sql', { ignoreDuplicates: true });
   process.exit(0);
 }
 

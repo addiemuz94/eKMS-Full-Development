@@ -7,10 +7,9 @@ import { z } from 'zod';
 import crypto from 'crypto';
 import pool from '../db.js';
 import { badRequest, nowMs, writeAudit } from '../util.js';
-import { requireSuperAdmin } from '../middleware/auth.js';
 
 const router = Router();
-router.use(requireSuperAdmin);
+// Reachability: allowlist + portal.erase_data capability (auth.js). Super Admin always passes.
 
 const SCOPES = ['TERMINALS', 'KEYS', 'USERS', 'SITES', 'ACCESS_GRANTS', 'ALL'];
 const CONFIRM_TOKEN = 'I_UNDERSTAND_PERMANENT_FLUSH';

@@ -90,8 +90,12 @@ router.get('/', async (req, res) => {
   let sql = `SELECT * FROM users WHERE lifecycle_state = :state AND role <> 'GOD_ADMIN'`;
   const params = { state };
 
-  // Regional Admin: only personnel assigned to at least one of the RA's sites.
-  if (req.auth?.role === 'REGIONAL_ADMIN') {
+  // Site-assigned portal roles: only personnel assigned to at least one of their sites.
+  if (
+    req.auth?.role === 'REGIONAL_ADMIN' ||
+    req.auth?.role === 'TECHNICIAN' ||
+    req.auth?.role === 'VENDOR'
+  ) {
     const assignedSiteIds = await assignedSiteIdsForUser(req.auth.sub);
     if (assignedSiteIds.length === 0) return res.json({ items: [] });
     if (siteId && !assignedSiteIds.includes(siteId)) return res.json({ items: [] });
@@ -134,7 +138,9 @@ router.get('/:id', async (req, res) => {
   if (rows[0].role === 'GOD_ADMIN' && req.auth?.role !== 'GOD_ADMIN') {
     return notFound(res, 'User not found');
   }
-  if (req.auth?.role === 'REGIONAL_ADMIN') {
+  if (req.auth?.role === 'REGIONAL_ADMIN' ||
+      req.auth?.role === 'TECHNICIAN' ||
+      req.auth?.role === 'VENDOR') {
     const assignedSiteIds = await assignedSiteIdsForUser(req.auth.sub);
     if (assignedSiteIds.length === 0) return notFound(res, 'User not found');
     const userSites = await assignedSites(rows[0].id);
@@ -157,6 +163,16 @@ router.post('/', async (req, res) => {
   });
   const parsed = schema.safeParse(req.body);
   if (!parsed.success) return badRequest(res, 'Invalid user payload');
+
+  // Non–Super Admin (including capability-granted RA/Tech/Vendor) may never create Super Admins.
+  if (req.auth?.role !== 'SUPER_ADMIN' && req.auth?.role !== 'GOD_ADMIN') {
+    if (parsed.data.role === 'SUPER_ADMIN') {
+      return res.status(403).json({
+        error: 'FORBIDDEN',
+        message: 'Only Super Admin may create Super Admin accounts',
+      });
+    }
+  }
 
   // God Admin may only create the first Super Admin.
   if (req.auth?.role === 'GOD_ADMIN') {
@@ -181,9 +197,8 @@ router.post('/', async (req, res) => {
     }
   }
 
-  if (parsed.data.role !== 'SUPER_ADMIN' && parsed.data.assignedSiteIds.length === 0) {
-    return badRequest(res, 'REGIONAL_ADMIN, TECHNICIAN, and VENDOR require at least one assigned site');
-  }
+  // Empty assignedSiteIds is allowed for REGIONAL_ADMIN / TECHNICIAN / VENDOR — User Management
+  // creates org accounts only; Cabinet Management → Assign User (or create-and-assign) binds sites.
 
   const id = newId();
   const now = nowMs();
@@ -243,16 +258,16 @@ router.patch('/:id', async (req, res) => {
     displayName: z.string().min(1),
     email: z.string().email(),
     role: z.enum(['SUPER_ADMIN', 'REGIONAL_ADMIN', 'TECHNICIAN', 'VENDOR']),
-    assignedSiteIds: z.array(z.string().uuid()).default([]),
-    assignedRegionIds: z.array(z.string().uuid()).default([]),
+    // Optional: omit to leave existing site/region links unchanged (Assign User / User Management
+    // must not wipe the other dimension when they only send one).
+    assignedSiteIds: z.array(z.string().uuid()).optional(),
+    assignedRegionIds: z.array(z.string().uuid()).optional(),
     staffId: z.string().max(128).nullable().optional(),
     expectedRevision: z.number().int().nonnegative(),
   });
   const parsed = schema.safeParse(req.body);
   if (!parsed.success) return badRequest(res, 'Invalid user update');
-  if (parsed.data.role !== 'SUPER_ADMIN' && parsed.data.assignedSiteIds.length === 0) {
-    return badRequest(res, 'REGIONAL_ADMIN, TECHNICIAN, and VENDOR require at least one assigned site');
-  }
+  // Empty assignedSiteIds allowed when explicitly sent — unassigned pool until Cabinet Assign User.
 
   const [existing] = await pool.execute(
     `SELECT * FROM users WHERE id = :id AND lifecycle_state = 'ACTIVE' LIMIT 1`,
@@ -261,6 +276,14 @@ router.patch('/:id', async (req, res) => {
   if (!existing[0]) return notFound(res, 'User not found');
   if (existing[0].role === 'GOD_ADMIN') {
     return res.status(403).json({ error: 'FORBIDDEN', message: 'God Admin cannot be edited' });
+  }
+  if (req.auth?.role !== 'SUPER_ADMIN') {
+    if (existing[0].role === 'SUPER_ADMIN' || parsed.data.role === 'SUPER_ADMIN') {
+      return res.status(403).json({
+        error: 'FORBIDDEN',
+        message: 'Only Super Admin may edit Super Admin accounts',
+      });
+    }
   }
   if (Number(existing[0].revision) !== parsed.data.expectedRevision) return conflict(res);
 
@@ -287,8 +310,12 @@ router.patch('/:id', async (req, res) => {
       await conn.rollback();
       return conflict(res);
     }
-    await replaceAssignments(conn, req.params.id, parsed.data.assignedSiteIds);
-    await replaceRegionAssignments(conn, req.params.id, parsed.data.assignedRegionIds);
+    if (parsed.data.assignedSiteIds !== undefined) {
+      await replaceAssignments(conn, req.params.id, parsed.data.assignedSiteIds);
+    }
+    if (parsed.data.assignedRegionIds !== undefined) {
+      await replaceRegionAssignments(conn, req.params.id, parsed.data.assignedRegionIds);
+    }
     await conn.commit();
   } catch (err) {
     await conn.rollback();

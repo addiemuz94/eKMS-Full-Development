@@ -24,6 +24,7 @@ function isSelf(person: UserDto, session: { userId?: string; email: string } | n
 
 export function PersonnelPage() {
   const { session } = useAuth()
+  const isSuperAdmin = session?.role === 'SUPER_ADMIN'
   const { confirmAction, dialog } = useConfirm()
   const [people, setPeople] = useState<UserDto[]>([])
   const [sites, setSites] = useState<SiteDto[]>([])
@@ -40,10 +41,6 @@ export function PersonnelPage() {
   const [email, setEmail] = useState('')
   const [staffId, setStaffId] = useState('')
   const [role, setRole] = useState('TECHNICIAN')
-  const [siteId, setSiteId] = useState('')
-  // Multi-site picker, REGIONAL_ADMIN only — Technician/Vendor keep the single `siteId` select
-  // above exactly as-is (one physical work site each, not a role-agnostic change).
-  const [selectedSiteIds, setSelectedSiteIds] = useState<string[]>([])
   const [password, setPassword] = useState('')
 
   const reload = useCallback(async () => {
@@ -53,7 +50,6 @@ export function PersonnelPage() {
       const [userRows, siteRows] = await Promise.all([api.listUsers(), api.listSites()])
       setPeople(userRows)
       setSites(siteRows)
-      setSiteId((current) => current || siteRows[0]?.id || '')
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'Failed to load personnel')
     } finally {
@@ -119,7 +115,6 @@ export function PersonnelPage() {
     setStaffId('')
     setPassword('')
     setRole('TECHNICIAN')
-    setSelectedSiteIds([])
   }
 
   function openEdit(person: UserDto) {
@@ -128,8 +123,6 @@ export function PersonnelPage() {
     setEmail(person.email)
     setStaffId(person.staffId ?? '')
     setRole(person.role)
-    setSiteId(person.assignedSiteIds?.[0] ?? sites[0]?.id ?? '')
-    setSelectedSiteIds(person.assignedSiteIds ?? [])
     setPassword('')
     setError(null)
     setOpen(true)
@@ -141,31 +134,23 @@ export function PersonnelPage() {
       setError('Enter a valid account email.')
       return
     }
-    if (role === 'REGIONAL_ADMIN') {
-      if (selectedSiteIds.length === 0) {
-        setError('Assign at least one location for this role.')
-        return
-      }
-    } else if (role !== 'SUPER_ADMIN' && !siteId) {
-      setError('Assign at least one location for this role.')
-      return
-    }
     setBusy(true)
     setError(null)
     try {
+      // Create: unassigned pool (no cabinet). Edit: preserve existing site links so account
+      // field saves do not wipe Cabinet Management → Assign User bindings.
+      const assignedSiteIds =
+        role === 'SUPER_ADMIN'
+          ? []
+          : editingPerson
+            ? (editingPerson.assignedSiteIds ?? [])
+            : []
       const payload = {
         displayName: displayName.trim(),
         email: email.trim(),
         role,
         staffId: staffId.trim() || null,
-        assignedSiteIds:
-          role === 'SUPER_ADMIN'
-            ? []
-            : role === 'REGIONAL_ADMIN'
-              ? selectedSiteIds
-              : siteId
-                ? [siteId]
-                : [],
+        assignedSiteIds,
       }
       if (editingPerson) {
         await api.updateUser(editingPerson.id, {
@@ -238,7 +223,7 @@ export function PersonnelPage() {
           <option value="TECHNICIAN">Technician</option>
           <option value="VENDOR">Vendor</option>
           <option value="REGIONAL_ADMIN">Regional Admin</option>
-          <option value="SUPER_ADMIN">Super Admin</option>
+          {isSuperAdmin ? <option value="SUPER_ADMIN">Super Admin</option> : null}
         </select>
         <select value={siteFilter} onChange={(e) => setSiteFilter(e.target.value)} title="Filter by location">
           <option value="all">All locations</option>
@@ -339,7 +324,8 @@ export function PersonnelPage() {
           <form className="dialog" onSubmit={onSave}>
             <h2>{editingPerson ? 'Edit personnel' : 'Add personnel'}</h2>
             <p className="dialog-copy">
-              Same account can sign in on the web portal and (when server-linked) on the cabinet.
+              Creates an organization account only. Assign the person to a cabinet location under
+              Cabinet Management → Assign User.
             </p>
             <div className="field">
               <label>Display name</label>
@@ -357,62 +343,20 @@ export function PersonnelPage() {
                 placeholder="Employee / external ID"
               />
             </div>
-            <div className="split">
-              <div className="field">
-                <label>Role</label>
-                <select value={role} onChange={(e) => setRole(e.target.value)}>
-                  <option value="TECHNICIAN">Technician</option>
-                  <option value="VENDOR">Vendor</option>
-                  <option value="REGIONAL_ADMIN">Regional Admin</option>
-                  <option value="SUPER_ADMIN">Super Admin</option>
-                </select>
-              </div>
-              {role === 'TECHNICIAN' || role === 'VENDOR' ? (
-                <div className="field">
-                  <label>Assigned location</label>
-                  <select value={siteId} onChange={(e) => setSiteId(e.target.value)} required>
-                    {sites.map((s) => (
-                      <option key={s.id} value={s.id}>
-                        {s.name}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-              ) : null}
+            <div className="field">
+              <label>Role</label>
+              <select value={role} onChange={(e) => setRole(e.target.value)}>
+                <option value="TECHNICIAN">Technician</option>
+                <option value="VENDOR">Vendor</option>
+                <option value="REGIONAL_ADMIN">Regional Admin</option>
+                {isSuperAdmin ? <option value="SUPER_ADMIN">Super Admin</option> : null}
+              </select>
             </div>
-            {role === 'REGIONAL_ADMIN' && (
-              <div className="field">
-                <label>Assigned locations</label>
-                <p className="muted" style={{ margin: '0 0 8px', fontSize: '0.82rem' }}>
-                  A Regional Admin can cover more than one location — select all that apply.
-                </p>
-                <div className="toggle-list" role="group" aria-label="Assigned locations">
-                  {sites.map((s) => (
-                    <label key={s.id} className="toggle-row">
-                      <input
-                        type="checkbox"
-                        checked={selectedSiteIds.includes(s.id)}
-                        onChange={(e) =>
-                          setSelectedSiteIds((current) =>
-                            e.target.checked
-                              ? [...current, s.id]
-                              : current.filter((id) => id !== s.id),
-                          )
-                        }
-                      />
-                      <span>
-                        <strong>{s.name}</strong>
-                      </span>
-                    </label>
-                  ))}
-                </div>
-              </div>
-            )}
-            {role === 'SUPER_ADMIN' && (
-              <p className="muted" style={{ margin: '0 0 12px', fontSize: '0.88rem' }}>
-                Super Admin has org-wide access; location assignment is not required.
-              </p>
-            )}
+            <p className="muted" style={{ margin: '0 0 12px', fontSize: '0.88rem' }}>
+              {role === 'SUPER_ADMIN'
+                ? 'Super Admin has org-wide access; location assignment is not required.'
+                : 'Location is not set here. Assign this person to a location under Cabinet Management → Assign User (pick existing or create-and-assign).'}
+            </p>
             {!editingPerson && (
               <div className="field">
                 <label>Initial password (min 8, optional)</label>
