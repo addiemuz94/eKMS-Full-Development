@@ -7,7 +7,23 @@ plugins {
     alias(libs.plugins.kotlin.android)
     alias(libs.plugins.compose.compiler)
     alias(libs.plugins.kotlin.serialization)
-    alias(libs.plugins.google.services)
+    // Applied below only when google-services.json is present (gitignored — ask Adi).
+    alias(libs.plugins.google.services) apply false
+}
+
+// Firebase app config is gitignored (see root .gitignore). Without it, skip the Google
+// Services plugin so debug/sync still works; PushTokenSync already no-ops if FCM init fails.
+// Real push needs mobileApp/google-services.json from Firebase project kms-cvt (clients
+// com.ekms.mobile + com.ekms.terminal).
+val mobileGoogleServicesFile = file("google-services.json")
+val mobileHasGoogleServices = mobileGoogleServicesFile.exists()
+if (mobileHasGoogleServices) {
+    apply(plugin = "com.google.gms.google-services")
+} else {
+    logger.warn(
+        "Missing ${mobileGoogleServicesFile.path} — Firebase/FCM disabled for this build. " +
+            "Ask Adi for google-services.json (Firebase project kms-cvt) to enable push."
+    )
 }
 
 // Real production release signing. Credentials live in a root-level keystore.properties
@@ -15,17 +31,12 @@ plugins {
 // it points at, are Adi's sole responsibility to back up securely outside this repo —
 // losing either blocks all future updates to whatever's already installed on client
 // devices.
+// Debug/sync may proceed without it; release assemble/bundle fails loudly if missing.
 val mobileKeystorePropertiesFile = rootProject.file("keystore.properties")
+val mobileHasKeystore = mobileKeystorePropertiesFile.exists()
 val mobileKeystoreProperties = Properties().apply {
-    if (mobileKeystorePropertiesFile.exists()) {
+    if (mobileHasKeystore) {
         FileInputStream(mobileKeystorePropertiesFile).use { load(it) }
-    } else {
-        throw GradleException(
-            "Missing ${mobileKeystorePropertiesFile.path} — required for mobileApp release " +
-                "signing (MOBILE_STORE_FILE/MOBILE_STORE_PASSWORD/MOBILE_KEY_ALIAS/" +
-                "MOBILE_KEY_PASSWORD). This file is gitignored and never committed; ask Adi " +
-                "for the production keystore.properties + matching .jks file."
-        )
     }
 }
 
@@ -52,17 +63,39 @@ android {
     }
 
     signingConfigs {
-        create("release") {
-            storeFile = rootProject.file(mobileKeystoreProperties.getProperty("MOBILE_STORE_FILE"))
-            storePassword = mobileKeystoreProperties.getProperty("MOBILE_STORE_PASSWORD")
-            keyAlias = mobileKeystoreProperties.getProperty("MOBILE_KEY_ALIAS")
-            keyPassword = mobileKeystoreProperties.getProperty("MOBILE_KEY_PASSWORD")
+        if (mobileHasKeystore) {
+            create("release") {
+                storeFile = rootProject.file(mobileKeystoreProperties.getProperty("MOBILE_STORE_FILE"))
+                storePassword = mobileKeystoreProperties.getProperty("MOBILE_STORE_PASSWORD")
+                keyAlias = mobileKeystoreProperties.getProperty("MOBILE_KEY_ALIAS")
+                keyPassword = mobileKeystoreProperties.getProperty("MOBILE_KEY_PASSWORD")
+            }
         }
     }
 
     buildTypes {
         release {
-            signingConfig = signingConfigs.getByName("release")
+            if (mobileHasKeystore) {
+                signingConfig = signingConfigs.getByName("release")
+            }
+        }
+    }
+}
+
+tasks.configureEach {
+    val isReleasePackage =
+        name.startsWith("assemble") || name.startsWith("bundle") || name.startsWith("package")
+    if (isReleasePackage && name.contains("Release", ignoreCase = true)) {
+        doFirst {
+            if (!mobileHasKeystore) {
+                throw GradleException(
+                    "Missing ${mobileKeystorePropertiesFile.path} — required for mobileApp " +
+                        "release signing (MOBILE_STORE_FILE/MOBILE_STORE_PASSWORD/" +
+                        "MOBILE_KEY_ALIAS/MOBILE_KEY_PASSWORD). This file is gitignored and " +
+                        "never committed; ask Adi for the production keystore.properties + " +
+                        "matching .jks file. Debug builds do not need it."
+                )
+            }
         }
     }
 }

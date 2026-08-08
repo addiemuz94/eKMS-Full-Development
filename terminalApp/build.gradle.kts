@@ -14,17 +14,12 @@ plugins {
 // it points at, are Adi's sole responsibility to back up securely outside this repo —
 // losing either blocks all future updates to whatever's already installed on client
 // devices (side-loaded via EnjoyKit, so there's no Play Store re-issue safety net).
+// Debug/sync may proceed without it; release assemble/bundle fails loudly if missing.
 val terminalKeystorePropertiesFile = rootProject.file("keystore.properties")
+val terminalHasKeystore = terminalKeystorePropertiesFile.exists()
 val terminalKeystoreProperties = Properties().apply {
-    if (terminalKeystorePropertiesFile.exists()) {
+    if (terminalHasKeystore) {
         FileInputStream(terminalKeystorePropertiesFile).use { load(it) }
-    } else {
-        throw GradleException(
-            "Missing ${terminalKeystorePropertiesFile.path} — required for terminalApp release " +
-                "signing (TERMINAL_STORE_FILE/TERMINAL_STORE_PASSWORD/TERMINAL_KEY_ALIAS/" +
-                "TERMINAL_KEY_PASSWORD). This file is gitignored and never committed; ask Adi " +
-                "for the production keystore.properties + matching .jks file."
-        )
     }
 }
 
@@ -51,17 +46,39 @@ android {
     }
 
     signingConfigs {
-        create("release") {
-            storeFile = rootProject.file(terminalKeystoreProperties.getProperty("TERMINAL_STORE_FILE"))
-            storePassword = terminalKeystoreProperties.getProperty("TERMINAL_STORE_PASSWORD")
-            keyAlias = terminalKeystoreProperties.getProperty("TERMINAL_KEY_ALIAS")
-            keyPassword = terminalKeystoreProperties.getProperty("TERMINAL_KEY_PASSWORD")
+        if (terminalHasKeystore) {
+            create("release") {
+                storeFile = rootProject.file(terminalKeystoreProperties.getProperty("TERMINAL_STORE_FILE"))
+                storePassword = terminalKeystoreProperties.getProperty("TERMINAL_STORE_PASSWORD")
+                keyAlias = terminalKeystoreProperties.getProperty("TERMINAL_KEY_ALIAS")
+                keyPassword = terminalKeystoreProperties.getProperty("TERMINAL_KEY_PASSWORD")
+            }
         }
     }
 
     buildTypes {
         release {
-            signingConfig = signingConfigs.getByName("release")
+            if (terminalHasKeystore) {
+                signingConfig = signingConfigs.getByName("release")
+            }
+        }
+    }
+}
+
+tasks.configureEach {
+    val isReleasePackage =
+        name.startsWith("assemble") || name.startsWith("bundle") || name.startsWith("package")
+    if (isReleasePackage && name.contains("Release", ignoreCase = true)) {
+        doFirst {
+            if (!terminalHasKeystore) {
+                throw GradleException(
+                    "Missing ${terminalKeystorePropertiesFile.path} — required for terminalApp " +
+                        "release signing (TERMINAL_STORE_FILE/TERMINAL_STORE_PASSWORD/" +
+                        "TERMINAL_KEY_ALIAS/TERMINAL_KEY_PASSWORD). This file is gitignored and " +
+                        "never committed; ask Adi for the production keystore.properties + " +
+                        "matching .jks file. Debug builds do not need it."
+                )
+            }
         }
     }
 }
